@@ -1,0 +1,10 @@
+{
+  "tickers": ["AAPL", "MSFT", "GOOG"],
+  "interval_seconds": 60,
+  "lookback_bars": 30,
+  "ema_fast": 9,
+  "ema_slow": 21,
+  "rsi_period": 14,
+  "alert_rsi_low": 30,
+  "alert_rsi_high": 70
+}
