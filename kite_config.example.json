@@ -1,0 +1,21 @@
+{
+  "kite_api_key": "your_api_key_from_kite",
+  "kite_access_token": "your_access_token_from_kite",
+  "instrument_tokens": {
+    "RELIANCE": 738561,
+    "TCS": 2953217,
+    "INFY": 1222041,
+    "WIPRO": 3875329,
+    "TATAMOTORS": 884737
+  },
+  "bar_interval_seconds": 60,
+  "ema_fast": 9,
+  "ema_slow": 21,
+  "rsi_period": 14,
+  "alert_rsi_low": 35,
+  "alert_rsi_high": 65,
+  "stop_loss_pct": 1.5,
+  "take_profit_pct": 3.0,
+  "telegram_token": "",
+  "telegram_chat_id": ""
+}

@@ -1,1 +1,2 @@
 requests>=2.31.0
+kiteconnect>=4.3.0
