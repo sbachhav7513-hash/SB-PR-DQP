@@ -1,6 +1,6 @@
 """
 Zerodha Kite Connect based trading bot with live market streaming.
-Uses real-time ticks aggregated into bars, with conservative signal logic.
+Uses real-time ticks aggregated into bars, with intraday futures optimization.
 """
 
 import json
@@ -13,6 +13,7 @@ from typing import Dict, Optional
 
 from .bar_builder import BarBuilder, Bar
 from .engine import score_market
+from .intraday_manager import IntradayManager
 from .kite_provider import KiteConfig, KiteMarketStream, Tick
 from .risk_manager import build_risk_plan
 from .telegram_notifier import TelegramNotifier
@@ -30,6 +31,13 @@ class KiteTradingBot:
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
         self.config = self._load_config()
+        
+        # Initialize intraday manager for futures trading
+        self.intraday_manager = IntradayManager(
+            account_size=self.config.get("account_size", 100000),
+            risk_per_trade_pct=self.config.get("risk_per_trade_pct", 1.0),
+        )
+        
         self.bar_builder = BarBuilder(
             interval_seconds=self.config.get("bar_interval_seconds", 60),
             on_bar_callback=self.on_bar_complete,
@@ -64,6 +72,11 @@ class KiteTradingBot:
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
 
+        # Check if it's time to exit all positions (3:15 PM)
+        if self.intraday_manager.should_exit_all_positions():
+            self._handle_market_close_exit(symbol, bar.close)
+            return
+
         logger.info(
             f"[{symbol}] Bar: O={bar.open:.2f} H={bar.high:.2f} L={bar.low:.2f} C={bar.close:.2f} V={bar.volume}"
         )
@@ -95,9 +108,24 @@ class KiteTradingBot:
             risk_plan = build_risk_plan(
                 price,
                 "BUY",
-                stop_loss_pct=self.config.get("stop_loss_pct", 1.5),
-                take_profit_pct=self.config.get("take_profit_pct", 3.0),
+                stop_loss_pct=self.config.get("stop_loss_pct", 0.75),
+                take_profit_pct=self.config.get("take_profit_pct", 1.5),
             )
+            
+            # Calculate position size for futures
+            quantity = self.intraday_manager.calculate_position_size(
+                symbol, price, risk_plan.stop_loss
+            )
+            
+            if quantity == 0:
+                logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
+                return
+            
+            # Register position in intraday manager
+            self.intraday_manager.register_position(
+                symbol, "BUY", quantity, price, risk_plan.stop_loss, risk_plan.take_profit
+            )
+            
             alert = self.telegram_notifier.format_trade(
                 ticker=symbol,
                 action="BUY",
@@ -110,10 +138,11 @@ class KiteTradingBot:
             alert["status"] = "open"
             alert["stop_loss"] = risk_plan.stop_loss
             alert["take_profit"] = risk_plan.take_profit
+            alert["quantity"] = quantity
 
             self.trade_journal.log_trade(alert)
             logger.info(
-                f"[{symbol}] BUY ALERT -> Entry={alert['entry']:.2f}, "
+                f"[{symbol}] BUY ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
                 f"SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
@@ -127,10 +156,11 @@ class KiteTradingBot:
                     action="BUY",
                     exit_price=price,
                     pnl=pnl,
-                    reason="AUTO_CLOSE",
+                    reason="TAKE_PROFIT",
                 )
                 logger.info(self.telegram_notifier.build_message(close_alert))
                 self.telegram_notifier.send_trade_alert(close_alert)
+                self.intraday_manager.close_position(symbol, price, "TAKE_PROFIT")
             else:
                 logger.info(f"[{symbol}] BUY OPEN -> current={price:.2f}, P&L={pnl:.2f}")
 
@@ -141,9 +171,24 @@ class KiteTradingBot:
             risk_plan = build_risk_plan(
                 price,
                 "SELL",
-                stop_loss_pct=self.config.get("stop_loss_pct", 1.5),
-                take_profit_pct=self.config.get("take_profit_pct", 3.0),
+                stop_loss_pct=self.config.get("stop_loss_pct", 0.75),
+                take_profit_pct=self.config.get("take_profit_pct", 1.5),
             )
+            
+            # Calculate position size for futures
+            quantity = self.intraday_manager.calculate_position_size(
+                symbol, price, risk_plan.stop_loss
+            )
+            
+            if quantity == 0:
+                logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
+                return
+            
+            # Register position in intraday manager
+            self.intraday_manager.register_position(
+                symbol, "SELL", quantity, price, risk_plan.stop_loss, risk_plan.take_profit
+            )
+            
             alert = self.telegram_notifier.format_trade(
                 ticker=symbol,
                 action="SELL",
@@ -156,10 +201,11 @@ class KiteTradingBot:
             alert["status"] = "open"
             alert["stop_loss"] = risk_plan.stop_loss
             alert["take_profit"] = risk_plan.take_profit
+            alert["quantity"] = quantity
 
             self.trade_journal.log_trade(alert)
             logger.info(
-                f"[{symbol}] SELL ALERT -> Entry={alert['entry']:.2f}, "
+                f"[{symbol}] SELL ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
                 f"SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
@@ -173,25 +219,63 @@ class KiteTradingBot:
                     action="SELL",
                     exit_price=price,
                     pnl=pnl,
-                    reason="AUTO_CLOSE",
+                    reason="TAKE_PROFIT",
                 )
                 logger.info(self.telegram_notifier.build_message(close_alert))
                 self.telegram_notifier.send_trade_alert(close_alert)
+                self.intraday_manager.close_position(symbol, price, "TAKE_PROFIT")
             else:
                 logger.info(f"[{symbol}] SELL OPEN -> current={price:.2f}, P&L={pnl:.2f}")
 
+    def _handle_market_close_exit(self, symbol: str, price: float) -> None:
+        """Force exit all positions before market close (3:15 PM)."""
+        positions = self.intraday_manager.get_all_open_positions()
+        if not positions:
+            return
+        
+        logger.warning(f"Market close time (3:15 PM) - Force closing all positions")
+        
+        for pos_symbol, pos_details in positions.items():
+            exit_info = self.intraday_manager.close_position(pos_symbol, price, "MARKET_CLOSE")
+            if exit_info:
+                close_alert = self.telegram_notifier.format_close(
+                    ticker=pos_symbol,
+                    action=exit_info["direction"],
+                    exit_price=price,
+                    pnl=exit_info["pnl_rupees"],
+                    reason="MARKET_CLOSE_FORCED_EXIT",
+                )
+                logger.warning(f"[{pos_symbol}] Forced exit at market close: ₹{exit_info['pnl_rupees']:.0f}")
+                self.telegram_notifier.send_trade_alert(close_alert)
+
     def run(self) -> None:
-        """Start the bot and stream market data."""
-        logger.info("Starting Kite Trading Bot")
+        """Start the bot and stream market data with intraday monitoring."""
+        logger.info("Starting Kite Trading Bot - INTRADAY FUTURES MODE")
         logger.info(f"Instruments: {list(self.config['instrument_tokens'].keys())}")
         logger.info(f"Bar interval: {self.config.get('bar_interval_seconds', 60)}s")
+        logger.info(f"Market close exit time: {self.intraday_manager.AUTO_EXIT_TIME}")
+        logger.info(f"Risk per trade: {self.intraday_manager.risk_per_trade_pct}%")
 
         try:
             self.kite_stream.start()
             logger.info("Waiting for WebSocket connection...")
             if self.kite_stream.wait_for_connection(timeout=15):
                 logger.info("WebSocket connected, streaming live data...")
+                last_close_check = datetime.now()
+                
                 while True:
+                    # Check every 30 seconds if it's time to force exit
+                    now = datetime.now()
+                    if (now - last_close_check).total_seconds() >= 30:
+                        if self.intraday_manager.should_exit_all_positions():
+                            positions = self.intraday_manager.get_all_open_positions()
+                            if positions:
+                                logger.warning(
+                                    f"Market close in ~15 min. {len(positions)} open positions. "
+                                    "Will force exit at 3:15 PM"
+                                )
+                        last_close_check = now
+                    
                     time.sleep(1)
             else:
                 logger.error("Failed to connect to Kite WebSocket")
