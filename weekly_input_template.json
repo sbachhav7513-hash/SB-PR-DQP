@@ -1,0 +1,175 @@
+{
+  "week_ending": "2026-08-15",
+  "submitted_by": "Your Name",
+  "submitted_date": "2026-08-15 17:00",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 1: MARKET CONDITIONS (What was the market like this week?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "market_trend": "UPTREND",
+  "market_trend_options": ["UPTREND", "DOWNTREND", "SIDEWAYS", "CHOPPY"],
+  "market_trend_explanation": "Example: Week started down, recovered from Wed onwards",
+  
+  "market_volatility": "MEDIUM",
+  "market_volatility_options": ["LOW", "MEDIUM", "HIGH", "EXTREME"],
+  "market_volatility_explanation": "Example: 1-2% daily moves, reasonable for trading",
+  
+  "best_trading_hours": "10:00-12:00, 13:00-14:30",
+  "best_trading_hours_explanation": "When did we make most profit?",
+  
+  "worst_trading_hours": "09:15-09:30, 15:00-15:15",
+  "worst_trading_hours_explanation": "When did we lose most?",
+  
+  "overall_market_notes": "EXAMPLE: Week was noisy early on, settled Wed onwards. Opening 15 mins very volatile. Afternoon quieter.",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 2: SIGNAL QUALITY (Were entries good or bad?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "false_signal_symbols": ["INFY", "WIPRO"],
+  "false_signal_explanation": "These had many quick reversals, whipsaws. Should exclude.",
+  
+  "best_signal_symbols": ["NIFTY", "BANKNIFTY", "TCS"],
+  "best_signal_explanation": "These had most wins, trending nicely.",
+  
+  "signals_too_early": false,
+  "signals_too_early_explanation": "EXAMPLE: No, entries were good, but sometimes exits too early",
+  
+  "signals_too_late": true,
+  "signals_too_late_explanation": "EXAMPLE: Yes, sometimes entered after the move started, missed early profit",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 3: TRADE MANAGEMENT (How did we exit?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "total_trades_this_week": 12,
+  "winning_trades": 7,
+  "losing_trades": 5,
+  "win_rate_percent": 58.3,
+  
+  "stop_loss_hit_count": 3,
+  "stop_loss_hit_explanation": "How many trades hit stop loss (bad)",
+  
+  "take_profit_hit_count": 7,
+  "take_profit_hit_explanation": "How many trades hit take profit (good)",
+  
+  "manual_exits_count": 2,
+  "manual_exits_reason": "EXAMPLE: Closed early due to gap risk before 3:15 PM",
+  
+  "exit_too_early": true,
+  "exit_too_early_explanation": "Yes, take profit target 1.5% is too tight. Moves often go to 2-3%",
+  
+  "exit_too_late": false,
+  "exit_too_late_explanation": "No, timing was OK",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 4: FILTER EFFECTIVENESS (Did filters help?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "volatility_filter_rejected_count": 5,
+  "volatility_filter_explanation": "How many signals rejected by volatility check? (good!)",
+  
+  "confirmation_filter_rejected_count": 3,
+  "confirmation_filter_explanation": "How many rejected by confirmation candle?",
+  
+  "cooldown_filter_rejected_count": 4,
+  "cooldown_filter_explanation": "How many prevented by 5-min cooldown?",
+  
+  "trading_hours_filter_rejected_count": 0,
+  "trading_hours_filter_explanation": "How many filtered by risky hours?",
+  
+  "total_signals_rejected": 12,
+  "total_signals_rejected_explanation": "12 rejected signals total",
+  
+  "false_positives_prevented": 8,
+  "false_positives_explanation": "Of the 12 rejected, how many would have lost? Estimate: 8",
+  
+  "filters_helped": true,
+  "filters_helped_explanation": "Yes, filters prevented about 8 losing trades",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 5: BIGGEST ISSUES (What hurt performance?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "biggest_issue_1": "Exit too early - take profit target too tight",
+  "biggest_issue_1_impact": "Missed moves that went to 2-3%, only captured 1.5%",
+  "biggest_issue_1_priority": "HIGH",
+  
+  "biggest_issue_2": "Entries on INFY whipsawed too much",
+  "biggest_issue_2_impact": "3 trades on INFY, 2 losses, 1 win. Skip INFY.",
+  "biggest_issue_2_priority": "HIGH",
+  
+  "biggest_issue_3": "Trading 9:15-9:30 AM volatile",
+  "biggest_issue_3_impact": "Opened weak, 1 trade lost 50 pts. Better to wait.",
+  "biggest_issue_3_priority": "MEDIUM",
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 6: RECOMMENDED CHANGES (What to fix?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "change_1": {
+    "parameter": "take_profit_pct",
+    "current_value": 1.5,
+    "suggested_value": 2.5,
+    "reason": "Moves often go 2-3% on trending days. 1.5% too tight.",
+    "expected_impact": "Capture more profit per trade, increase daily P&L"
+  },
+  
+  "change_2": {
+    "parameter": "excluded_symbols",
+    "current_value": [],
+    "suggested_value": ["INFY", "WIPRO"],
+    "reason": "Both had poor signal quality, many whipsaws",
+    "expected_impact": "Reduce false signals by ~20%, improve win rate"
+  },
+  
+  "change_3": {
+    "parameter": "skip_opening_minutes",
+    "current_value": "not_set",
+    "suggested_value": 15,
+    "reason": "First 15 mins (9:15-9:30) very volatile, bad entry points",
+    "expected_impact": "Avoid early losses, wait for market to settle"
+  },
+  
+  "additional_changes": [
+    {
+      "parameter": "stop_loss_pct",
+      "current_value": 0.75,
+      "suggested_value": 0.85,
+      "reason": "Too many stopped out during normal pullbacks"
+    }
+  ],
+  
+  "═════════════════════════════════════════════════════════════": null,
+  "SECTION 7: EXPECTED IMPROVEMENTS (What should improve?)", null,
+  "═════════════════════════════════════════════════════════════": null,
+  
+  "current_metrics": {
+    "win_rate": 58.3,
+    "daily_profit": 3200,
+    "trades_per_day": 12,
+    "avg_win": 650,
+    "avg_loss": -450
+  },
+  
+  "next_week_targets": {
+    "win_rate_target": 65,
+    "win_rate_target_explanation": "Exclude bad symbols + tighter entry filters",
+    
+    "daily_profit_target": 5000,
+    "daily_profit_explanation": "Higher take profit + fewer bad entries",
+    
+    "trades_per_day_target": 10,
+    "trades_per_day_explanation": "Quality over quantity - fewer, better trades",
+    
+    "avg_win_target": 850,
+    "avg_win_explanation": "Larger take profit target",
+    
+    "avg_loss_target": -350,
+    "avg_loss_explanation": "Tighter stop loss"
+  },
+  
+  "confidence_level": "HIGH",
+  "confidence_explanation": "Changes are concrete and data-driven from this week's analysis"
+}
