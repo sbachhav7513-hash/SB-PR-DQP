@@ -33,15 +33,17 @@ class Bar:
 
 
 class BarBuilder:
-    """Aggregates ticks into OHLC bars at a specified interval."""
+    """Aggregates ticks into OHLC bars at a specified interval with memory limits."""
 
     def __init__(
         self,
         interval_seconds: int = 60,
         on_bar_callback: Optional[Callable[[str, Bar], None]] = None,
+        max_bars_per_symbol: int = 100,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.on_bar_callback = on_bar_callback
+        self.max_bars_per_symbol = max_bars_per_symbol  # Limit memory usage
         self.bars: Dict[int, List[Bar]] = defaultdict(list)
         self.current_bar: Dict[int, dict] = {}
         self.last_bar_time: Dict[int, datetime] = {}
@@ -81,6 +83,11 @@ class BarBuilder:
                     volume=completed["volume"],
                 )
                 self.bars[token].append(bar)
+                
+                # Keep only max_bars_per_symbol to limit memory usage
+                if len(self.bars[token]) > self.max_bars_per_symbol:
+                    self.bars[token].pop(0)
+                
                 if self.on_bar_callback:
                     self.on_bar_callback(str(token), bar)
                 logger.debug(f"Bar completed for token {token}: {bar}")
