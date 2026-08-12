@@ -12,21 +12,21 @@ class BotConfig:
     ema_fast: int = 9
     ema_slow: int = 21
     rsi_period: int = 14
-    alert_rsi_low: int = 30
-    alert_rsi_high: int = 70
+    alert_rsi_low: int = 35
+    alert_rsi_high: int = 65
+    stop_loss_pct: float = 1.5
+    take_profit_pct: float = 3.0
+    telegram_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "BotConfig":
         config_path = Path(path or "config.json")
-        if config_path.exists():
-            with config_path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            return cls(**data)
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Missing config file: {config_path}. Please create config.json from config.example.json."
+            )
 
-        fallback = Path("config.example.json")
-        if fallback.exists():
-            with fallback.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            return cls(**data)
-
-        return cls()
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls(**data)

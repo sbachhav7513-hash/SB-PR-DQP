@@ -8,6 +8,18 @@ class Signal:
     action: str
     reason: str
     price: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+
+
+def _trade_levels(price: float, action: str, stop_loss_pct: float, take_profit_pct: float) -> tuple[float, float]:
+    if action == "BUY":
+        stop_loss = price * (1 - (stop_loss_pct / 100.0))
+        take_profit = price * (1 + (take_profit_pct / 100.0))
+    else:
+        stop_loss = price * (1 + (stop_loss_pct / 100.0))
+        take_profit = price * (1 - (take_profit_pct / 100.0))
+    return stop_loss, take_profit
 
 
 def ema(series: List[float], period: int) -> List[float]:
@@ -52,6 +64,12 @@ def rsi(series: List[float], period: int = 14) -> List[float]:
     return output
 
 
+def _sma(series: List[float], period: int) -> Optional[float]:
+    if len(series) < period:
+        return None
+    return sum(series[-period:]) / period
+
+
 def analyze_history(
     ticker: str,
     history: List[Dict],
@@ -60,9 +78,11 @@ def analyze_history(
     rsi_period: int,
     alert_rsi_low: int,
     alert_rsi_high: int,
+    stop_loss_pct: float = 1.5,
+    take_profit_pct: float = 3.0,
 ) -> Optional[Signal]:
     closes = [item["close"] for item in history]
-    if len(closes) < max(ema_slow + 2, rsi_period + 2):
+    if len(closes) < max(ema_slow + 20, rsi_period + 20):
         return None
 
     fast_ema = ema(closes, ema_fast)
@@ -78,55 +98,65 @@ def analyze_history(
     fast_prev = fast_ema[-2] if len(fast_ema) >= 2 else fast_now
     slow_prev = slow_ema[-2] if len(slow_ema) >= 2 else slow_now
     rsi_now = latest_rsi[-1]
+    sma_20 = _sma(closes, 20)
+    if sma_20 is None:
+        return None
 
-    if fast_prev <= slow_prev and fast_now > slow_now and rsi_now < alert_rsi_high:
+    bullish_trend = fast_now > slow_now and fast_now >= fast_prev and slow_now >= slow_prev
+    bearish_trend = fast_now < slow_now and fast_now <= fast_prev and slow_now <= slow_prev
+    in_uptrend = price > sma_20
+    in_downtrend = price < sma_20
+
+    recent_window = closes[-10:]
+    recent_high = max(recent_window)
+    recent_low = min(recent_window)
+    breakout_up = price > recent_high * 1.01
+    breakout_down = price < recent_low * 0.99
+
+    if bullish_trend and in_uptrend and rsi_now > 45 and rsi_now < 70:
+        if fast_prev <= slow_prev or breakout_up:
+            stop_loss, take_profit = _trade_levels(price, "BUY", stop_loss_pct, take_profit_pct)
+            return Signal(
+                ticker=ticker,
+                action="BUY",
+                reason=f"Trend confirmed: EMA alignment bullish, price above SMA, RSI={rsi_now:.1f}",
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+
+    if bearish_trend and in_downtrend and rsi_now > 30 and rsi_now < 55:
+        if fast_prev >= slow_prev or breakout_down:
+            stop_loss, take_profit = _trade_levels(price, "SELL", stop_loss_pct, take_profit_pct)
+            return Signal(
+                ticker=ticker,
+                action="SELL",
+                reason=f"Trend confirmed: EMA alignment bearish, price below SMA, RSI={rsi_now:.1f}",
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+
+    if bullish_trend and in_uptrend and rsi_now <= alert_rsi_low and price > recent_low:
+        stop_loss, take_profit = _trade_levels(price, "BUY", stop_loss_pct, take_profit_pct)
         return Signal(
             ticker=ticker,
             action="BUY",
-            reason=f"Fast EMA crossed above slow EMA and RSI={rsi_now:.1f}",
+            reason=f"Bullish recovery confirmed after oversold RSI={rsi_now:.1f}",
             price=price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
         )
 
-    if fast_prev >= slow_prev and fast_now < slow_now and rsi_now > alert_rsi_low:
+    if bearish_trend and in_downtrend and rsi_now >= alert_rsi_high and price < recent_high:
+        stop_loss, take_profit = _trade_levels(price, "SELL", stop_loss_pct, take_profit_pct)
         return Signal(
             ticker=ticker,
             action="SELL",
-            reason=f"Fast EMA crossed below slow EMA and RSI={rsi_now:.1f}",
+            reason=f"Bearish continuation confirmed after overbought RSI={rsi_now:.1f}",
             price=price,
-        )
-
-    if rsi_now <= alert_rsi_low:
-        return Signal(
-            ticker=ticker,
-            action="BUY",
-            reason=f"RSI oversold at {rsi_now:.1f}",
-            price=price,
-        )
-
-    if rsi_now >= alert_rsi_high:
-        return Signal(
-            ticker=ticker,
-            action="SELL",
-            reason=f"RSI overbought at {rsi_now:.1f}",
-            price=price,
-        )
-
-    recent_high = max(closes[-5:]) if len(closes) >= 5 else max(closes)
-    recent_low = min(closes[-5:]) if len(closes) >= 5 else min(closes)
-    if price > recent_high and fast_now > slow_now:
-        return Signal(
-            ticker=ticker,
-            action="BUY",
-            reason="Price breakout above recent high with bullish EMA alignment",
-            price=price,
-        )
-
-    if price < recent_low and fast_now < slow_now:
-        return Signal(
-            ticker=ticker,
-            action="SELL",
-            reason="Price dropped below recent low with bearish EMA alignment",
-            price=price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
         )
 
     return None
