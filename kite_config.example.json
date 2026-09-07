@@ -4,7 +4,7 @@
   "trading_mode": "intraday_futures",
   "market_close_time": "15:15",
   "account_size": 100000,
-  "risk_per_trade_pct": 1.0,
+  "risk_per_trade_pct": 0.5,
   "futures_underlyings": [
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
     "SBIN", "AXISBANK", "INFY", "TCS", "LT", "MARUTI", "SUNPHARMA",
@@ -13,7 +13,7 @@
     "ONGC", "EICHERMOT", "HINDUNILVR"
   ],
   "auto_discover_futures": true,
-  "max_futures": 20,
+  "max_futures": 8,
   "min_futures_volume": 0,
   "news_enabled": true,
   "news_refresh_seconds": 900,

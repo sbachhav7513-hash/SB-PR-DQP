@@ -412,11 +412,25 @@ class KiteTradingBot:
         if self.last_daily_summary_date == today:
             return
         try:
+            today_trades = [
+                trade
+                for trade in self.trade_journal.read_trades()
+                if trade.get("status") == "closed"
+                and str(trade.get("closed_at", "")).startswith(today.isoformat())
+            ]
+            pnls = [float(trade.get("pnl", 0.0)) for trade in today_trades]
             summary_path = write_daily_summary(
                 data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
             )
             self.last_daily_summary_date = today
             logger.info("Daily paper-trading summary written to %s", summary_path)
+            self.telegram_notifier.send_daily_summary(
+                summary_date=today.isoformat(),
+                closed_trades=len(today_trades),
+                winning_trades=sum(1 for pnl in pnls if pnl > 0),
+                losing_trades=sum(1 for pnl in pnls if pnl <= 0),
+                total_pnl=sum(pnls),
+            )
         except Exception:
             logger.exception("Daily paper-trading summary failed; trading remains active")
 
@@ -435,6 +449,10 @@ class KiteTradingBot:
             logger.info("Waiting for WebSocket connection...")
             if self.kite_stream.wait_for_connection(timeout=15):
                 logger.info("WebSocket connected, streaming live data...")
+                self.telegram_notifier.send_heartbeat(
+                    instruments=len(self.config["instrument_tokens"]),
+                    bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
+                )
                 last_close_check = datetime.now(IST)
                 
                 while True:
