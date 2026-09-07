@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
+
+from .trade_journal import PaperTradingRecorder
 
 
 logger = logging.getLogger(__name__)
@@ -111,4 +114,101 @@ def write_weekly_report(
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
+    return destination
+
+
+def _date_records(path: Path, target_date) -> List[Dict[str, Any]]:
+    records = _load_jsonl(path, days=3660)
+    return [
+        record for record in records
+        if PaperTradingRecorder._event_datetime(record.get("timestamp")).date() == target_date
+    ]
+
+
+def write_daily_summary(
+    data_dir: str = ".", paper_data_dir: str = "paper_trading_data", target_date=None
+) -> Path:
+    """Write a compact daily CSV snapshot for the paper-trading session."""
+    now = datetime.now()
+    target_date = target_date or now.date()
+    trades = [
+        trade for trade in _date_records(Path(data_dir) / "trades.jsonl", target_date)
+        if trade.get("status") == "closed"
+    ]
+    decisions = _date_records(Path(data_dir) / "decision_log.jsonl", target_date)
+    pnls = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    values = {
+        "date": target_date.isoformat(),
+        "closed_trades": len(trades),
+        "winning_trades": sum(1 for pnl in pnls if pnl > 0),
+        "losing_trades": sum(1 for pnl in pnls if pnl <= 0),
+        "total_pnl": round(sum(pnls), 2),
+        "average_pnl": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
+        "decisions_recorded": len(decisions),
+        "buy_signals": sum(1 for item in decisions if item.get("signal") == "BUY"),
+        "sell_signals": sum(1 for item in decisions if item.get("signal") == "SELL"),
+        "hold_signals": sum(1 for item in decisions if item.get("signal") == "HOLD"),
+        "stop_loss_exits": sum(1 for trade in trades if trade.get("reason") == "STOP_LOSS"),
+        "take_profit_exits": sum(1 for trade in trades if trade.get("reason") == "TAKE_PROFIT"),
+    }
+    recorder = PaperTradingRecorder(paper_data_dir)
+    destination = recorder._day_path(
+        datetime.combine(target_date, datetime.min.time()).isoformat(), "daily_summary.csv"
+    )
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["metric", "value"])
+        writer.writeheader()
+        writer.writerows({"metric": key, "value": value} for key, value in values.items())
+    return destination
+
+
+def write_weekly_review(
+    data_dir: str = ".", paper_data_dir: str = "paper_trading_data", days: int = 7
+) -> Path:
+    """Write a human-readable review with evidence-based improvement prompts."""
+    report = build_weekly_report(data_dir, days)
+    now = datetime.now()
+    recorder = PaperTradingRecorder(paper_data_dir)
+    day_path = recorder._day_path(now.isoformat(), "daily_summary.csv")
+    destination = day_path.parent.parent / f"weekly_review_{now:%Y_%m_%d}.md"
+    issues: List[str] = []
+    improvements: List[str] = []
+    if report["closed_trades"] == 0:
+        issues.append("No closed trades were recorded; paper-trading data is insufficient for strategy conclusions.")
+        improvements.append("Continue paper trading and verify that entry and exit events are being recorded.")
+    elif report["total_pnl"] < 0:
+        issues.append(f"The period finished negative at {report['total_pnl']:.2f} P&L.")
+        improvements.append("Review losing trades by symbol, direction, signal score, and exit reason before changing parameters.")
+    if report["closed_trades"] and report["win_rate"] < 50:
+        issues.append(f"Win rate was {report['win_rate']:.2f}%, below the 50% baseline.")
+        improvements.append("Raise the entry-quality threshold or add confirmation rather than increasing trade frequency.")
+    if report["signal_counts"].get("ERROR", 0):
+        issues.append(f"Strategy evaluation errors occurred {report['signal_counts']['ERROR']} times.")
+        improvements.append("Investigate every strategy error before relying on live alerts.")
+    if not issues:
+        issues.append("No major negative pattern was detected by the current automated checks.")
+        improvements.append("Keep collecting paper-trading data and validate whether the strongest profiles repeat.")
+
+    lines = [
+        f"# Paper Trading Review - {now:%Y-%m-%d}",
+        "",
+        "## Observed Results",
+        f"- Closed trades: {report['closed_trades']}",
+        f"- Total P&L: {report['total_pnl']:.2f}",
+        f"- Win rate: {report['win_rate']:.2f}%",
+        f"- Decisions recorded: {report['decisions_recorded']}",
+        "",
+        "## What Needs Attention",
+        *[f"- {issue}" for issue in issues],
+        "",
+        "## Recommended Improvements",
+        *[f"- {improvement}" for improvement in improvements],
+        "",
+        "## Review Before Changing",
+        "- Compare the daily trades.csv files for the week, not just the aggregate P&L.",
+        "- Check whether losses cluster by symbol, BUY/SELL direction, time, or exit reason.",
+        "- Change one strategy or risk parameter at a time and continue paper trading.",
+        "",
+    ]
+    destination.write_text("\n".join(lines), encoding="utf-8")
     return destination

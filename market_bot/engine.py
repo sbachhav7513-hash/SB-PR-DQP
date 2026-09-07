@@ -14,14 +14,21 @@ class TradingScore:
     reasons: List[str] = field(default_factory=list)
 
 
-def score_market(ticker: str, history: List[Dict]) -> TradingScore:
+def score_market(
+    ticker: str,
+    history: List[Dict],
+    ema_fast: int = 9,
+    ema_slow: int = 21,
+    rsi_period: int = 14,
+    context_history: Optional[List[Dict]] = None,
+) -> TradingScore:
     closes = [item["close"] for item in history if "close" in item]
-    if len(closes) < 40:
+    if len(closes) < max(ema_slow + 1, rsi_period + 1, 40):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
 
-    fast = ema(closes, 9)
-    slow = ema(closes, 21)
-    latest_rsi = rsi(closes, 14)
+    fast = ema(closes, ema_fast)
+    slow = ema(closes, ema_slow)
+    latest_rsi = rsi(closes, rsi_period)
     if not fast or not slow or not latest_rsi:
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Indicators unavailable"])
 
@@ -104,4 +111,47 @@ def score_market(ticker: str, history: List[Dict]) -> TradingScore:
     else:
         signal = "HOLD"
 
+    if context_history:
+        signal, context_reason = filter_signal_by_context(
+            signal, context_history, ema_fast, ema_slow
+        )
+        if context_reason:
+            reasons.append(context_reason)
+
     return TradingScore(ticker=ticker, score=min(score, 100), signal=signal, reasons=reasons)
+
+
+def filter_signal_by_context(
+    signal: str,
+    history: List[Dict],
+    ema_fast: int = 9,
+    ema_slow: int = 21,
+) -> tuple[str, Optional[str]]:
+    context_signal = market_context_signal(history, ema_fast, ema_slow)
+    if context_signal == "BEARISH" and signal == "BUY":
+        return "HOLD", "Benchmark trend bearish"
+    if context_signal == "BULLISH" and signal == "SELL":
+        return "HOLD", "Benchmark trend bullish"
+    return signal, None
+
+
+def market_context_signal(
+    history: List[Dict],
+    ema_fast: int = 9,
+    ema_slow: int = 21,
+) -> str:
+    """Return a benchmark trend suitable for filtering symbol signals."""
+    closes = [item["close"] for item in history if "close" in item]
+    if len(closes) < max(ema_slow + 1, 20):
+        return "NEUTRAL"
+
+    fast = ema(closes, ema_fast)
+    slow = ema(closes, ema_slow)
+    if not fast or not slow:
+        return "NEUTRAL"
+
+    if fast[-1] > slow[-1] and closes[-1] > closes[-20]:
+        return "BULLISH"
+    if fast[-1] < slow[-1] and closes[-1] < closes[-20]:
+        return "BEARISH"
+    return "NEUTRAL"

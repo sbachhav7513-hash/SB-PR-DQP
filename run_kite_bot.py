@@ -3,6 +3,7 @@
 import argparse
 import getpass
 import json
+import os
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,21 +13,27 @@ from urllib.parse import parse_qs, urlparse
 from kiteconnect import KiteConnect
 
 from market_bot.kite_main import KiteTradingBot
+from market_bot.secrets import load_local_environment, set_local_environment
 
 
 REDIRECT_HOST = "127.0.0.1"
 REDIRECT_PORT = 8000
+
+load_local_environment()
 
 
 def has_valid_access_token(config_path: Path) -> bool:
     with config_path.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
-    access_token = config.get("kite_access_token")
+    access_token = os.getenv("KITE_ACCESS_TOKEN")
     if not access_token or access_token.startswith("your_"):
         return False
 
-    kite = KiteConnect(api_key=config["kite_api_key"])
+    api_key = os.getenv("KITE_API_KEY")
+    if not api_key:
+        raise RuntimeError("Set KITE_API_KEY before starting Kite authorization.")
+    kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
     try:
         profile = kite.profile()
@@ -45,7 +52,10 @@ def authorize(config_path: Path) -> None:
     with config_path.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
-    kite = KiteConnect(api_key=config["kite_api_key"])
+    api_key = os.getenv("KITE_API_KEY")
+    if not api_key:
+        raise RuntimeError("Set KITE_API_KEY before starting Kite authorization.")
+    kite = KiteConnect(api_key=api_key)
     api_secret = getpass.getpass("Kite API secret: ")
     result = {"access_token": None, "error": None}
 
@@ -105,11 +115,9 @@ def authorize(config_path: Path) -> None:
     if not result["access_token"]:
         raise RuntimeError("Kite returned no access token.")
 
-    config["kite_access_token"] = result["access_token"]
-    with config_path.open("w", encoding="utf-8") as config_file:
-        json.dump(config, config_file, indent=2)
-        config_file.write("\n")
-    print("Fresh access token saved. Starting the trading bot.")
+    os.environ["KITE_ACCESS_TOKEN"] = result["access_token"]
+    set_local_environment("KITE_ACCESS_TOKEN", result["access_token"])
+    print("Fresh access token saved to .env. Starting the trading bot.")
 
 
 def main() -> None:

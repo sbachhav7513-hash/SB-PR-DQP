@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -29,4 +30,8 @@ class BotConfig:
 
         with config_path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
+
+        # Secrets stay outside JSON config files and are supplied by the process environment.
+        data["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
+        data["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
         return cls(**data)

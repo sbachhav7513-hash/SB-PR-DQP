@@ -10,7 +10,8 @@ from .live_feed import LiveMarketFeed
 from .risk_manager import build_risk_plan
 from .strategy import Signal
 from .telegram_notifier import TelegramNotifier
-from .trade_journal import TradeJournal
+from .trade_journal import DecisionJournal, TradeJournal
+from .weekly_report import write_daily_summary, write_weekly_report, write_weekly_review
 
 
 def format_signal(signal: Signal) -> str:
@@ -31,6 +32,38 @@ def print_header(config: BotConfig) -> None:
     print()
 
 
+def publish_reports() -> None:
+    """Refresh the persisted analysis before the next monitoring session."""
+    try:
+        daily = write_daily_summary()
+        weekly = write_weekly_report()
+        review = write_weekly_review()
+        print(f"Reports refreshed: {daily}, {weekly}, {review}")
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Report refresh skipped: {exc}")
+
+
+def record_decision(
+    journal: DecisionJournal,
+    ticker: str,
+    signal: str,
+    score: int,
+    reasons: list[str],
+    history: list[dict],
+) -> None:
+    journal.log_decision(
+        {
+            "ticker": ticker,
+            "signal": signal,
+            "score": score,
+            "reasons": reasons,
+            "bars_available": len(history),
+            "bar": history[-1] if history else {},
+            "history": history[-10:],
+        }
+    )
+
+
 def run_bot(config: BotConfig) -> None:
     provider = MarketDataProvider()
     feed = LiveMarketFeed(provider)
@@ -38,8 +71,10 @@ def run_bot(config: BotConfig) -> None:
         token=config.telegram_token,
         chat_id=config.telegram_chat_id,
     )
-    journal = TradeJournal("trades.jsonl")
+    journal = TradeJournal("trades.jsonl", "paper_trading_data")
+    decisions = DecisionJournal("decision_log.jsonl", "paper_trading_data")
     print_header(config)
+    publish_reports()
 
     try:
         while True:
@@ -56,7 +91,24 @@ def run_bot(config: BotConfig) -> None:
                     print(f"[{ticker}] No data")
                     continue
 
-                market_score = score_market(ticker, snapshot.history)
+                minimum_bars = max(config.ema_slow + 1, config.rsi_period + 1, 40)
+                analysis_bars = max(config.lookback_bars, minimum_bars)
+                history = snapshot.history[-analysis_bars:]
+                market_score = score_market(
+                    ticker,
+                    history,
+                    ema_fast=config.ema_fast,
+                    ema_slow=config.ema_slow,
+                    rsi_period=config.rsi_period,
+                )
+                record_decision(
+                    decisions,
+                    ticker,
+                    market_score.signal,
+                    market_score.score,
+                    market_score.reasons,
+                    history,
+                )
                 print(f"[{ticker}] score={market_score.score} decision={market_score.signal}")
 
                 if market_score.signal == "BUY":
