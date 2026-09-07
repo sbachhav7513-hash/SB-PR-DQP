@@ -17,7 +17,8 @@ from .intraday_manager import IntradayManager
 from .kite_provider import KiteConfig, KiteMarketStream, Tick
 from .risk_manager import build_risk_plan
 from .telegram_notifier import TelegramNotifier
-from .trade_journal import TradeJournal
+from .trade_journal import DecisionJournal, TradeJournal
+from .weekly_report import write_weekly_report
 
 
 logging.basicConfig(
@@ -50,11 +51,19 @@ class KiteTradingBot:
             ),
             on_tick_callback=self.bar_builder.process_tick,
         )
+        self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
         self.telegram_notifier = TelegramNotifier(
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
         )
         self.trade_journal = TradeJournal("trades.jsonl")
+        self.decision_journal = DecisionJournal(
+            self.config.get("decision_log_path", "decision_log.jsonl")
+        )
+        self.weekly_report_dir = Path(
+            self.config.get("weekly_report_dir", ".")
+        )
+        self.last_weekly_report_date = None
         self.symbol_map = {v: k for k, v in self.config["instrument_tokens"].items()}
 
     def _load_config(self) -> Dict:
@@ -75,6 +84,7 @@ class KiteTradingBot:
         # Check if it's time to exit all positions (3:15 PM)
         if self.intraday_manager.should_exit_all_positions():
             self._handle_market_close_exit(symbol, bar.close)
+            self._record_decision(symbol, bar, [], None, "MARKET_CLOSE", "forced_exit_check")
             return
 
         logger.info(
@@ -85,23 +95,69 @@ class KiteTradingBot:
         bars = self.bar_builder.get_bars(token, limit=50)
         if len(bars) < 30:
             logger.debug(f"[{symbol}] Not enough bars yet ({len(bars)}/30)")
+            self._record_decision(
+                symbol,
+                bar,
+                bars,
+                None,
+                "HOLD",
+                "not_enough_bars",
+            )
             return
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in bars]
 
         # Evaluate signal
-        market_score = score_market(symbol, history)
+        try:
+            market_score = score_market(symbol, history)
+        except Exception:
+            logger.exception("[%s] Strategy evaluation failed", symbol)
+            self._record_decision(symbol, bar, bars, None, "ERROR", "strategy_error")
+            return
         logger.info(f"[{symbol}] Score={market_score.score} Signal={market_score.signal}")
 
         if market_score.signal == "BUY":
-            self._handle_buy_signal(symbol, bar.close, market_score.score)
+            outcome = self._handle_buy_signal(symbol, bar.close, market_score.score)
         elif market_score.signal == "SELL":
-            self._handle_sell_signal(symbol, bar.close, market_score.score)
+            outcome = self._handle_sell_signal(symbol, bar.close, market_score.score)
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
+            outcome = "hold"
 
-    def _handle_buy_signal(self, symbol: str, price: float, score: int) -> None:
+        self._record_decision(
+            symbol,
+            bar,
+            bars,
+            market_score,
+            market_score.signal,
+            outcome,
+        )
+
+    def _record_decision(
+        self,
+        symbol: str,
+        bar: Bar,
+        bars: list,
+        market_score,
+        signal: str,
+        outcome: str,
+    ) -> None:
+        self.decision_journal.log_decision(
+            {
+                "event": "bar_decision",
+                "bar": bar.to_dict(),
+                "ticker": symbol,
+                "signal": signal,
+                "outcome": outcome,
+                "bars_available": len(bars),
+                "history": [item.to_dict() for item in bars],
+                "score": market_score.score if market_score else None,
+                "reasons": market_score.reasons if market_score else [],
+            }
+        )
+
+    def _handle_buy_signal(self, symbol: str, price: float, score: int) -> str:
         """Handle a BUY signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
         if open_trade is None:
@@ -119,7 +175,7 @@ class KiteTradingBot:
             
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
-                return
+                return "position_size_zero"
             
             # Register position in intraday manager
             self.intraday_manager.register_position(
@@ -147,6 +203,7 @@ class KiteTradingBot:
             )
             logger.info(self.telegram_notifier.build_message(alert))
             self.telegram_notifier.send_trade_alert(alert)
+            return "trade_opened"
         else:
             pnl = self.trade_journal.update_trade_pnl(symbol, price, "BUY")
             updated = self.trade_journal.get_open_trade(symbol, "BUY")
@@ -161,10 +218,12 @@ class KiteTradingBot:
                 logger.info(self.telegram_notifier.build_message(close_alert))
                 self.telegram_notifier.send_trade_alert(close_alert)
                 self.intraday_manager.close_position(symbol, price, "TAKE_PROFIT")
+                return "trade_closed"
             else:
                 logger.info(f"[{symbol}] BUY OPEN -> current={price:.2f}, P&L={pnl:.2f}")
+                return "position_updated"
 
-    def _handle_sell_signal(self, symbol: str, price: float, score: int) -> None:
+    def _handle_sell_signal(self, symbol: str, price: float, score: int) -> str:
         """Handle a SELL signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "SELL")
         if open_trade is None:
@@ -182,7 +241,7 @@ class KiteTradingBot:
             
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
-                return
+                return "position_size_zero"
             
             # Register position in intraday manager
             self.intraday_manager.register_position(
@@ -210,6 +269,7 @@ class KiteTradingBot:
             )
             logger.info(self.telegram_notifier.build_message(alert))
             self.telegram_notifier.send_trade_alert(alert)
+            return "trade_opened"
         else:
             pnl = self.trade_journal.update_trade_pnl(symbol, price, "SELL")
             updated = self.trade_journal.get_open_trade(symbol, "SELL")
@@ -224,8 +284,10 @@ class KiteTradingBot:
                 logger.info(self.telegram_notifier.build_message(close_alert))
                 self.telegram_notifier.send_trade_alert(close_alert)
                 self.intraday_manager.close_position(symbol, price, "TAKE_PROFIT")
+                return "trade_closed"
             else:
                 logger.info(f"[{symbol}] SELL OPEN -> current={price:.2f}, P&L={pnl:.2f}")
+                return "position_updated"
 
     def _handle_market_close_exit(self, symbol: str, price: float) -> None:
         """Force exit all positions before market close (3:15 PM)."""
@@ -268,6 +330,7 @@ class KiteTradingBot:
                     now = datetime.now()
                     if (now - last_close_check).total_seconds() >= 30:
                         if self.intraday_manager.should_exit_all_positions():
+                            self._run_weekly_report_if_due(now)
                             positions = self.intraday_manager.get_all_open_positions()
                             if positions:
                                 logger.warning(
@@ -285,6 +348,24 @@ class KiteTradingBot:
         finally:
             self.kite_stream.stop()
             logger.info("Bot shutdown complete")
+
+    def _run_weekly_report_if_due(self, now: datetime) -> None:
+        """Publish one protected weekly report after Friday's close check."""
+        if now.weekday() != 4 or self.last_weekly_report_date == now.date():
+            return
+        try:
+            report_path = write_weekly_report(
+                data_dir=".",
+                days=self.config.get("weekly_report_days", 7),
+                output_dir=str(self.weekly_report_dir),
+            )
+            if report_path.exists():
+                self.last_weekly_report_date = now.date()
+                logger.info("Automatic weekly report written to %s", report_path)
+            else:
+                logger.error("Weekly report was not published; it will be retried")
+        except Exception:
+            logger.exception("Weekly analytics failed; trading remains active")
 
 
 def main() -> None:
