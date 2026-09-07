@@ -1,6 +1,6 @@
 {
-  "kite_api_key": "your_api_key_from_kite",
-  "kite_access_token": "your_access_token_from_kite",
+  "kite_api_key": null,
+  "kite_access_token": null,
   "trading_mode": "intraday_futures",
   "market_close_time": "15:15",
   "account_size": 100000,
@@ -23,7 +23,10 @@
     "SUNPHARMA": 857857
   },
   "bar_interval_seconds": 60,
+  "benchmark_symbol": "NIFTY",
+  "use_market_context": true,
   "decision_log_path": "decision_log.jsonl",
+  "paper_trading_dir": "paper_trading_data",
   "weekly_report_dir": ".",
   "weekly_report_days": 7,
   "ema_fast": 9,
@@ -33,6 +36,6 @@
   "alert_rsi_high": 70,
   "stop_loss_pct": 0.75,
   "take_profit_pct": 1.5,
-  "telegram_token": "",
-  "telegram_chat_id": ""
+  "telegram_token": null,
+  "telegram_chat_id": null
 }

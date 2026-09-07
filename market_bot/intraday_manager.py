@@ -6,8 +6,10 @@ Handles position sizing, time-based exits, and leverage management
 from datetime import datetime, time as time_type
 from typing import Optional, Dict
 import logging
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class IntradayManager:
@@ -21,6 +23,10 @@ class IntradayManager:
     # Leverage & sizing for futures
     NIFTY_LOT_SIZE = 50  # 1 NIFTY lot = 50 units
     BANKNIFTY_LOT_SIZE = 15  # 1 BANKNIFTY lot = 15 units
+    LOT_SIZES = {
+        "NIFTY": NIFTY_LOT_SIZE,
+        "BANKNIFTY": BANKNIFTY_LOT_SIZE,
+    }
     
     # Instrument multipliers (per point value in INR)
     MULTIPLIERS = {
@@ -57,12 +63,12 @@ class IntradayManager:
     
     def is_trading_hours(self) -> bool:
         """Check if current time is within trading hours."""
-        now = datetime.now().time()
+        now = datetime.now(IST).time()
         return self.MARKET_OPEN <= now < self.MARKET_CLOSE
     
     def should_exit_all_positions(self) -> bool:
         """Check if it's time to exit all positions (3:15 PM)."""
-        now = datetime.now().time()
+        now = datetime.now(IST).time()
         return now >= self.AUTO_EXIT_TIME
     
     def calculate_position_size(
@@ -92,25 +98,27 @@ class IntradayManager:
         # Get multiplier for this symbol
         multiplier = self.MULTIPLIERS.get(symbol, 1)
         
-        # Calculate risk in rupees per contract
-        risk_per_contract = risk_points * multiplier
+        lot_size = self.LOT_SIZES.get(symbol, 1)
+        # Futures risk is based on the complete lot, not one index point unit.
+        risk_per_lot = risk_points * multiplier * lot_size
         
         # Calculate contracts based on max risk
-        if risk_per_contract > 0:
-            contracts = int(self.max_risk_per_trade / risk_per_contract)
+        if risk_per_lot > 0:
+            lots = int(self.max_risk_per_trade / risk_per_lot)
         else:
-            contracts = 0
+            lots = 0
         
-        # Minimum 1 contract, maximum safety limit
-        contracts = max(1, min(contracts, 5))
+        # Minimum 1 lot, maximum safety limit, returned as exchange quantity.
+        lots = max(1, min(lots, 5))
+        quantity = lots * lot_size
         
         logger.info(
             f"[{symbol}] Position Size Calc: Entry={entry_price:.2f}, "
             f"SL={stop_loss_price:.2f}, Risk={risk_points:.2f}pts, "
-            f"Contracts={contracts}"
+            f"Lots={lots}, Quantity={quantity}"
         )
         
-        return contracts
+        return quantity
     
     def register_position(self, symbol: str, direction: str, quantity: int, 
                          entry_price: float, stop_loss: float, take_profit: float) -> None:
@@ -121,7 +129,7 @@ class IntradayManager:
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "entry_time": datetime.now(),
+            "entry_time": datetime.now(IST),
         }
         logger.info(
             f"[{symbol}] Position registered: {direction} {quantity} "
@@ -165,7 +173,7 @@ class IntradayManager:
             "pnl_rupees": pnl_rupees,
             "pnl_pct": pnl_pct,
             "reason": reason,
-            "duration": (datetime.now() - pos["entry_time"]).total_seconds(),
+            "duration": (datetime.now(IST) - pos["entry_time"]).total_seconds(),
         }
         
         logger.info(
