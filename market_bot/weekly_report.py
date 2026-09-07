@@ -44,6 +44,52 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+def _performance_by_key(
+    trades: List[Dict[str, Any]], key_name: str
+) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, List[float]] = defaultdict(list)
+    for trade in trades:
+        if key_name == "hour":
+            try:
+                key = str(datetime.fromisoformat(trade.get("timestamp", "")).hour)
+            except (TypeError, ValueError):
+                continue
+        else:
+            key = str(trade.get(key_name, "UNKNOWN"))
+        grouped[key].append(_number(trade.get("pnl", trade.get("profit", 0))))
+
+    performance: Dict[str, Dict[str, Any]] = {}
+    for key, pnls in grouped.items():
+        wins = sum(1 for pnl in pnls if pnl > 0)
+        performance[key] = {
+            "trades": len(pnls),
+            "wins": wins,
+            "losses": len(pnls) - wins,
+            "win_rate": round(wins / len(pnls) * 100, 2),
+            "total_pnl": round(sum(pnls), 2),
+        }
+    return performance
+
+
+def _load_filter_stats(root: Path, days: int) -> Dict[str, int]:
+    names = (
+        "volatility_rejected",
+        "confirmation_rejected",
+        "cooldown_rejected",
+        "hours_rejected",
+        "threshold_rejected",
+    )
+    stats = {name: 0 for name in names}
+    stats["approved_entries"] = 0
+    for entry in _load_jsonl(root / "filter_log.jsonl", days):
+        if entry.get("action") == "APPROVED":
+            stats["approved_entries"] += 1
+        elif entry.get("action") == "REJECTED" and entry.get("filter") in stats:
+            stats[entry["filter"]] += 1
+    stats["total_rejected"] = sum(stats[name] for name in names)
+    return stats
+
+
 def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
     root = Path(data_dir)
     trades = [
@@ -72,6 +118,12 @@ def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
     profiles.sort(key=lambda item: item["average_pnl"], reverse=True)
 
     pnl_values = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    wins = [pnl for pnl in pnl_values if pnl > 0]
+    losses = [pnl for pnl in pnl_values if pnl <= 0]
+    total_loss = sum(losses)
+    outcome_counts: Dict[str, int] = defaultdict(int)
+    for decision in decisions:
+        outcome_counts[decision.get("outcome", "UNKNOWN")] += 1
     news_risk_counts = {
         level: sum(1 for item in decisions if item.get("news_risk") == level)
         for level in ("NORMAL", "ELEVATED", "HIGH", "UNKNOWN", "DISABLED")
@@ -85,14 +137,25 @@ def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
         "period_days": days,
         "closed_trades": len(trades),
         "total_pnl": round(sum(pnl_values), 2),
+        "winning_trades": len(wins),
+        "losing_trades": len(losses),
         "win_rate": round(
             sum(1 for pnl in pnl_values if pnl > 0) / len(pnl_values) * 100, 2
         ) if pnl_values else 0.0,
+        "average_win": round(sum(wins) / len(wins), 2) if wins else 0.0,
+        "average_loss": round(sum(losses) / len(losses), 2) if losses else 0.0,
+        "largest_win": round(max(pnl_values), 2) if pnl_values else 0.0,
+        "largest_loss": round(min(pnl_values), 2) if pnl_values else 0.0,
+        "profit_factor": round(sum(wins) / abs(total_loss), 2) if total_loss else 0.0,
         "decisions_recorded": len(decisions),
         "signal_counts": {
             signal: sum(1 for item in decisions if item.get("signal") == signal)
             for signal in ("BUY", "SELL", "HOLD", "ERROR")
         },
+        "outcome_counts": dict(outcome_counts),
+        "performance_by_symbol": _performance_by_key(trades, "ticker"),
+        "performance_by_hour": _performance_by_key(trades, "hour"),
+        "filter_stats": _load_filter_stats(root, days),
         "news_summary": {
             "risk_counts": news_risk_counts,
             "suppressed_entries": news_suppressed_entries,

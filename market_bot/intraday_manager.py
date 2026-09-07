@@ -110,14 +110,21 @@ class IntradayManager:
         # Futures risk is based on the complete lot, not one index point unit.
         risk_per_lot = risk_points * multiplier * lot_size
         
-        # Calculate contracts based on max risk
-        if risk_per_lot > 0:
-            lots = int(self.max_risk_per_trade / risk_per_lot)
-        else:
-            lots = 0
-        
-        # Minimum 1 lot, maximum safety limit, returned as exchange quantity.
-        lots = max(1, min(lots, 5))
+        # Never force a lot when the configured risk budget cannot support it.
+        if risk_per_lot <= 0:
+            return 0
+        lots = int(self.max_risk_per_trade / risk_per_lot)
+        if lots < 1:
+            logger.warning(
+                "[%s] One lot risks %.2f, above the configured limit of %.2f; skipping",
+                symbol,
+                risk_per_lot,
+                self.max_risk_per_trade,
+            )
+            return 0
+
+        # Cap the number of lots as an additional safety limit.
+        lots = min(lots, 5)
         quantity = lots * lot_size
         
         logger.info(
