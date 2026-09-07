@@ -60,6 +60,10 @@ class IntradayManager:
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_risk_per_trade = (account_size * risk_per_trade_pct) / 100.0
         self.active_positions: Dict[str, dict] = {}
+        self.contract_specs: Dict[str, dict] = {}
+
+    def set_contract_specs(self, specs: Dict[str, dict]) -> None:
+        self.contract_specs = dict(specs)
     
     def is_trading_hours(self) -> bool:
         """Check if current time is within trading hours."""
@@ -96,9 +100,13 @@ class IntradayManager:
             return 0
         
         # Get multiplier for this symbol
-        multiplier = self.MULTIPLIERS.get(symbol, 1)
+        multiplier = self.contract_specs.get(symbol, {}).get(
+            "multiplier", self.MULTIPLIERS.get(symbol, 1)
+        )
         
-        lot_size = self.LOT_SIZES.get(symbol, 1)
+        lot_size = self.contract_specs.get(symbol, {}).get(
+            "lot_size", self.LOT_SIZES.get(symbol, 1)
+        )
         # Futures risk is based on the complete lot, not one index point unit.
         risk_per_lot = risk_points * multiplier * lot_size
         
@@ -152,7 +160,9 @@ class IntradayManager:
             return None
         
         pos = self.active_positions.pop(symbol)
-        multiplier = self.MULTIPLIERS.get(symbol, 1)
+        multiplier = self.contract_specs.get(symbol, {}).get(
+            "multiplier", self.MULTIPLIERS.get(symbol, 1)
+        )
         
         # Calculate P&L
         if pos["direction"] == "BUY":

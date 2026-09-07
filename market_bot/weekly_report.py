@@ -72,6 +72,14 @@ def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
     profiles.sort(key=lambda item: item["average_pnl"], reverse=True)
 
     pnl_values = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    news_risk_counts = {
+        level: sum(1 for item in decisions if item.get("news_risk") == level)
+        for level in ("NORMAL", "ELEVATED", "HIGH", "UNKNOWN", "DISABLED")
+    }
+    news_suppressed_entries = sum(
+        1 for item in decisions
+        if any("news risk" in reason.lower() for reason in item.get("reasons", []))
+    )
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "period_days": days,
@@ -84,6 +92,10 @@ def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
         "signal_counts": {
             signal: sum(1 for item in decisions if item.get("signal") == signal)
             for signal in ("BUY", "SELL", "HOLD", "ERROR")
+        },
+        "news_summary": {
+            "risk_counts": news_risk_counts,
+            "suppressed_entries": news_suppressed_entries,
         },
         "best_observed_profiles": profiles[:5],
         "recommendation": (
@@ -197,6 +209,8 @@ def write_weekly_review(
         f"- Total P&L: {report['total_pnl']:.2f}",
         f"- Win rate: {report['win_rate']:.2f}%",
         f"- Decisions recorded: {report['decisions_recorded']}",
+        f"- High-news-risk decisions: {report['news_summary']['risk_counts'].get('HIGH', 0)}",
+        f"- Entries suppressed by news filter: {report['news_summary']['suppressed_entries']}",
         "",
         "## What Needs Attention",
         *[f"- {issue}" for issue in issues],

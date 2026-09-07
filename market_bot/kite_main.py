@@ -17,6 +17,7 @@ from .bar_builder import BarBuilder, Bar
 from .engine import score_market
 from .intraday_manager import IntradayManager
 from .kite_provider import KiteConfig, KiteMarketStream, Tick
+from .market_news import NewsMonitor, apply_news_filter
 from .risk_manager import build_risk_plan
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, TradeJournal
@@ -51,10 +52,15 @@ class KiteTradingBot:
                 api_key=self.config["kite_api_key"],
                 access_token=self.config["kite_access_token"],
                 instrument_tokens=self.config["instrument_tokens"],
+                futures_underlyings=self.config.get("futures_underlyings", []),
+                auto_discover_futures=self.config.get("auto_discover_futures", False),
+                max_futures=self.config.get("max_futures", 20),
+                min_futures_volume=self.config.get("min_futures_volume", 0),
             ),
             on_tick_callback=self._on_tick,
         )
         self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
+        self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
         self.telegram_notifier = TelegramNotifier(
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
@@ -74,6 +80,10 @@ class KiteTradingBot:
         self.latest_prices: Dict[str, float] = {}
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
+        self.news_monitor = NewsMonitor(
+            feeds=self.config.get("news_feeds"),
+            refresh_seconds=self.config.get("news_refresh_seconds", 900),
+        ) if self.config.get("news_enabled", True) else None
 
     def _load_config(self) -> Dict:
         """Load configuration from JSON file."""
@@ -152,6 +162,14 @@ class KiteTradingBot:
             logger.exception("[%s] Strategy evaluation failed", symbol)
             self._record_decision(symbol, bar, bars, None, "ERROR", "strategy_error")
             return
+        news_context = self.news_monitor.snapshot() if self.news_monitor else None
+        if news_context:
+            filtered_signal, news_reason = apply_news_filter(
+                market_score.signal, news_context
+            )
+            if news_reason:
+                market_score.signal = filtered_signal
+                market_score.reasons.append(news_reason)
         logger.info(f"[{symbol}] Score={market_score.score} Signal={market_score.signal}")
 
         if market_score.signal == "BUY":
@@ -169,6 +187,7 @@ class KiteTradingBot:
             market_score,
             market_score.signal,
             outcome,
+            news_context,
         )
 
     def _on_tick(self, tick: Tick) -> None:
@@ -244,6 +263,7 @@ class KiteTradingBot:
         market_score,
         signal: str,
         outcome: str,
+        news_context=None,
     ) -> None:
         self.decision_journal.log_decision(
             {
@@ -256,6 +276,9 @@ class KiteTradingBot:
                 "history": [item.to_dict() for item in bars],
                 "score": market_score.score if market_score else None,
                 "reasons": market_score.reasons if market_score else [],
+                "news_risk": news_context.risk_level if news_context else "DISABLED",
+                "news_sentiment": news_context.sentiment if news_context else "DISABLED",
+                "news_headlines": news_context.headlines[:5] if news_context else [],
             }
         )
 
@@ -406,6 +429,8 @@ class KiteTradingBot:
         logger.info(f"Risk per trade: {self.intraday_manager.risk_per_trade_pct}%")
 
         try:
+            if self.news_monitor:
+                self.news_monitor.start()
             self.kite_stream.start()
             logger.info("Waiting for WebSocket connection...")
             if self.kite_stream.wait_for_connection(timeout=15):
@@ -434,6 +459,8 @@ class KiteTradingBot:
         except KeyboardInterrupt:
             logger.info("Bot stopped by user")
         finally:
+            if self.news_monitor:
+                self.news_monitor.stop()
             self.kite_stream.stop()
             logger.info("Bot shutdown complete")
 

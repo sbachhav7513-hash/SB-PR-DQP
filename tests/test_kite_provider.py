@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from unittest.mock import Mock, patch
 
 from market_bot.kite_provider import KiteConfig, KiteMarketStream
@@ -50,3 +51,42 @@ def test_refresh_instrument_tokens_fails_for_unresolved_symbols():
         assert "REMOVED" in str(exc)
     else:
         raise AssertionError("Expected unresolved symbols to fail startup validation")
+
+
+def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "INFY",
+            "tradingsymbol": "INFYFUT",
+            "instrument_type": "FUT",
+            "expiry": today + timedelta(days=30),
+            "instrument_token": 300,
+            "lot_size": 500,
+        },
+        {
+            "name": "INFY",
+            "tradingsymbol": "INFYFUTOLD",
+            "instrument_type": "FUT",
+            "expiry": today - timedelta(days=1),
+            "instrument_token": 301,
+            "lot_size": 500,
+        },
+    ]
+    kite.ltp.return_value = {"300": {"last_price": 1500.0}}
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                futures_underlyings=["INFY"],
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {"INFY": 300}
+    assert stream.contract_specs == {"INFY": {"lot_size": 500, "multiplier": 1}}
+    kite.ltp.assert_called_once_with(["300"])
