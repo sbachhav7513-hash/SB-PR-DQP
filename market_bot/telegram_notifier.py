@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
@@ -25,8 +29,16 @@ class TelegramNotifier:
         try:
             response = requests.post(url, data=data, timeout=10)
             response.raise_for_status()
+            result = response.json()
+            if not result.get("ok"):
+                logger.error("Telegram rejected alert: %s", result.get("description", "unknown error"))
+                return False
             return True
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            logger.error("Telegram alert request failed: %s", exc)
+            return False
+        except ValueError as exc:
+            logger.error("Telegram returned an invalid response: %s", exc)
             return False
 
     def format_trade(self, ticker: str, action: str, score: int, entry: float, stop_loss: float, take_profit: float) -> Dict[str, Any]:

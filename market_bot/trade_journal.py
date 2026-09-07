@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+logger = logging.getLogger(__name__)
+
+
+class DecisionJournal:
+    """Append-only audit log for market data and strategy decisions."""
+
+    def __init__(self, path: str = "decision_log.jsonl") -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log_decision(self, payload: Dict[str, Any]) -> None:
+        entry = dict(payload)
+        entry.setdefault("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
+        try:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, default=str) + "\n")
+        except (OSError, TypeError, ValueError):
+            # Observability must never interrupt live order handling.
+            logger.exception("Could not write decision audit record to %s", self.path)
 
 
 class TradeJournal:
@@ -30,10 +52,13 @@ class TradeJournal:
 
         trades: List[Dict[str, Any]] = []
         with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, 1):
                 line = line.strip()
                 if line:
-                    trades.append(json.loads(line))
+                    try:
+                        trades.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning("Skipping invalid trade journal line %s", line_number)
         return trades
 
     def get_open_trade(self, ticker: str, action: Optional[str] = None) -> Optional[Dict[str, Any]]:

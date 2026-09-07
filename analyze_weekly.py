@@ -30,7 +30,7 @@ def load_trades(days=7):
                         trade = json.loads(line)
                         trade_time = datetime.fromisoformat(trade.get('timestamp', ''))
                         
-                        if trade_time > cutoff_date:
+                        if trade_time > cutoff_date and trade.get('status') == 'closed':
                             trades.append(trade)
                     except (json.JSONDecodeError, ValueError) as e:
                         continue
@@ -39,6 +39,57 @@ def load_trades(days=7):
         return []
     
     return trades
+
+def load_decisions(days=7):
+    """Load strategy decisions and their analyzed market windows."""
+    decisions = []
+    decision_file = Path('decision_log.jsonl')
+    if not decision_file.exists():
+        print("⚠️  Note: decision_log.jsonl not found yet (restart the bot after this update)")
+        return decisions
+
+    cutoff_date = datetime.now() - timedelta(days=days)
+    try:
+        with open(decision_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    decision = json.loads(line)
+                    decision_time = datetime.fromisoformat(decision.get('timestamp', ''))
+                    if decision_time > cutoff_date:
+                        decisions.append(decision)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except OSError as e:
+        print(f"⚠️  Could not read decision_log.jsonl: {e}")
+    return decisions
+
+def analyze_decisions(decisions):
+    """Summarize what the strategy evaluated, rejected, and attempted."""
+    signal_counts = defaultdict(int)
+    outcome_counts = defaultdict(int)
+    symbol_counts = defaultdict(lambda: {'bars': 0, 'buy': 0, 'sell': 0, 'hold': 0})
+
+    for decision in decisions:
+        signal = decision.get('signal', 'UNKNOWN')
+        symbol = decision.get('ticker', 'UNKNOWN')
+        signal_counts[signal] += 1
+        outcome_counts[decision.get('outcome', 'UNKNOWN')] += 1
+        symbol_counts[symbol]['bars'] += 1
+        if signal == 'BUY':
+            symbol_counts[symbol]['buy'] += 1
+        elif signal == 'SELL':
+            symbol_counts[symbol]['sell'] += 1
+        elif signal == 'HOLD':
+            symbol_counts[symbol]['hold'] += 1
+
+    return {
+        'total_decisions': len(decisions),
+        'signal_counts': dict(signal_counts),
+        'outcome_counts': dict(outcome_counts),
+        'symbol_counts': dict(symbol_counts),
+    }
 
 def load_filter_stats(days=7):
     """Load filter statistics"""
@@ -93,15 +144,16 @@ def analyze_trades(trades):
     
     # Basic counts
     total_trades = len(trades)
-    wins = [t for t in trades if t.get('profit', 0) > 0]
-    losses = [t for t in trades if t.get('profit', 0) <= 0]
+    profit = lambda trade: float(trade.get('pnl', trade.get('profit', 0)) or 0)
+    wins = [t for t in trades if profit(t) > 0]
+    losses = [t for t in trades if profit(t) <= 0]
     win_count = len(wins)
     loss_count = len(losses)
     
     # Financial metrics
-    total_profit = sum(t.get('profit', 0) for t in trades)
-    win_sum = sum(t.get('profit', 0) for t in wins) if wins else 0
-    loss_sum = sum(t.get('profit', 0) for t in losses) if losses else 0
+    total_profit = sum(profit(t) for t in trades)
+    win_sum = sum(profit(t) for t in wins) if wins else 0
+    loss_sum = sum(profit(t) for t in losses) if losses else 0
     
     avg_win = win_sum / len(wins) if wins else 0
     avg_loss = loss_sum / len(losses) if losses else 0
@@ -111,12 +163,12 @@ def analyze_trades(trades):
     symbol_stats = defaultdict(lambda: {'wins': 0, 'losses': 0, 'profit': 0, 'count': 0})
     
     for trade in trades:
-        symbol = trade.get('symbol', 'UNKNOWN')
-        profit = trade.get('profit', 0)
+        symbol = trade.get('ticker', trade.get('symbol', 'UNKNOWN'))
+        trade_profit = profit(trade)
         symbol_stats[symbol]['count'] += 1
-        symbol_stats[symbol]['profit'] += profit
+        symbol_stats[symbol]['profit'] += trade_profit
         
-        if profit > 0:
+        if trade_profit > 0:
             symbol_stats[symbol]['wins'] += 1
         else:
             symbol_stats[symbol]['losses'] += 1
@@ -128,12 +180,12 @@ def analyze_trades(trades):
         try:
             trade_time = datetime.fromisoformat(trade.get('timestamp', ''))
             hour = trade_time.hour
-            profit = trade.get('profit', 0)
+            trade_profit = profit(trade)
             
             hour_stats[hour]['count'] += 1
-            hour_stats[hour]['profit'] += profit
+            hour_stats[hour]['profit'] += trade_profit
             
-            if profit > 0:
+            if trade_profit > 0:
                 hour_stats[hour]['wins'] += 1
             else:
                 hour_stats[hour]['losses'] += 1
@@ -149,14 +201,14 @@ def analyze_trades(trades):
         'avg_win': avg_win,
         'avg_loss': avg_loss,
         'profit_factor': profit_factor,
-        'largest_win': max((t.get('profit', 0) for t in trades), default=0),
-        'largest_loss': min((t.get('profit', 0) for t in trades), default=0),
+        'largest_win': max((profit(t) for t in trades), default=0),
+        'largest_loss': min((profit(t) for t in trades), default=0),
         'symbol_stats': dict(symbol_stats),
         'hour_stats': dict(hour_stats),
         'trades': trades
     }
 
-def print_report(analysis, filter_stats):
+def print_report(analysis, filter_stats, decision_analysis):
     """Print formatted report"""
     
     print("\n" + "="*70)
@@ -182,6 +234,16 @@ def print_report(analysis, filter_stats):
     print(f"Largest Win:         ₹{analysis['largest_win']:,.2f}")
     print(f"Largest Loss:        ₹{analysis['largest_loss']:,.2f}")
     print(f"Profit Factor:       {analysis['profit_factor']:.2f}x")
+
+    print("\n🧠 STRATEGY DECISION AUDIT")
+    print("-" * 70)
+    print(f"Bars analyzed:        {decision_analysis['total_decisions']}")
+    print(f"BUY signals:          {decision_analysis['signal_counts'].get('BUY', 0)}")
+    print(f"SELL signals:         {decision_analysis['signal_counts'].get('SELL', 0)}")
+    print(f"HOLD decisions:       {decision_analysis['signal_counts'].get('HOLD', 0)}")
+    print(f"Strategy errors:      {decision_analysis['outcome_counts'].get('strategy_error', 0)}")
+    print(f"Trades opened:        {decision_analysis['outcome_counts'].get('trade_opened', 0)}")
+    print(f"Skipped:              {decision_analysis['outcome_counts'].get('position_size_zero', 0)}")
     
     # By Symbol
     print("\n📍 PERFORMANCE BY SYMBOL")
@@ -272,7 +334,7 @@ def print_report(analysis, filter_stats):
     print("  4. Share with trading coach for code updates")
     print("="*70 + "\n")
 
-def save_report_json(analysis, filter_stats):
+def save_report_json(analysis, filter_stats, decision_analysis):
     """Save analysis to JSON file"""
     report = {
         'generated': datetime.now().isoformat(),
@@ -286,7 +348,8 @@ def save_report_json(analysis, filter_stats):
         },
         'symbol_stats': analysis['symbol_stats'],
         'hour_stats': analysis['hour_stats'],
-        'filter_stats': filter_stats
+        'filter_stats': filter_stats,
+        'decision_analysis': decision_analysis,
     }
     
     filename = f"weekly_report_{datetime.now().strftime('%Y_%m_%d')}.json"
@@ -302,21 +365,28 @@ def main():
     
     # Load data
     trades = load_trades(days)
+    decisions = load_decisions(days)
     filter_stats = load_filter_stats(days)
+    decision_analysis = analyze_decisions(decisions)
     
-    if not trades:
+    if not trades and not decisions:
         print("\n❌ No trades found. Run the bot first:")
         print("   python run_kite_bot.py")
+        return
+
+    if not trades:
+        print("\n⚠️  Decisions were recorded, but no completed trades are available yet.")
+        print(json.dumps(decision_analysis, indent=2, default=str))
         return
     
     # Analyze
     analysis = analyze_trades(trades)
     
     # Print report
-    print_report(analysis, filter_stats)
+    print_report(analysis, filter_stats, decision_analysis)
     
     # Save JSON
-    save_report_json(analysis, filter_stats)
+    save_report_json(analysis, filter_stats, decision_analysis)
 
 if __name__ == '__main__':
     main()

@@ -150,7 +150,7 @@ Force exit @ current price
 
 ### Prerequisites
 1. Zerodha account with Kite Connect API enabled
-2. API credentials (key & access token)
+2. API credentials (key, secret, and configured redirect URL)
 3. Telegram bot token & chat ID
 4. Python 3.11+
 
@@ -161,10 +161,22 @@ vim kite_config.json
 
 # Add your:
 # - kite_api_key
-# - kite_access_token
 # - telegram_token
 # - telegram_chat_id
 ```
+
+Start the combined authorization and trading command before each trading
+session. The request token is single-use and the access token expires daily:
+
+```bash
+python run_kite_bot.py
+```
+
+The redirect URL configured in the Kite Connect app must be
+`http://127.0.0.1:8000/`. Enter the API secret when prompted. The bot starts
+automatically after authorization. If Kite reports `Invalid user session`, run
+`python run_kite_bot.py` again and complete the login in the newly opened
+browser tab; do not retry the same callback URL.
 
 ### Step 2: Start the Bot
 ```bash
