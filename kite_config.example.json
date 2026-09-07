@@ -5,6 +5,18 @@
   "market_close_time": "15:15",
   "account_size": 100000,
   "risk_per_trade_pct": 1.0,
+  "futures_underlyings": [
+    "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
+    "SBIN", "AXISBANK", "INFY", "TCS", "LT", "MARUTI", "SUNPHARMA",
+    "HINDALCO", "JSWSTEEL", "TATASTEEL", "BHARTIARTL", "KOTAKBANK",
+    "ADANIENT", "M&M", "TATAMOTORS", "COALINDIA", "NTPC", "POWERGRID",
+    "ONGC", "EICHERMOT", "HINDUNILVR"
+  ],
+  "auto_discover_futures": true,
+  "max_futures": 20,
+  "min_futures_volume": 0,
+  "news_enabled": true,
+  "news_refresh_seconds": 900,
   "instrument_tokens": {
     "NIFTY": 256265,
     "BANKNIFTY": 260105,
