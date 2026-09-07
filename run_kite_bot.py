@@ -48,7 +48,7 @@ def has_valid_access_token(config_path: Path) -> bool:
     return True
 
 
-def authorize(config_path: Path) -> None:
+def authorize(config_path: Path, open_browser: bool = False) -> None:
     with config_path.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
@@ -102,9 +102,17 @@ def authorize(config_path: Path) -> None:
             "Close another authorization process and try again."
         ) from exc
 
-    print("Complete Kite authorization in the browser window that opens.")
+    login_url = kite.login_url()
+    if open_browser:
+        print("Complete Kite authorization in the browser window that opens.")
+        webbrowser.open(login_url)
+    else:
+        print("Open this Kite login URL in your local browser:")
+        print(login_url)
+        print(
+            "Keep the SSH tunnel to 127.0.0.1:8000 open so Kite can return to this process."
+        )
     print("A fresh authorization is required because Kite access tokens expire daily.")
-    webbrowser.open(kite.login_url())
     try:
         server.serve_forever()
     finally:
@@ -123,10 +131,15 @@ def authorize(config_path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="kite_config.json", type=Path)
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Open the Kite login page locally instead of printing its URL.",
+    )
     args = parser.parse_args()
 
     if not has_valid_access_token(args.config):
-        authorize(args.config)
+        authorize(args.config, open_browser=args.open_browser)
     KiteTradingBot(str(args.config)).run()
 
 
