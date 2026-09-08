@@ -6,8 +6,10 @@ Handles position sizing, time-based exits, and leverage management
 from datetime import datetime, time as time_type
 from typing import Optional, Dict
 import logging
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class IntradayManager:
@@ -21,6 +23,10 @@ class IntradayManager:
     # Leverage & sizing for futures
     NIFTY_LOT_SIZE = 50  # 1 NIFTY lot = 50 units
     BANKNIFTY_LOT_SIZE = 15  # 1 BANKNIFTY lot = 15 units
+    LOT_SIZES = {
+        "NIFTY": NIFTY_LOT_SIZE,
+        "BANKNIFTY": BANKNIFTY_LOT_SIZE,
+    }
     
     # Instrument multipliers (per point value in INR)
     MULTIPLIERS = {
@@ -54,15 +60,19 @@ class IntradayManager:
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_risk_per_trade = (account_size * risk_per_trade_pct) / 100.0
         self.active_positions: Dict[str, dict] = {}
+        self.contract_specs: Dict[str, dict] = {}
+
+    def set_contract_specs(self, specs: Dict[str, dict]) -> None:
+        self.contract_specs = dict(specs)
     
     def is_trading_hours(self) -> bool:
         """Check if current time is within trading hours."""
-        now = datetime.now().time()
+        now = datetime.now(IST).time()
         return self.MARKET_OPEN <= now < self.MARKET_CLOSE
     
     def should_exit_all_positions(self) -> bool:
         """Check if it's time to exit all positions (3:15 PM)."""
-        now = datetime.now().time()
+        now = datetime.now(IST).time()
         return now >= self.AUTO_EXIT_TIME
     
     def calculate_position_size(
@@ -90,27 +100,40 @@ class IntradayManager:
             return 0
         
         # Get multiplier for this symbol
-        multiplier = self.MULTIPLIERS.get(symbol, 1)
+        multiplier = self.contract_specs.get(symbol, {}).get(
+            "multiplier", self.MULTIPLIERS.get(symbol, 1)
+        )
         
-        # Calculate risk in rupees per contract
-        risk_per_contract = risk_points * multiplier
+        lot_size = self.contract_specs.get(symbol, {}).get(
+            "lot_size", self.LOT_SIZES.get(symbol, 1)
+        )
+        # Futures risk is based on the complete lot, not one index point unit.
+        risk_per_lot = risk_points * multiplier * lot_size
         
-        # Calculate contracts based on max risk
-        if risk_per_contract > 0:
-            contracts = int(self.max_risk_per_trade / risk_per_contract)
-        else:
-            contracts = 0
-        
-        # Minimum 1 contract, maximum safety limit
-        contracts = max(1, min(contracts, 5))
+        # Never force a lot when the configured risk budget cannot support it.
+        if risk_per_lot <= 0:
+            return 0
+        lots = int(self.max_risk_per_trade / risk_per_lot)
+        if lots < 1:
+            logger.warning(
+                "[%s] One lot risks %.2f, above the configured limit of %.2f; skipping",
+                symbol,
+                risk_per_lot,
+                self.max_risk_per_trade,
+            )
+            return 0
+
+        # Cap the number of lots as an additional safety limit.
+        lots = min(lots, 5)
+        quantity = lots * lot_size
         
         logger.info(
             f"[{symbol}] Position Size Calc: Entry={entry_price:.2f}, "
             f"SL={stop_loss_price:.2f}, Risk={risk_points:.2f}pts, "
-            f"Contracts={contracts}"
+            f"Lots={lots}, Quantity={quantity}"
         )
         
-        return contracts
+        return quantity
     
     def register_position(self, symbol: str, direction: str, quantity: int, 
                          entry_price: float, stop_loss: float, take_profit: float) -> None:
@@ -121,7 +144,7 @@ class IntradayManager:
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "entry_time": datetime.now(),
+            "entry_time": datetime.now(IST),
         }
         logger.info(
             f"[{symbol}] Position registered: {direction} {quantity} "
@@ -144,7 +167,9 @@ class IntradayManager:
             return None
         
         pos = self.active_positions.pop(symbol)
-        multiplier = self.MULTIPLIERS.get(symbol, 1)
+        multiplier = self.contract_specs.get(symbol, {}).get(
+            "multiplier", self.MULTIPLIERS.get(symbol, 1)
+        )
         
         # Calculate P&L
         if pos["direction"] == "BUY":
@@ -165,7 +190,7 @@ class IntradayManager:
             "pnl_rupees": pnl_rupees,
             "pnl_pct": pnl_pct,
             "reason": reason,
-            "duration": (datetime.now() - pos["entry_time"]).total_seconds(),
+            "duration": (datetime.now(IST) - pos["entry_time"]).total_seconds(),
         }
         
         logger.info(

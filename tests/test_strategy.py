@@ -1,6 +1,6 @@
 import random
 
-from market_bot.engine import score_market
+from market_bot.engine import filter_signal_by_context, market_context_signal, score_market
 from market_bot.strategy import analyze_history
 
 
@@ -74,3 +74,13 @@ def test_weak_noisy_uptrend_does_not_trigger_buy_signal():
 
     assert result.signal == "HOLD"
     assert result.score < 80
+
+
+def test_bearish_benchmark_blocks_buy_signal():
+    benchmark_history = [{"close": 200.0 - index} for index in range(40)]
+
+    signal, reason = filter_signal_by_context("BUY", benchmark_history)
+
+    assert market_context_signal(benchmark_history) == "BEARISH"
+    assert signal == "HOLD"
+    assert reason == "Benchmark trend bearish"
