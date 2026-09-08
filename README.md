@@ -50,6 +50,8 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Read [SECURITY.md](SECURITY.md) before adding Telegram or Kite credentials. Runtime secrets are read from environment variables and are not taken from JSON config files.
+
 ### 2. Configuration
 
 Copy the example configuration:
@@ -72,10 +74,12 @@ Edit `config.json` with your preferred settings:
   "alert_rsi_high": 65,
   "stop_loss_pct": 1.5,
   "take_profit_pct": 3.0,
-  "telegram_token": "YOUR_BOT_TOKEN",
-  "telegram_chat_id": "YOUR_CHAT_ID"
+  "telegram_token": null,
+  "telegram_chat_id": null
 }
 ```
+
+For PowerShell, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the terminal before running the bot. Do not commit or share those values.
 
 #### Configuration Parameters
 
@@ -101,6 +105,8 @@ python run_bot.py
 ```
 
 The bot will start polling market data every 60 seconds and display trading signals in the console.
+
+On every start it also refreshes the daily summary, weekly JSON report, and paper-trading review from the previous runs. During monitoring it records every BUY, SELL, and HOLD decision, including the score, reasons, and recent bars, in `decision_log.jsonl` and `paper_trading_data/`. The configured EMA, RSI, and lookback settings are used for each decision.
 
 ### 4. Alternative: Zerodha Kite Connect (Live Streaming)
 

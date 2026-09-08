@@ -2,6 +2,31 @@
 
 ## 📊 DAILY USAGE (What to Do Every Trading Day)
 
+### Paper-Trading Data Archive
+
+When `run_kite_bot.py` runs, it keeps the existing JSONL logs and also writes a structured archive under `paper_trading_data`:
+
+```text
+paper_trading_data/
+└── YYYY-MM/
+    └── week_XX/
+        ├── day_DD/
+        │   ├── trades.csv
+        │   ├── decisions.csv
+        │   └── daily_summary.csv
+        └── weekly_review_YYYY_MM_DD.md
+```
+
+`trades.csv` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.csv` contains the signal, score, reasons, bar data, and available history. The daily summary is written after the market-close exit. On Friday, the bot creates the Markdown review in that week's folder with observed problems and suggested areas for bot or strategy improvement.
+
+The archive location can be changed in `kite_config.json` with:
+
+```json
+{
+  "paper_trading_dir": "paper_trading_data"
+}
+```
+
 ### Morning Pre-Market Setup (8:00-9:15 AM)
 
 #### 1. **Check System Health**

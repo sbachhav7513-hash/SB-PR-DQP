@@ -12,6 +12,6 @@
   "alert_rsi_high": 65,
   "stop_loss_pct": 1.5,
   "take_profit_pct": 3.0,
-  "telegram_token": "",
-  "telegram_chat_id": ""
+  "telegram_token": null,
+  "telegram_chat_id": null
 }

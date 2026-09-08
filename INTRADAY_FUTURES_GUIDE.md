@@ -69,16 +69,44 @@ The bot now monitors these futures contracts:
 cp kite_config.example.json kite_config.json
 ```
 
-### 2. Update with Your Credentials
+### 2. Configure the Futures Universe
+
+Credentials belong in `.env`, never in `kite_config.json`:
+
+```env
+KITE_API_KEY=your_api_key
+KITE_ACCESS_TOKEN=your_daily_access_token
+```
+
+At startup the bot downloads Kite's current `NFO` instrument master. It selects
+the nearest non-expired futures contract for each symbol in
+`futures_underlyings`, validates a live quote, removes expired/unavailable
+contracts, and subscribes only to the resulting list. Contract lot sizes are
+read from Kite automatically. The list is an eligibility universe, not a
+guarantee of profitable performance.
+
+With `auto_discover_futures: true`, all current NFO futures are considered so
+newly available underlyings can enter automatically. The bot keeps the
+highest-volume/open-interest eligible contracts up to `max_futures`.
+
+News context uses only the official RBI and US Federal Reserve RSS feeds by
+default. Feed hosts are allowlisted in code; any custom feed outside that
+allowlist is ignored.
+
+### 3. Futures Universe Settings
 ```json
 {
-  "kite_api_key": "your_api_key",
-  "kite_access_token": "your_access_token",
   "trading_mode": "intraday_futures",
-  "account_size": 100000,
-  "risk_per_trade_pct": 1.0
+   "account_size": 100000,
+   "risk_per_trade_pct": 1.0,
+   "max_futures": 20,
+   "min_futures_volume": 0
 }
 ```
+
+Add or remove candidate underlyings in `futures_underlyings`. Keep
+`min_futures_volume` at `0` before the market opens; raise it only when you
+want startup to exclude contracts with low current-day volume.
 
 ### 3. Key Parameters
 
@@ -150,7 +178,7 @@ Force exit @ current price
 
 ### Prerequisites
 1. Zerodha account with Kite Connect API enabled
-2. API credentials (key & access token)
+2. API credentials (key, secret, and configured redirect URL)
 3. Telegram bot token & chat ID
 4. Python 3.11+
 
@@ -161,10 +189,22 @@ vim kite_config.json
 
 # Add your:
 # - kite_api_key
-# - kite_access_token
 # - telegram_token
 # - telegram_chat_id
 ```
+
+Start the combined authorization and trading command before each trading
+session. The request token is single-use and the access token expires daily:
+
+```bash
+python run_kite_bot.py
+```
+
+The redirect URL configured in the Kite Connect app must be
+`http://127.0.0.1:8000/`. Enter the API secret when prompted. The bot starts
+automatically after authorization. If Kite reports `Invalid user session`, run
+`python run_kite_bot.py` again and complete the login in the newly opened
+browser tab; do not retry the same callback URL.
 
 ### Step 2: Start the Bot
 ```bash
