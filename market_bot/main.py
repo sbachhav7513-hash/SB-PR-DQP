@@ -14,6 +14,9 @@ from .trade_journal import DecisionJournal, TradeJournal
 from .weekly_report import write_daily_summary, write_weekly_report, write_weekly_review
 
 
+HEARTBEAT_INTERVAL_SECONDS = 30 * 60
+
+
 def format_signal(signal: Signal) -> str:
     stop_text = f" SL={signal.stop_loss:.2f}" if signal.stop_loss is not None else ""
     take_text = f" TP={signal.take_profit:.2f}" if signal.take_profit is not None else ""
@@ -75,9 +78,18 @@ def run_bot(config: BotConfig) -> None:
     decisions = DecisionJournal("decision_log.jsonl", "paper_trading_data")
     print_header(config)
     publish_reports()
+    last_heartbeat = time.monotonic() - HEARTBEAT_INTERVAL_SECONDS
 
     try:
         while True:
+            now = time.monotonic()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                bot.send_heartbeat(
+                    instruments=len(config.tickers),
+                    bar_interval_seconds=config.interval_seconds,
+                )
+                last_heartbeat = now
+
             loop_start = datetime.now()
             for ticker in config.tickers:
                 print(f"[{loop_start:%Y-%m-%d %H:%M:%S}] Checking {ticker}...")
