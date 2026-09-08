@@ -1,0 +1,17 @@
+[Unit]
+Description=Kite intraday futures trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/opt/sb-pr-dqp
+EnvironmentFile=-/opt/sb-pr-dqp/.env
+ExecStart=/opt/sb-pr-dqp/.venv/bin/python /opt/sb-pr-dqp/run_kite_bot.py
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
