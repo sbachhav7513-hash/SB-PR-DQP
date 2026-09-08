@@ -100,13 +100,13 @@ def score_market(
         and macd <= prev_macd
     )
 
-    if score >= 85 and up_trend_conf and price >= recent_high * 0.995:
+    if score >= 75 and up_trend_conf and price >= recent_high * 0.997:
         signal = "BUY"
-    elif score >= 85 and down_trend_conf and price <= recent_low * 1.005:
+    elif score >= 75 and down_trend_conf and price <= recent_low * 1.003:
         signal = "SELL"
-    elif score >= 80 and up_trend_conf and price >= recent_high * 0.998 and rsi_now < 65:
+    elif score >= 70 and up_trend_conf and price >= recent_high * 0.999 and rsi_now < 68:
         signal = "BUY"
-    elif score >= 80 and down_trend_conf and price <= recent_low * 1.002 and rsi_now > 35:
+    elif score >= 70 and down_trend_conf and price <= recent_low * 1.001 and rsi_now > 32:
         signal = "SELL"
     else:
         signal = "HOLD"
