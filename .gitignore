@@ -1,6 +1,4 @@
 # Configuration files with sensitive data
-config.json
-kite_config.json
 .env
 .env.*
 !.env.example
