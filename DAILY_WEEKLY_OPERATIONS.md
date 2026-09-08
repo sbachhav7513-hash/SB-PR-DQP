@@ -65,6 +65,32 @@ python run_kite_bot.py
 # 2026-08-12 09:16:00 - Bar complete: NIFTY 1-min
 ```
 
+### VPS systemd setup
+
+Install the provided unit once on the VPS, adjusting `User`, `WorkingDirectory`,
+and both `/opt/sb-pr-dqp` paths in `kite-trading-bot.service` if the repository
+is located elsewhere:
+
+```bash
+sudo cp kite-trading-bot.service /etc/systemd/system/kite-trading-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable kite-trading-bot.service
+sudo systemctl start kite-trading-bot.service
+```
+
+The bot exits normally after the configured 15:15 IST market-close exit, daily
+summary, and Friday weekly analysis have completed. The unit deliberately uses
+`Restart=no`, so systemd will then show `inactive (dead)` and will not start the
+bot again until the next trading day:
+
+```bash
+systemctl status kite-trading-bot.service
+journalctl -u kite-trading-bot.service -e
+```
+
+Do not add `Restart=always` or `Restart=on-failure` to this unit, otherwise
+systemd will restart the bot after its normal end-of-day exit.
+
 #### 4. **Monitor Real-Time Dashboard**
 While bot runs, monitor:
 
