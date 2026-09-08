@@ -30,6 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 
 
 class KiteTradingBot:
@@ -453,9 +454,18 @@ class KiteTradingBot:
                     instruments=len(self.config["instrument_tokens"]),
                     bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
                 )
+                last_heartbeat = time.monotonic()
                 last_close_check = datetime.now(IST)
                 
                 while True:
+                    now_monotonic = time.monotonic()
+                    if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                        self.telegram_notifier.send_heartbeat(
+                            instruments=len(self.config["instrument_tokens"]),
+                            bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
+                        )
+                        last_heartbeat = now_monotonic
+
                     # Check every 30 seconds if it's time to force exit
                     now = datetime.now(IST)
                     if (now - last_close_check).total_seconds() >= 30:
