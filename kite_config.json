@@ -14,7 +14,7 @@
     "ASIANPAINT", "ITC", "GRASIM", "HCLTECH", "TECHM", "NESTLEIND"
   ],
   "auto_discover_futures": true,
-  "max_futures": 15,
+  "max_futures": 8,
   "min_futures_volume": 50000,
   "news_enabled": true,
   "news_refresh_seconds": 900,
@@ -36,6 +36,8 @@
     "SUNPHARMA": 857857
   },
   "bar_interval_seconds": 60,
+  "benchmark_symbol": "NIFTY",
+  "use_market_context": true,
   "ema_fast": 9,
   "ema_slow": 21,
   "rsi_period": 14,

@@ -129,9 +129,9 @@ def filter_signal_by_context(
 ) -> tuple[str, Optional[str]]:
     context_signal = market_context_signal(history, ema_fast, ema_slow)
     if context_signal == "BEARISH" and signal == "BUY":
-        return "HOLD", "Benchmark trend bearish"
+        return signal, "Benchmark trend bearish (soft context warning)"
     if context_signal == "BULLISH" and signal == "SELL":
-        return "HOLD", "Benchmark trend bullish"
+        return signal, "Benchmark trend bullish (soft context warning)"
     return signal, None
 
 

@@ -76,11 +76,11 @@ def test_weak_noisy_uptrend_does_not_trigger_buy_signal():
     assert result.score < 80
 
 
-def test_bearish_benchmark_blocks_buy_signal():
+def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
     benchmark_history = [{"close": 200.0 - index} for index in range(40)]
 
     signal, reason = filter_signal_by_context("BUY", benchmark_history)
 
     assert market_context_signal(benchmark_history) == "BEARISH"
-    assert signal == "HOLD"
-    assert reason == "Benchmark trend bearish"
+    assert signal == "BUY"
+    assert reason == "Benchmark trend bearish (soft context warning)"
