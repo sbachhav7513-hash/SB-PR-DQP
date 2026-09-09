@@ -173,16 +173,27 @@ class KiteMarketStream:
         invalid = []
         for row, token in zip(selected_rows, tokens):
             quote = quotes.get(token, {})
+            skip_quote = False
             if float(quote.get("last_price", 0)) <= 0:
-                invalid.append(row["name"])
+                skip_quote = True
             elif (
                 self.config.min_futures_volume > 0
                 and int(quote.get("volume", 0)) < self.config.min_futures_volume
             ):
+                skip_quote = True
+            if skip_quote:
                 invalid.append(row["name"])
+                logger.warning(
+                    "Skipping NFO futures contract %s without a usable live quote or with insufficient volume",
+                    row["name"],
+                )
+
         selected_rows = [
             row for row in selected_rows if row["name"] not in invalid
         ]
+        if not selected_rows:
+            raise RuntimeError("No eligible NFO futures contracts passed quote checks")
+
         if self.config.auto_discover_futures:
             selected_rows.sort(
                 key=lambda row: (
@@ -194,10 +205,6 @@ class KiteMarketStream:
         else:
             selected_rows.sort(key=lambda row: (row["expiry"], row["name"]))
         selected_rows = selected_rows[: self.config.max_futures]
-        if not selected_rows:
-            raise RuntimeError("No eligible NFO futures contracts passed quote checks")
-        if invalid:
-            raise RuntimeError("No live quote for futures: " + ", ".join(invalid))
 
         self.contract_specs = {
             row["name"].upper(): {
