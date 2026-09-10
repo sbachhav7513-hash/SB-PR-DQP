@@ -315,8 +315,23 @@ class KiteMarketStream:
         """Callback when ticks arrive from Kite WebSocket."""
         for tick in ticks:
             try:
+                token = tick.get("instrument_token")
+                if token is None:
+                    logger.warning("Dropping Kite tick without instrument_token: %s", tick)
+                    continue
+
+                try:
+                    instrument_token = int(token)
+                except (TypeError, ValueError):
+                    logger.warning("Dropping Kite tick with invalid instrument_token=%r: %s", token, tick)
+                    continue
+
+                if instrument_token <= 0:
+                    logger.warning("Dropping Kite tick with non-positive instrument_token=%s: %s", instrument_token, tick)
+                    continue
+
                 tick_obj = Tick(
-                    instrument_token=tick.get("instrument_token", 0),
+                    instrument_token=instrument_token,
                     timestamp=datetime.fromtimestamp(tick.get("timestamp", 0)),
                     last_price=float(tick.get("last_price", 0.0)),
                     bid=float(tick.get("bid", 0.0)),

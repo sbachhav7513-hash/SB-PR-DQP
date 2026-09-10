@@ -188,6 +188,30 @@ def test_refresh_instrument_tokens_returns_empty_when_no_futures_survive_quote_c
         ((["100", "300"],), {}),
     ]
 
+
+def test_on_ticks_drops_malformed_zero_instrument_tokens():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token")
+        )
+
+    callback = Mock()
+    stream.on_tick_callback = callback
+
+    malformed_ticks = [
+        {"timestamp": 1700000000, "last_price": 100.0},
+        {"instrument_token": 0, "timestamp": 1700000000, "last_price": 100.0},
+    ]
+
+    stream.on_ticks(None, malformed_ticks)
+
+    callback.assert_not_called()
+
+
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
     kite = Mock()
     today = date.today()
