@@ -47,6 +47,8 @@ class TelegramNotifier:
         return self.send_message(
             "Paper bot heartbeat\n"
             "Status: running\n"
+            "30-minute heartbeat cycle: check the market cycle and monitor the run window\n"
+            "Cycle: 30-minute status refresh\n"
             f"Instruments: {instruments}\n"
             f"Bar interval: {bar_interval_seconds}s"
         )
