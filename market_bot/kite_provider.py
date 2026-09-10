@@ -161,6 +161,7 @@ class KiteMarketStream:
 
         selected_rows = list(selected.values())
         tokens = [str(int(row["instrument_token"])) for row in selected_rows]
+        fallback_to_ltp = False
         if self.config.auto_discover_futures or self.config.min_futures_volume > 0:
             quote_symbols = [f"NFO:{row['tradingsymbol']}" for row in selected_rows]
             try:
@@ -177,49 +178,90 @@ class KiteMarketStream:
                 for token, symbol in zip(tokens, quote_symbols)
             }
 
-            # Some Kite sessions return an empty or unusable quote payload for
-            # NFO futures while the instrument LTP endpoint remains available.
-            # In that case, use the LTP endpoint instead of dropping every
-            # candidate contract from the quote gate.
-            quote_records = list(quote_lookup.values())
-            if not raw_quotes or not any(
+            # If the quote API is incomplete, empty, or omits live prices,
+            # downgrade the whole contract gate to the LTP feed instead of
+            # poisoning every row with invalid quote data.
+            quote_is_complete = bool(raw_quotes) and len(raw_quotes) >= len(selected_rows)
+            quote_has_prices = all(
                 isinstance(record, dict)
                 and float(record.get("last_price", 0.0)) > 0
-                for record in quote_records
-            ):
+                for record in quote_lookup.values()
+            )
+            if not quote_is_complete or not quote_has_prices:
                 logger.warning(
-                    "Kite quote lookup returned no usable NFO futures prices; "
+                    "Kite quote lookup for NFO futures is incomplete or missing live prices; "
                     "falling back to LTP for %d token(s)",
                     len(tokens),
                 )
                 quotes = self.kite.ltp(tokens)
+                fallback_to_ltp = True
             else:
                 quotes = quote_lookup
         else:
             quotes = self.kite.ltp(tokens)
-        invalid = []
-        for row, token in zip(selected_rows, tokens):
-            quote = quotes.get(token, {})
-            skip_quote = False
-            if float(quote.get("last_price", 0)) <= 0:
-                skip_quote = True
-            elif (
-                self.config.min_futures_volume > 0
-                and int(quote.get("volume", 0)) < self.config.min_futures_volume
-            ):
-                skip_quote = True
-            if skip_quote:
-                invalid.append(row["name"])
-                logger.warning(
-                    "Skipping NFO futures contract %s without a usable live quote or with insufficient volume",
-                    row["name"],
-                )
 
-        selected_rows = [
-            row for row in selected_rows if row["name"] not in invalid
-        ]
+        def evaluate_quotes(quotes_map: Dict[str, Dict], enforce_volume: bool = True) -> List[dict]:
+            invalid = []
+            for row, token in zip(selected_rows, tokens):
+                quote = quotes_map.get(token, {})
+                if not isinstance(quote, dict):
+                    quote = {}
+
+                skip_quote = False
+                if float(quote.get("last_price", 0)) <= 0:
+                    skip_quote = True
+                elif (
+                    enforce_volume
+                    and self.config.min_futures_volume > 0
+                    and quote.get("volume") is not None
+                    and int(quote.get("volume", 0)) < self.config.min_futures_volume
+                ):
+                    skip_quote = True
+                if skip_quote:
+                    invalid.append(row["name"])
+                    logger.warning(
+                        "Skipping NFO futures contract %s without a usable live quote or with insufficient volume",
+                        row["name"],
+                    )
+
+            return [row for row in selected_rows if row["name"] not in invalid]
+
+        selected_rows = evaluate_quotes(quotes)
+        if not selected_rows and not fallback_to_ltp and (
+            self.config.auto_discover_futures or self.config.min_futures_volume > 0
+        ):
+            logger.warning(
+                "No NFO futures from the quote feed passed validation; retrying with LTP feed",
+            )
+            quotes = self.kite.ltp(tokens)
+            fallback_to_ltp = True
+            selected_rows = evaluate_quotes(quotes)
+
+        if not selected_rows and self.config.min_futures_volume > 0:
+            logger.warning(
+                "All NFO futures were eliminated by the configured min_futures_volume gate; "
+                "retrying quote-only validation without the volume threshold",
+            )
+            selected_rows = evaluate_quotes(self.kite.ltp(tokens), enforce_volume=False)
+
         if not selected_rows:
-            raise RuntimeError("No eligible NFO futures contracts passed quote checks")
+            logger.error(
+                "No eligible NFO futures contracts passed quote checks. "
+                "Candidates=%d, tokens=%s, min_futures_volume=%d, quote_symbols=%s",
+                len(selected_rows),
+                ",".join(tokens),
+                self.config.min_futures_volume,
+                ",".join(quote_symbols),
+            )
+            logger.warning(
+                "Falling back to an empty futures instrument map instead of crashing. "
+                "Kite quote availability, min_futures_volume=%d, and futures_underlyings=%s "
+                "need inspection before the next run.",
+                self.config.min_futures_volume,
+                ",".join(self.config.futures_underlyings),
+            )
+            self.contract_specs = {}
+            return {}
 
         if self.config.auto_discover_futures:
             selected_rows.sort(
