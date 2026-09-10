@@ -94,6 +94,50 @@ def test_refresh_instrument_tokens_ignores_futures_without_live_quotes():
     assert stream.contract_specs == {"INFY": {"lot_size": 500, "multiplier": 1}}
     kite.ltp.assert_called_once_with(["100", "300"])
 
+def test_refresh_instrument_tokens_falls_back_to_ltp_when_quote_api_returns_empty():
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": "NIFTYFUT",
+            "instrument_type": "FUT",
+            "expiry": today + timedelta(days=30),
+            "instrument_token": 100,
+            "lot_size": 50,
+        },
+        {
+            "name": "INFY",
+            "tradingsymbol": "INFYFUT",
+            "instrument_type": "FUT",
+            "expiry": today + timedelta(days=30),
+            "instrument_token": 300,
+            "lot_size": 500,
+        },
+    ]
+    kite.quote.return_value = {}
+    kite.ltp.return_value = {
+        "100": {"last_price": 0.0},
+        "300": {"last_price": 1500.0},
+    }
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                futures_underlyings=["NIFTY", "INFY"],
+                auto_discover_futures=True,
+                min_futures_volume=0,
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {"INFY": 300}
+    assert stream.contract_specs == {"INFY": {"lot_size": 500, "multiplier": 1}}
+    kite.quote.assert_called_once_with(["NFO:NIFTYFUT", "NFO:INFYFUT"])
+    kite.ltp.assert_called_once_with(["100", "300"])
 
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
     kite = Mock()
