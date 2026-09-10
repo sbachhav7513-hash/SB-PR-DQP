@@ -163,11 +163,38 @@ class KiteMarketStream:
         tokens = [str(int(row["instrument_token"])) for row in selected_rows]
         if self.config.auto_discover_futures or self.config.min_futures_volume > 0:
             quote_symbols = [f"NFO:{row['tradingsymbol']}" for row in selected_rows]
-            raw_quotes = self.kite.quote(quote_symbols)
-            quotes = {
+            try:
+                raw_quotes = self.kite.quote(quote_symbols)
+            except Exception as exc:
+                logger.warning(
+                    "Kite quote endpoint failed for NFO futures, falling back to LTP: %s",
+                    exc,
+                )
+                raw_quotes = {}
+
+            quote_lookup = {
                 token: raw_quotes.get(symbol, {})
                 for token, symbol in zip(tokens, quote_symbols)
             }
+
+            # Some Kite sessions return an empty or unusable quote payload for
+            # NFO futures while the instrument LTP endpoint remains available.
+            # In that case, use the LTP endpoint instead of dropping every
+            # candidate contract from the quote gate.
+            quote_records = list(quote_lookup.values())
+            if not raw_quotes or not any(
+                isinstance(record, dict)
+                and float(record.get("last_price", 0.0)) > 0
+                for record in quote_records
+            ):
+                logger.warning(
+                    "Kite quote lookup returned no usable NFO futures prices; "
+                    "falling back to LTP for %d token(s)",
+                    len(tokens),
+                )
+                quotes = self.kite.ltp(tokens)
+            else:
+                quotes = quote_lookup
         else:
             quotes = self.kite.ltp(tokens)
         invalid = []
