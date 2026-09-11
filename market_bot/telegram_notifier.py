@@ -45,12 +45,14 @@ class TelegramNotifier:
 
     def send_heartbeat(self, instruments: int, bar_interval_seconds: int) -> bool:
         return self.send_message(
-            "Paper bot heartbeat\n"
-            "Status: running\n"
-            "30-minute heartbeat cycle: check the market cycle and monitor the run window\n"
-            "Cycle: 30-minute status refresh\n"
-            f"Instruments: {instruments}\n"
-            f"Bar interval: {bar_interval_seconds}s"
+            "Market Bot Status\n"
+            "Status: LIVE\n"
+            "Mode: Intraday Futures\n"
+            "Signal engine: online\n"
+            f"Instruments tracked: {instruments}\n"
+            f"Bar interval: {bar_interval_seconds}s\n"
+            "Next check: recent bars and live quote feed are being monitored\n"
+            "Action: no trade signal yet; confirm signal quality and market context"
         )
 
     def send_daily_summary(

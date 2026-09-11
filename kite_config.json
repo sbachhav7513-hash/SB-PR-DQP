@@ -7,13 +7,9 @@
   "risk_per_trade_pct": 1.0,
   "futures_underlyings": [
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
-    "SBIN", "AXISBANK", "INFY", "TCS", "LT", "MARUTI", "SUNPHARMA",
-    "HINDALCO", "JSWSTEEL", "TATASTEEL", "BHARTIARTL", "KOTAKBANK",
-    "ADANIENT", "M&M", "TATAMOTORS", "COALINDIA", "NTPC", "POWERGRID",
-    "ONGC", "EICHERMOT", "HINDUNILVR", "WIPRO", "BAJAJFINANCE",
-    "ASIANPAINT", "ITC", "GRASIM", "HCLTECH", "TECHM", "NESTLEIND"
+    "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
   ],
-  "auto_discover_futures": true,
+  "auto_discover_futures": false,
   "max_futures": 8,
   "min_futures_volume": 0,
   "news_enabled": false,
