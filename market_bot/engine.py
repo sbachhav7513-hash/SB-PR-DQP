@@ -37,7 +37,30 @@ def _current_session_history(history: List[Dict]) -> List[Dict]:
     if not history:
         return []
 
-    today = datetime.now(IST).date()
+    parsed: List[datetime] = []
+    for item in history:
+        value = item.get("time")
+        dt = None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+
+        if dt is None:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(IST)
+        else:
+            dt = dt.replace(tzinfo=IST)
+        parsed.append(dt)
+
+    if not parsed:
+        return list(history)
+
+    current_day = max(parsed).date()
     same_session = []
     for item in history:
         value = item.get("time")
@@ -56,7 +79,7 @@ def _current_session_history(history: List[Dict]) -> List[Dict]:
             dt = dt.astimezone(IST)
         else:
             dt = dt.replace(tzinfo=IST)
-        if dt.date() == today:
+        if dt.date() == current_day:
             same_session.append(item)
 
     return same_session if same_session else list(history)
@@ -99,7 +122,7 @@ def score_market(
 ) -> TradingScore:
     history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
-    if len(closes) < max(ema_slow + 1, rsi_period + 1, 40):
+    if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
 
     session_state = market_session_state(history)
@@ -151,10 +174,10 @@ def score_market(
         score += 25
         reasons.append("EMA bearish")
 
-    if macd > 0 and macd >= prev_macd:
+    if macd >= 0 and macd >= prev_macd - 1e-9:
         score += 18
         reasons.append("MACD improving")
-    elif macd < 0 and macd <= prev_macd:
+    elif macd <= 0 and macd <= prev_macd + 1e-9:
         score += 10
         reasons.append("MACD weakening")
 
@@ -183,24 +206,24 @@ def score_market(
         fast_now > slow_now
         and price > closes[-20]
         and trend_strength > 0.02
-        and macd > 0
-        and macd >= prev_macd
+        and macd >= 0
+        and macd >= prev_macd - 1e-9
     )
     down_trend_conf = (
         fast_now < slow_now
         and price < closes[-20]
         and trend_strength > 0.02
-        and macd < 0
-        and macd <= prev_macd
+        and macd <= 0
+        and macd <= prev_macd + 1e-9
     )
 
-    if score >= 60 and up_trend_conf and price >= recent_high * 0.997:
+    if score >= 55 and up_trend_conf and price >= recent_high * 0.997:
         signal = "BUY"
-    elif score >= 60 and down_trend_conf and price <= recent_low * 1.003:
+    elif score >= 55 and down_trend_conf and price <= recent_low * 1.003:
         signal = "SELL"
-    elif score >= 65 and up_trend_conf and price >= recent_high * 0.999:
+    elif score >= 60 and up_trend_conf and price >= recent_high * 0.999:
         signal = "BUY"
-    elif score >= 65 and down_trend_conf and price <= recent_low * 1.001:
+    elif score >= 60 and down_trend_conf and price <= recent_low * 1.001:
         signal = "SELL"
     else:
         signal = "HOLD"
