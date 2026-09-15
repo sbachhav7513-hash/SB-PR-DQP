@@ -140,7 +140,10 @@ class KiteMarketStream:
         if self.config.futures_underlyings:
             return self._select_current_futures()
 
-        raise RuntimeError("No valid Kite instrument tokens are available for the configured symbols.")
+        configured_symbols = ", ".join(self.config.instrument_tokens.keys())
+        raise RuntimeError(
+            f"No valid Kite instrument tokens are available for the configured symbols: {configured_symbols}"
+        )
 
     def _select_current_futures(self) -> Dict[str, int]:
         today = date.today()
