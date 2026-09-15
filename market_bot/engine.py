@@ -113,7 +113,7 @@ def score_market(
         score += 25
         reasons.append("EMA bullish")
     elif fast_now < slow_now:
-        score += 10
+        score += 25
         reasons.append("EMA bearish")
 
     if macd > 0 and macd >= prev_macd:
