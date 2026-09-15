@@ -90,6 +90,30 @@ class TelegramNotifier:
     def build_message(self, payload: Dict[str, Any]) -> str:
         return payload.get("message", "Trade alert")
 
+    def format_watchlist(
+        self,
+        candidates: list[tuple[str, str, int, str]],
+        session_label: str = "PREMARKET",
+    ) -> Dict[str, Any]:
+        lines = [f"Pre-market watchlist ({session_label})"]
+        if not candidates:
+            lines.append("No qualified setups")
+        else:
+            for ticker, signal, score, reason in candidates:
+                lines.append(f"{signal} {ticker} | score={score} | {reason}")
+        return {
+            "message": "\n".join(lines),
+            "candidates": candidates,
+        }
+
+    def send_watchlist(
+        self,
+        candidates: list[tuple[str, str, int, str]],
+        session_label: str = "PREMARKET",
+    ) -> bool:
+        payload = self.format_watchlist(candidates, session_label)
+        return self.send_message(payload["message"])
+
     def format_close(self, ticker: str, action: str, exit_price: float, pnl: float, reason: str) -> Dict[str, Any]:
         payload = {
             "ticker": ticker,
