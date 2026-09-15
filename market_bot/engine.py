@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from .strategy import ema, rsi
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass
@@ -29,8 +32,39 @@ def _extract_timestamps(history: List[Dict]) -> List[datetime]:
     return timestamps
 
 
+def _current_session_history(history: List[Dict]) -> List[Dict]:
+    """Ignore stale bars from prior trading sessions when evaluating live signals."""
+    if not history:
+        return []
+
+    today = datetime.now(IST).date()
+    same_session = []
+    for item in history:
+        value = item.get("time")
+        dt = None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+
+        if dt is None:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(IST)
+        else:
+            dt = dt.replace(tzinfo=IST)
+        if dt.date() == today:
+            same_session.append(item)
+
+    return same_session if same_session else list(history)
+
+
 def market_session_state(history: List[Dict]) -> str:
     """Classify bar timestamps as before-open, regular-session, or after-close."""
+    history = _current_session_history(history)
     timestamps = _extract_timestamps(history)
     if not timestamps:
         return "UNKNOWN"
@@ -63,6 +97,7 @@ def score_market(
     context_history: Optional[List[Dict]] = None,
     allow_before_open: bool = False,
 ) -> TradingScore:
+    history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
     if len(closes) < max(ema_slow + 1, rsi_period + 1, 40):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])

@@ -24,9 +24,14 @@ from .trade_journal import DecisionJournal, TradeJournal
 from .weekly_report import write_daily_summary, write_weekly_report, write_weekly_review
 
 
+log_path = Path("kite_bot.log")
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_path, mode="a", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")

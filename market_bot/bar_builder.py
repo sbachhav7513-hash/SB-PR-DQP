@@ -110,15 +110,26 @@ class BarBuilder:
             bar["close"] = price
             bar["volume"] += tick.volume
 
+    def _session_bars(self, bars: List[Bar]) -> List[Bar]:
+        """Keep the current market session and fall back to the latest bars if needed."""
+        if not bars:
+            return []
+
+        today = datetime.now(IST).date()
+        same_session = [bar for bar in bars if bar.timestamp.astimezone(IST).date() == today]
+        return same_session if same_session else list(bars)
+
     def seed_bars(self, token: int, bars: List[Bar]) -> None:
         """Seed completed bars so a live stream can evaluate signals immediately."""
         if not bars:
             return
-        self.bars[token] = list(bars[-self.max_bars_per_symbol:])
+        filtered = self._session_bars(list(bars))
+        self.bars[token] = list(filtered[-self.max_bars_per_symbol:])
 
     def get_bars(self, token: int, limit: int = 50) -> List[Bar]:
         """Get the most recent bars for a token."""
-        return self.bars[token][-limit:]
+        bars = self._session_bars(self.bars.get(token, []))
+        return bars[-limit:]
 
     def get_latest_bar(self, token: int) -> Optional[Bar]:
         """Get the latest completed bar for a token."""
