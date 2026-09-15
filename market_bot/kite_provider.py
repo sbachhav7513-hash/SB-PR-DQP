@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 try:
     from kiteconnect import KiteConnect, KiteTicker
@@ -16,6 +17,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass
@@ -332,7 +334,7 @@ class KiteMarketStream:
 
                 tick_obj = Tick(
                     instrument_token=instrument_token,
-                    timestamp=datetime.fromtimestamp(tick.get("timestamp", 0)),
+                    timestamp=datetime.fromtimestamp(tick.get("timestamp", 0), tz=IST),
                     last_price=float(tick.get("last_price", 0.0)),
                     bid=float(tick.get("bid", 0.0)),
                     ask=float(tick.get("ask", 0.0)),

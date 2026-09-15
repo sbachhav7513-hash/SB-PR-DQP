@@ -110,6 +110,12 @@ class BarBuilder:
             bar["close"] = price
             bar["volume"] += tick.volume
 
+    def seed_bars(self, token: int, bars: List[Bar]) -> None:
+        """Seed completed bars so a live stream can evaluate signals immediately."""
+        if not bars:
+            return
+        self.bars[token] = list(bars[-self.max_bars_per_symbol:])
+
     def get_bars(self, token: int, limit: int = 50) -> List[Bar]:
         """Get the most recent bars for a token."""
         return self.bars[token][-limit:]

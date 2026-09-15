@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from .bar_builder import BarBuilder, Bar
 from .engine import market_session_label, market_session_state, score_market
 from .intraday_manager import IntradayManager
-from .kite_provider import KiteConfig, KiteMarketStream, Tick
+from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
 from .risk_manager import build_risk_plan
 from .telegram_notifier import TelegramNotifier
@@ -62,6 +62,7 @@ class KiteTradingBot:
         )
         self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
         self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
+        self._warm_up_bars()
         self.telegram_notifier = TelegramNotifier(
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
@@ -86,6 +87,41 @@ class KiteTradingBot:
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
         ) if self.config.get("news_enabled", True) else None
+
+    def _warm_up_bars(self) -> None:
+        """Load recent candles so signals do not wait for a fresh session's bars."""
+        provider = KiteHistoricalProvider(
+            self.config["kite_api_key"], self.config["kite_access_token"]
+        )
+        to_date = datetime.now(IST)
+        from_date = to_date - timedelta(days=5)
+        interval_seconds = self.config.get("bar_interval_seconds", 60)
+        interval = "minute" if interval_seconds == 60 else f"{interval_seconds // 60}minute"
+        seeded = 0
+        for symbol, token in self.config["instrument_tokens"].items():
+            try:
+                history = provider.fetch_history(
+                    token, from_date, to_date, interval=interval
+                )
+                bars = [
+                    Bar(
+                        timestamp=item["time"],
+                        open=item["open"],
+                        high=item["high"],
+                        low=item["low"],
+                        close=item["close"],
+                        volume=item["volume"],
+                    )
+                    for item in history
+                ]
+                self.bar_builder.seed_bars(token, bars)
+                seeded += len(bars)
+                logger.info("[%s] Warmed up %d historical bars", symbol, len(bars))
+            except Exception:
+                logger.exception(
+                    "[%s] Historical warm-up failed; live bars will still be used", symbol
+                )
+        logger.info("Historical warm-up complete: %d bars loaded", seeded)
 
     def _load_config(self) -> Dict:
         """Load configuration from JSON file."""
