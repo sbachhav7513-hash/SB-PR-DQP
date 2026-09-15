@@ -102,43 +102,45 @@ class KiteMarketStream:
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
+        if self.config.instrument_tokens:
+            master = {
+                row["tradingsymbol"]: int(row["instrument_token"])
+                for row in self.kite.instruments("NSE")
+                if row.get("tradingsymbol") and row.get("instrument_token")
+            }
+            resolved = {
+                symbol: master.get(symbol, int(token))
+                for symbol, token in self.config.instrument_tokens.items()
+            }
+
+            quotes = self.kite.ltp([str(token) for token in resolved.values()])
+            invalid_symbols = [
+                symbol
+                for symbol, token in resolved.items()
+                if str(token) not in quotes
+            ]
+            if not invalid_symbols:
+                for symbol, old_token in self.config.instrument_tokens.items():
+                    new_token = resolved[symbol]
+                    if int(old_token) != new_token:
+                        logger.warning(
+                            "Updated stale Kite token for %s: %s -> %s",
+                            symbol,
+                            old_token,
+                            new_token,
+                        )
+                self.config.instrument_tokens = resolved
+                logger.info("Validated %d configured Kite instrument tokens", len(resolved))
+                return resolved
+            logger.warning(
+                "Configured Kite token validation failed for: %s; falling back to futures discovery.",
+                ", ".join(invalid_symbols),
+            )
+
         if self.config.futures_underlyings:
             return self._select_current_futures()
 
-        master = {
-            row["tradingsymbol"]: int(row["instrument_token"])
-            for row in self.kite.instruments("NSE")
-            if row.get("tradingsymbol") and row.get("instrument_token")
-        }
-        resolved = {
-            symbol: master.get(symbol, int(token))
-            for symbol, token in self.config.instrument_tokens.items()
-        }
-
-        quotes = self.kite.ltp([str(token) for token in resolved.values()])
-        invalid_symbols = [
-            symbol
-            for symbol, token in resolved.items()
-            if str(token) not in quotes
-        ]
-        if invalid_symbols:
-            raise RuntimeError(
-                "Unable to resolve valid Kite instrument tokens for: "
-                + ", ".join(invalid_symbols)
-            )
-
-        for symbol, old_token in self.config.instrument_tokens.items():
-            new_token = resolved[symbol]
-            if int(old_token) != new_token:
-                logger.warning(
-                    "Updated stale Kite token for %s: %s -> %s",
-                    symbol,
-                    old_token,
-                    new_token,
-                )
-        self.config.instrument_tokens = resolved
-        logger.info("Validated %d Kite instrument tokens", len(resolved))
-        return resolved
+        raise RuntimeError("No valid Kite instrument tokens are available for the configured symbols.")
 
     def _select_current_futures(self) -> Dict[str, int]:
         today = date.today()
