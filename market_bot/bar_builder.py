@@ -5,11 +5,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from .kite_provider import Tick
 
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass
