@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-09-11T09:45:13",
+  "period_days": 7,
+  "closed_trades": 0,
+  "total_pnl": 0,
+  "winning_trades": 0,
+  "losing_trades": 0,
+  "win_rate": 0.0,
+  "average_win": 0.0,
+  "average_loss": 0.0,
+  "largest_win": 0.0,
+  "largest_loss": 0.0,
+  "profit_factor": 0.0,
+  "decisions_recorded": 0,
+  "signal_counts": {
+    "BUY": 0,
+    "SELL": 0,
+    "HOLD": 0,
+    "ERROR": 0
+  },
+  "outcome_counts": {},
+  "performance_by_symbol": {},
+  "performance_by_hour": {},
+  "filter_stats": {
+    "volatility_rejected": 0,
+    "confirmation_rejected": 0,
+    "cooldown_rejected": 0,
+    "hours_rejected": 0,
+    "threshold_rejected": 0,
+    "approved_entries": 0,
+    "total_rejected": 0
+  },
+  "news_summary": {
+    "risk_counts": {
+      "NORMAL": 0,
+      "ELEVATED": 0,
+      "HIGH": 0,
+      "UNKNOWN": 0,
+      "DISABLED": 0
+    },
+    "suppressed_entries": 0
+  },
+  "best_observed_profiles": [],
+  "recommendation": "Not enough repeated closed trades to recommend a profile."
+}
