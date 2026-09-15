@@ -14,7 +14,7 @@ from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
 from .bar_builder import BarBuilder, Bar
-from .engine import score_market
+from .engine import market_session_label, market_session_state, score_market
 from .intraday_manager import IntradayManager
 from .kite_provider import KiteConfig, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
@@ -79,6 +79,7 @@ class KiteTradingBot:
         self.last_daily_summary_date = None
         self.symbol_map = {v: k for k, v in self.config["instrument_tokens"].items()}
         self.latest_prices: Dict[str, float] = {}
+        self.premarkarket_candidates: list[tuple[str, str, int, str]] = []
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
         self.news_monitor = NewsMonitor(
@@ -138,6 +139,16 @@ class KiteTradingBot:
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in bars]
+        session_state = market_session_state(history)
+        session_label = market_session_label(history)
+        logger.info(f"[{symbol}] status={session_label}")
+
+        if session_state == "AFTER_CLOSE":
+            reason = "Market is after close; no live trading signal"
+            self._record_decision(symbol, bar, bars, None, "HOLD", reason)
+            logger.info(f"[{symbol}] status={session_label} | {reason}")
+            return
+
         benchmark_history = None
         benchmark_token = self.config["instrument_tokens"].get(self.benchmark_symbol)
         if (
@@ -149,7 +160,6 @@ class KiteTradingBot:
             if benchmark_bars:
                 benchmark_history = [b.to_dict() for b in benchmark_bars]
 
-        # Evaluate signal
         try:
             market_score = score_market(
                 symbol,
@@ -158,6 +168,7 @@ class KiteTradingBot:
                 ema_slow=self.config.get("ema_slow", 21),
                 rsi_period=self.config.get("rsi_period", 14),
                 context_history=benchmark_history,
+                allow_before_open=(session_state == "BEFORE_OPEN"),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -172,6 +183,40 @@ class KiteTradingBot:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
         logger.info(f"[{symbol}] Score={market_score.score} Signal={market_score.signal}")
+
+        if session_state == "BEFORE_OPEN":
+            logger.info(
+                "[%s] pre-market analysis: score=%s signal=%s (no orders until regular session)",
+                symbol,
+                market_score.score,
+                market_score.signal,
+            )
+            if market_score.signal in {"BUY", "SELL"}:
+                self.premarkarket_candidates.append(
+                    (
+                        symbol,
+                        market_score.signal,
+                        market_score.score,
+                        "; ".join(market_score.reasons[:3]),
+                    )
+                )
+            self._record_decision(
+                symbol,
+                bar,
+                bars,
+                market_score,
+                market_score.signal,
+                "PREMARKET_WATCHLIST",
+                news_context,
+            )
+            return
+
+        if self.premarkarket_candidates:
+            self.telegram_notifier.send_watchlist(
+                self.premarkarket_candidates,
+                session_label="PREMARKET",
+            )
+            self.premarkarket_candidates.clear()
 
         if market_score.signal == "BUY":
             outcome = self._handle_buy_signal(symbol, bar.close, market_score.score)

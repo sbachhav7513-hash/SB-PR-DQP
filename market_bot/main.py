@@ -5,7 +5,7 @@ from datetime import datetime
 
 from .config import BotConfig
 from .data_provider import MarketDataProvider
-from .engine import score_market
+from .engine import market_session_label, market_session_state, score_market
 from .live_feed import LiveMarketFeed
 from .risk_manager import build_risk_plan
 from .strategy import Signal
@@ -91,6 +91,7 @@ def run_bot(config: BotConfig) -> None:
                 last_heartbeat = now
 
             loop_start = datetime.now()
+            premarket_candidates: list[tuple[str, str, int, str]] = []
             for ticker in config.tickers:
                 print(f"[{loop_start:%Y-%m-%d %H:%M:%S}] Checking {ticker}...")
                 try:
@@ -106,13 +107,57 @@ def run_bot(config: BotConfig) -> None:
                 minimum_bars = max(config.ema_slow + 1, config.rsi_period + 1, 40)
                 analysis_bars = max(config.lookback_bars, minimum_bars)
                 history = snapshot.history[-analysis_bars:]
+
+                session_state = market_session_state(history)
+                session_label = market_session_label(history)
+
+                if session_state == "AFTER_CLOSE":
+                    reason = "Market is after close; no live trading signal"
+                    record_decision(
+                        decisions,
+                        ticker,
+                        "HOLD",
+                        0,
+                        [reason],
+                        history,
+                    )
+                    print(f"[{ticker}] status={session_label} | {reason}")
+                    continue
+
+                print(f"[{ticker}] status={session_label}")
+
                 market_score = score_market(
                     ticker,
                     history,
                     ema_fast=config.ema_fast,
                     ema_slow=config.ema_slow,
                     rsi_period=config.rsi_period,
+                    allow_before_open=(session_state == "BEFORE_OPEN"),
                 )
+
+                if session_state == "BEFORE_OPEN":
+                    print(
+                        f"[{ticker}] pre-market analysis: score={market_score.score} decision={market_score.signal} (no orders until regular session)"
+                    )
+                    if market_score.signal in {"BUY", "SELL"}:
+                        premarket_candidates.append(
+                            (
+                                ticker,
+                                market_score.signal,
+                                market_score.score,
+                                "; ".join(market_score.reasons[:3]),
+                            )
+                        )
+                    record_decision(
+                        decisions,
+                        ticker,
+                        market_score.signal,
+                        market_score.score,
+                        market_score.reasons,
+                        history,
+                    )
+                    continue
+
                 record_decision(
                     decisions,
                     ticker,
@@ -208,6 +253,9 @@ def run_bot(config: BotConfig) -> None:
                             print(f"[{ticker}] SELL OPEN -> Entry={open_trade['entry']:.2f}, current_price={entry_price:.2f}, P&L={pnl:.2f}")
                 else:
                     print(f"[{ticker}] HOLD - not enough confidence")
+
+            if premarket_candidates:
+                bot.send_watchlist(premarket_candidates, session_label="PREMARKET")
 
             summary = journal.portfolio_summary()
             print(f"[PORTFOLIO] closed={summary['closed_pnl']:.2f}, open={summary['open_pnl']:.2f}, total={summary['total_pnl']:.2f}")

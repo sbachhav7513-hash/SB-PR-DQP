@@ -1,6 +1,12 @@
 import random
+from datetime import datetime
 
-from market_bot.engine import filter_signal_by_context, market_context_signal, score_market
+from market_bot.engine import (
+    filter_signal_by_context,
+    market_context_signal,
+    market_session_state,
+    score_market,
+)
 from market_bot.strategy import analyze_history
 
 
@@ -86,10 +92,50 @@ def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
     assert reason == "Benchmark trend bearish (soft context warning)"
 
 
+def test_before_open_data_should_not_trigger_trade_signal():
+    before_open_history = [
+        {"time": datetime(2026, 9, 15, 9, 0, 0), "close": 100.0 + index * 0.8}
+        for index in range(60)
+    ]
+
+    assert market_session_state(before_open_history) == "BEFORE_OPEN"
+
+    result = score_market("TEST", before_open_history)
+
+    assert result.signal == "HOLD"
+    assert "before open" in result.reasons[0].lower()
+
+
+def test_regular_session_data_can_trigger_buy_signal():
+    regular_history = [
+        {"time": datetime(2026, 9, 15, 9, 30 + index // 10, 0), "close": 100.0 + index * 1.2}
+        for index in range(60)
+    ]
+
+    assert market_session_state(regular_history) == "REGULAR_SESSION"
+
+    result = score_market("TEST", regular_history)
+
+    assert result.signal == "BUY"
+    assert result.score >= 60
+
+
 def test_strong_bullish_trend_should_generate_buy_signal():
     history = [{"close": 100.0 + index * 1.2} for index in range(60)]
 
     result = score_market("TEST", history)
+
+    assert result.signal == "BUY"
+    assert result.score >= 60
+
+
+def test_before_open_data_can_be_scored_for_premarkarket_signal():
+    before_open_history = [
+        {"time": datetime(2026, 9, 15, 8, 45 + index // 10, 0), "close": 100.0 + index * 1.2}
+        for index in range(60)
+    ]
+
+    result = score_market("TEST", before_open_history, allow_before_open=True)
 
     assert result.signal == "BUY"
     assert result.score >= 60
