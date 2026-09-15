@@ -84,3 +84,12 @@ def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
     assert market_context_signal(benchmark_history) == "BEARISH"
     assert signal == "BUY"
     assert reason == "Benchmark trend bearish (soft context warning)"
+
+
+def test_strong_bullish_trend_should_generate_buy_signal():
+    history = [{"close": 100.0 + index * 1.2} for index in range(60)]
+
+    result = score_market("TEST", history)
+
+    assert result.signal == "BUY"
+    assert result.score >= 60
