@@ -1,6 +1,7 @@
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
     filter_signal_by_context,
     market_context_signal,
@@ -136,6 +137,24 @@ def test_before_open_data_can_be_scored_for_premarkarket_signal():
     ]
 
     result = score_market("TEST", before_open_history, allow_before_open=True)
+
+    assert result.signal == "BUY"
+    assert result.score >= 60
+
+
+def test_score_market_ignores_stale_previous_day_bars():
+    today = datetime(2026, 9, 15, 9, 30)
+    yesterday = today - timedelta(days=1)
+    stale = [
+        {"time": yesterday + timedelta(minutes=index), "close": 100.0 + index * 0.2}
+        for index in range(30)
+    ]
+    fresh = [
+        {"time": today + timedelta(minutes=index), "close": 100.0 + index * 1.3}
+        for index in range(30)
+    ]
+
+    result = score_market("TEST", stale + fresh)
 
     assert result.signal == "BUY"
     assert result.score >= 60
