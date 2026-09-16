@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import Mock, patch
 
 from market_bot.intraday_manager import IntradayManager
@@ -336,6 +336,21 @@ def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
     assert "reversed" in reason.lower() or "loss" in reason.lower() or "trade" in reason.lower()
 
 
+def test_option_position_size_uses_contract_lots_and_paper_fallback():
+    manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
+    manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
+
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=10.0, premium_stop_pct=0.35
+    ) == 260
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35
+    ) == 0
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35, allow_paper_lot=True
+    ) == 65
+
+
 def test_refresh_instrument_tokens_fails_for_unresolved_symbols():
     kite = Mock()
     kite.instruments.return_value = []
@@ -517,6 +532,37 @@ def test_on_ticks_drops_malformed_zero_instrument_tokens():
     stream.on_ticks(None, malformed_ticks)
 
     callback.assert_not_called()
+
+
+def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token")
+        )
+
+    callback = Mock()
+    stream.on_tick_callback = callback
+    exchange_timestamp = datetime(2026, 9, 16, 14, 10)
+
+    stream.on_ticks(
+        None,
+        [
+            {
+                "instrument_token": 123,
+                "exchange_timestamp": exchange_timestamp,
+                "last_price": 100.0,
+                "volume_traded": 42,
+            }
+        ],
+    )
+
+    tick = callback.call_args.args[0]
+    assert tick.timestamp.isoformat() == "2026-09-16T14:10:00+05:30"
+    assert tick.volume == 42
 
 
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
