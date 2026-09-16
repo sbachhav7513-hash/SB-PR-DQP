@@ -70,7 +70,20 @@ class TelegramNotifier:
             f"P&L: {total_pnl:.2f}"
         )
 
-    def format_trade(self, ticker: str, action: str, score: int, entry: float, stop_loss: float, take_profit: float) -> Dict[str, Any]:
+    def format_trade(
+        self,
+        ticker: str,
+        action: str,
+        score: int,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+        mode: str = "FUTURE",
+        option_leg: Optional[str] = None,
+        trading_symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
+        leg = f" | Leg: {option_leg}" if option_leg else ""
         return {
             "ticker": ticker,
             "action": action,
@@ -78,9 +91,11 @@ class TelegramNotifier:
             "entry": entry,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "mode": label,
             "message": (
-                f"{action} {ticker}\n"
+                f"{label} Trade: {action} {ticker}{leg}\n"
                 f"Score: {score}\n"
+                f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Entry: {entry:.2f}\n"
                 f"Stop Loss: {stop_loss:.2f}\n"
                 f"Target: {take_profit:.2f}"
@@ -114,15 +129,29 @@ class TelegramNotifier:
         payload = self.format_watchlist(candidates, session_label)
         return self.send_message(payload["message"])
 
-    def format_close(self, ticker: str, action: str, exit_price: float, pnl: float, reason: str) -> Dict[str, Any]:
+    def format_close(
+        self,
+        ticker: str,
+        action: str,
+        exit_price: float,
+        pnl: float,
+        reason: str,
+        mode: str = "FUTURE",
+        option_leg: Optional[str] = None,
+        trading_symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
+        leg = f" | Leg: {option_leg}" if option_leg else ""
         payload = {
             "ticker": ticker,
             "action": action,
             "exit_price": exit_price,
             "pnl": pnl,
             "reason": reason,
+            "mode": label,
             "message": (
-                f"Trade Closed: {action} {ticker}\n"
+                f"Trade Closed: {label} {action} {ticker}{leg}\n"
+                f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Exit: {exit_price:.2f}\n"
                 f"P&L: {pnl:.2f}\n"
                 f"Reason: {reason}"
