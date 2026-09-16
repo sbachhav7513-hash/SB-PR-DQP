@@ -180,9 +180,11 @@ class KiteTradingBot:
             return False, f"premium too high: {premium} > {max_premium}"
         if volume < min_volume:
             return False, f"volume too low: {volume} < {min_volume}"
-        if oi < min_oi:
+        if "oi" in quote_data and int(quote_data["oi"] or 0) < min_oi:
+            oi = int(quote_data["oi"] or 0)
             return False, f"open interest too low: {oi} < {min_oi}"
-        if iv < iv_min or iv > iv_max:
+        if "iv" in quote_data and not iv_min <= float(quote_data["iv"]) <= iv_max:
+            iv = float(quote_data["iv"])
             return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
         return True, "OK"
 
@@ -428,9 +430,11 @@ class KiteTradingBot:
         self.option_quote_cache[symbol] = {
             "last_price": float(tick.last_price),
             "volume": int(tick.volume),
-            "oi": int(getattr(tick, "oi", 0) or 0),
-            "iv": float(getattr(tick, "iv", 0.0) or 0.0),
         }
+        if tick.oi is not None:
+            self.option_quote_cache[symbol]["oi"] = int(tick.oi)
+        if tick.iv is not None:
+            self.option_quote_cache[symbol]["iv"] = float(tick.iv)
         if self.intraday_manager.should_exit_all_positions():
             self._handle_market_close_exit()
         else:

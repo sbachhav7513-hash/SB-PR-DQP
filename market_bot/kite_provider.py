@@ -28,6 +28,8 @@ class Tick:
     bid: float = 0.0
     ask: float = 0.0
     volume: int = 0
+    oi: Optional[int] = None
+    iv: Optional[float] = None
 
 
 @dataclass
@@ -574,6 +576,8 @@ class KiteMarketStream:
                     bid=float(tick.get("bid", 0.0)),
                     ask=float(tick.get("ask", 0.0)),
                     volume=int(tick.get("volume", 0)),
+                    oi=(int(tick["oi"]) if tick.get("oi") is not None else None),
+                    iv=(float(tick["iv"]) if tick.get("iv") is not None else None),
                 )
                 if self.on_tick_callback:
                     self.on_tick_callback(tick_obj)
