@@ -63,6 +63,14 @@ class IntradayManager:
         self.active_positions: Dict[str, dict] = {}
         self.contract_specs: Dict[str, dict] = {}
 
+        self.daily_trade_count = 0
+        self.daily_max_trades = 2
+        self.daily_max_loss = max(account_size * 0.02, 250.0)
+        self.daily_pnl = 0.0
+        self.session_trade_symbols: set[str] = set()
+        self.session_reversal_symbols: set[str] = set()
+        self.trade_history: list[dict] = []
+
     def set_contract_specs(self, specs: Dict[str, dict]) -> None:
         self.contract_specs = dict(specs)
     
@@ -146,6 +154,33 @@ class IntradayManager:
         
         return quantity
     
+    def can_open_trade(self, symbol: str, direction: str) -> tuple[bool, str]:
+        """Policy gate for one option trade per symbol per session and daily caps."""
+        if symbol in self.session_reversal_symbols:
+            return False, f"{symbol} already reversed this session; no new trade allowed"
+        if symbol in self.session_trade_symbols:
+            return False, f"{symbol} already traded this session; only one trade per symbol per session is allowed"
+        if self.daily_trade_count >= self.daily_max_trades:
+            return False, f"Daily option trade cap reached ({self.daily_trade_count}/{self.daily_max_trades})"
+        if self.daily_pnl <= -self.daily_max_loss:
+            return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
+        return True, "OK"
+
+    def record_trade_open(self, symbol: str, direction: str) -> None:
+        self.daily_trade_count += 1
+        self.session_trade_symbols.add(symbol)
+        logger.info("[%s] Recorded open trade for %s; daily_trade_count=%d", symbol, direction, self.daily_trade_count)
+
+    def record_trade_close(self, symbol: str, reason: str, pnl: float) -> None:
+        self.daily_pnl += pnl
+        self.trade_history.append({"symbol": symbol, "reason": reason, "pnl": pnl, "time": datetime.now(IST)})
+        if symbol in self.session_trade_symbols:
+            self.session_trade_symbols.discard(symbol)
+        if reason == "SIGNAL_REVERSAL":
+            self.session_reversal_symbols.add(symbol)
+        if pnl < 0 and abs(pnl) >= self.daily_max_loss * 0.5:
+            self.session_reversal_symbols.add(symbol)
+
     def register_position(self, symbol: str, direction: str, quantity: int, 
                          entry_price: float, stop_loss: float, take_profit: float) -> None:
         """Register a new position."""
@@ -218,3 +253,20 @@ class IntradayManager:
     def get_all_open_positions(self) -> Dict:
         """Get all open positions."""
         return self.active_positions.copy()
+
+    def calculate_option_size(
+        self,
+        symbol: str,
+        premium: float,
+        max_risk_per_trade: Optional[float] = None,
+        premium_stop_pct: float = 0.35,
+    ) -> int:
+        """Premium-based sizing for options: risk = premium * quantity * stop_pct."""
+        if premium <= 0:
+            return 0
+        risk_budget = max_risk_per_trade if max_risk_per_trade is not None else self.max_risk_per_trade
+        if risk_budget <= 0:
+            return 0
+        stop_value = premium * premium_stop_pct
+        max_contracts = int(risk_budget / max(stop_value, 1e-6))
+        return max(1, min(max_contracts, 5)) if max_contracts >= 1 else 0

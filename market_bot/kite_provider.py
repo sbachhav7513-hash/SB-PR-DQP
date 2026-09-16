@@ -34,11 +34,18 @@ class Tick:
 class KiteConfig:
     api_key: str
     access_token: str
+    trading_mode: str = "intraday_futures"
     instrument_tokens: Dict[str, int] = field(default_factory=dict)
     futures_underlyings: List[str] = field(default_factory=list)
     auto_discover_futures: bool = False
     max_futures: int = 20
     min_futures_volume: int = 0
+    options_underlyings: List[str] = field(default_factory=list)
+    option_expiry_days: int = 14
+    option_expiry_mode: str = "nearest"
+    option_strike_step: Dict[str, float] = field(default_factory=dict)
+    option_max_strike_distance_pct: float = 0.5
+    min_options_volume: int = 0
 
 
 class KiteHistoricalProvider:
@@ -103,6 +110,13 @@ class KiteMarketStream:
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
+        if self.config.trading_mode == "intraday_options":
+            if not self.config.options_underlyings:
+                raise RuntimeError(
+                    "intraday_options requires at least one options_underlyings entry"
+                )
+            return self._select_current_options()
+
         if self.config.instrument_tokens and not self.config.futures_underlyings:
             master = {
                 row["tradingsymbol"]: int(row["instrument_token"])
@@ -304,6 +318,178 @@ class KiteMarketStream:
             len(resolved),
             ", ".join(resolved),
         )
+        return resolved
+
+    def _select_current_options(self) -> Dict[str, int]:
+        """Select the ATM CE and PE contracts for each configured underlying."""
+        today = date.today()
+        requested = {symbol.upper() for symbol in self.config.options_underlyings}
+        instruments = [
+            row
+            for row in self.kite.instruments("NFO")
+            if row.get("instrument_type") in {"CE", "PE"}
+            and row.get("name", "").upper() in requested
+            and row.get("expiry")
+            and row["expiry"] >= today
+            and row.get("strike") is not None
+            and row.get("instrument_token")
+        ]
+        if not instruments:
+            raise RuntimeError("No current NFO options matched options_underlyings")
+
+        expiries_by_underlying: Dict[str, List[date]] = defaultdict(list)
+        for row in instruments:
+            underlying = row["name"].upper()
+            expiry = row["expiry"]
+            if expiry not in expiries_by_underlying[underlying]:
+                expiries_by_underlying[underlying].append(expiry)
+
+        expiry_limit = today.toordinal() + max(self.config.option_expiry_days, 0)
+        selected_expiries: Dict[str, date] = {}
+        expiry_mode = self.config.option_expiry_mode.lower().strip()
+        if expiry_mode not in {"nearest", "next_week"}:
+            raise ValueError(
+                "option_expiry_mode must be 'nearest' or 'next_week'"
+            )
+        for underlying, expiries in expiries_by_underlying.items():
+            eligible = sorted(
+                expiry for expiry in expiries if expiry.toordinal() <= expiry_limit
+            )
+            if expiry_mode == "next_week":
+                if len(eligible) < 2:
+                    logger.warning(
+                        "Skipping %s: next_week expiry is unavailable; nearest expiry will not be used",
+                        underlying,
+                    )
+                    continue
+                selected_expiries[underlying] = eligible[1]
+            elif eligible:
+                selected_expiries[underlying] = eligible[0]
+
+        if not selected_expiries:
+            raise RuntimeError(
+                f"No {expiry_mode} NFO option expiry matched option_expiry_days"
+            )
+
+        candidates = [
+            row
+            for row in instruments
+            if row["expiry"] == selected_expiries.get(row["name"].upper())
+        ]
+        underlying_tokens = {
+            underlying: int(self.config.instrument_tokens[underlying])
+            for underlying in selected_expiries
+            if underlying in self.config.instrument_tokens
+        }
+        if len(underlying_tokens) != len(selected_expiries):
+            missing = sorted(set(selected_expiries) - set(underlying_tokens))
+            raise RuntimeError(
+                "Options require spot instrument_tokens for: " + ", ".join(missing)
+            )
+        underlying_prices = self.kite.ltp([str(token) for token in underlying_tokens.values()])
+
+        selected: Dict[str, dict] = {}
+        for underlying in selected_expiries:
+            price_record = underlying_prices.get(str(underlying_tokens.get(underlying, "")), {})
+            underlying_price = float(price_record.get("last_price", 0))
+            if underlying_price <= 0:
+                logger.warning("Skipping %s options without an underlying price", underlying)
+                continue
+            step = float(self.config.option_strike_step.get(underlying, 0))
+            if step <= 0:
+                strikes = sorted({float(row["strike"]) for row in candidates if row["name"].upper() == underlying})
+                step = min(
+                    (right - left for left, right in zip(strikes, strikes[1:]) if right > left),
+                    default=1,
+                )
+            atm_strike = round(underlying_price / step) * step
+            max_distance_pct = max(float(self.config.option_max_strike_distance_pct), 0.0)
+            matching = [
+                row
+                for row in candidates
+                if row["name"].upper() == underlying
+                and (
+                    abs(float(row["strike"]) - atm_strike) < 1e-9
+                    or (
+                        underlying_price > 0
+                        and abs(float(row["strike"]) - underlying_price)
+                        / underlying_price
+                        * 100.0
+                        <= max_distance_pct
+                    )
+                )
+            ]
+            if not matching:
+                matching = [
+                    row for row in candidates if row["name"].upper() == underlying and abs(float(row["strike"]) - atm_strike) < 1e-9
+                ]
+            if not matching:
+                continue
+
+            for option_type in ("CE", "PE"):
+                same_strike = [
+                    row for row in matching if row["instrument_type"] == option_type
+                ]
+                if same_strike:
+                    chosen = min(
+                        same_strike,
+                        key=lambda row: (
+                            abs(float(row["strike"]) - underlying_price),
+                            abs(float(row["strike"]) - atm_strike),
+                            row["tradingsymbol"],
+                        ),
+                    )
+                    selected[f"{underlying}_{option_type}"] = chosen
+
+        if not selected:
+            raise RuntimeError("No ATM NFO options matched configured underlyings")
+
+        option_tokens = [str(int(row["instrument_token"])) for row in selected.values()]
+        quotes = self.kite.ltp(option_tokens)
+        volume_quotes: Dict[str, Dict] = {}
+        if self.config.min_options_volume > 0:
+            try:
+                raw_quotes = self.kite.quote(
+                    [f"NFO:{row['tradingsymbol']}" for row in selected.values()]
+                )
+                volume_quotes = {
+                    str(int(row["instrument_token"])): raw_quotes.get(
+                        f"NFO:{row['tradingsymbol']}", {}
+                    )
+                    for row in selected.values()
+                }
+            except Exception as exc:
+                logger.warning("Kite option quote lookup failed: %s", exc)
+        eligible = {}
+        for symbol, row in selected.items():
+            token = str(int(row["instrument_token"]))
+            quote = quotes.get(token, {})
+            if float(quote.get("last_price", 0)) <= 0:
+                logger.warning("Skipping option %s without a usable live quote", symbol)
+                continue
+            volume_quote = volume_quotes.get(token, quote)
+            if self.config.min_options_volume > 0 and int(volume_quote.get("volume", 0)) < self.config.min_options_volume:
+                logger.warning("Skipping option %s below minimum volume", symbol)
+                continue
+            eligible[symbol] = row
+
+        if not eligible:
+            raise RuntimeError("No valid option contracts remained after quote validation")
+
+        self.contract_specs = {
+            symbol: {"lot_size": int(row.get("lot_size", 1)), "multiplier": 1}
+            for symbol, row in eligible.items()
+        }
+        self.contract_symbols = {
+            symbol: row["tradingsymbol"]
+            for symbol, row in eligible.items()
+        }
+        resolved = {
+            symbol: int(row["instrument_token"])
+            for symbol, row in eligible.items()
+        }
+        self.config.instrument_tokens = resolved
+        logger.info("Selected %d ATM NFO option contracts: %s", len(resolved), ", ".join(resolved))
         return resolved
 
     def place_market_order(self, symbol: str, side: str, quantity: int) -> str:

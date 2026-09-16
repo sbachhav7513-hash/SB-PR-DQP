@@ -1,7 +1,7 @@
 {
   "kite_api_key": null,
   "kite_access_token": null,
-  "trading_mode": "intraday_futures",
+  "trading_mode": "intraday_options",
   "paper_trading_enabled": true,
   "live_orders_enabled": false,
   "live_orders_confirmed": false,
@@ -12,9 +12,29 @@
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
     "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
   ],
+  "options_underlyings": [
+    "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
+    "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
+  ],
+  "option_expiry_days": 21,
+  "option_expiry_mode": "next_week",
+  "option_strike_step": {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "RELIANCE": 5,
+    "HDFCBANK": 5,
+    "ICICIBANK": 5,
+    "SBIN": 5,
+    "INFY": 5,
+    "TCS": 5,
+    "LT": 5,
+    "TATAMOTORS": 5
+  },
+  "option_max_strike_distance_pct": 0.5,
   "auto_discover_futures": false,
   "max_futures": 8,
   "min_futures_volume": 0,
+  "min_options_volume": 0,
   "news_enabled": false,
   "news_refresh_seconds": 900,
   "instrument_tokens": {
@@ -44,6 +64,15 @@
   "alert_rsi_high": 70,
   "stop_loss_pct": 0.75,
   "take_profit_pct": 1.5,
+  "option_min_premium": 25.0,
+  "option_max_premium": 300.0,
+  "option_min_volume": 500,
+  "option_min_oi": 1000,
+  "option_iv_min": 0.15,
+  "option_iv_max": 0.85,
+  "option_premium_stop_pct": 0.35,
+  "daily_max_trades": 2,
+  "daily_max_loss": 250.0,
   "telegram_token": null,
   "telegram_chat_id": null
 }
