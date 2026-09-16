@@ -119,6 +119,24 @@ class KiteMarketStream:
                 )
             return self._select_current_options()
 
+        if self.config.trading_mode == "intraday_both":
+            spot_tokens = dict(self.config.instrument_tokens)
+            futures = self._select_current_futures()
+            futures_specs = dict(self.contract_specs)
+            futures_symbols = dict(self.contract_symbols)
+
+            self.config.instrument_tokens = spot_tokens
+            options = self._select_current_options()
+            self.contract_specs = {**futures_specs, **self.contract_specs}
+            self.contract_symbols = {**futures_symbols, **self.contract_symbols}
+            combined = {**futures, **options}
+            self.config.instrument_tokens = combined
+            logger.info(
+                "Combined NFO subscription: %d futures/options contracts",
+                len(combined),
+            )
+            return combined
+
         if self.config.instrument_tokens and not self.config.futures_underlyings:
             master = {
                 row["tradingsymbol"]: int(row["instrument_token"])

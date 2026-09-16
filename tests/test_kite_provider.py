@@ -85,6 +85,35 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
 
 
+def test_refresh_instrument_tokens_combines_futures_and_options():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_both",
+                instrument_tokens={"NIFTY": 100},
+                futures_underlyings=["NIFTY"],
+                options_underlyings=["NIFTY"],
+            )
+        )
+
+    stream._select_current_futures = Mock(return_value={"NIFTY": 300})
+    stream._select_current_options = Mock(return_value={"NIFTY_CE": 200, "NIFTY_PE": 201})
+    stream.contract_specs = {"NIFTY": {"lot_size": 75, "multiplier": 1}}
+    stream.contract_symbols = {"NIFTY": "NIFTY26SEPFUT"}
+
+    resolved = stream.refresh_instrument_tokens()
+
+    assert resolved == {"NIFTY": 300, "NIFTY_CE": 200, "NIFTY_PE": 201}
+    assert stream.config.instrument_tokens == resolved
+    stream._select_current_options.assert_called_once()
+
+
 def test_buy_uses_ce_and_sell_uses_pe_for_underlying():
     bot = object.__new__(KiteTradingBot)
     bot.config = {

@@ -87,6 +87,7 @@ def run_bot(config: BotConfig) -> None:
                 bot.send_heartbeat(
                     instruments=len(config.tickers),
                     bar_interval_seconds=config.interval_seconds,
+                    mode="intraday_futures",
                 )
                 last_heartbeat = now
 
