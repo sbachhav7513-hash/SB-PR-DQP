@@ -260,6 +260,27 @@ def test_option_quality_gate_rejects_low_premium_volume_and_iv():
     assert "premium" in reason.lower() or "volume" in reason.lower() or "iv" in reason.lower()
 
 
+def test_option_quality_gate_allows_quotes_without_unavailable_iv_or_oi():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "option_min_premium": 25.0,
+        "option_max_premium": 150.0,
+        "option_min_volume": 500,
+        "option_min_oi": 2000,
+        "option_iv_min": 0.15,
+        "option_iv_max": 0.80,
+    }
+    bot.option_quote_cache = {
+        "NIFTY_CE": {"last_price": 80.0, "volume": 1000}
+    }
+
+    allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
+
+    assert allowed is True
+    assert reason == "OK"
+
+
 def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
     manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
     manager.daily_max_trades = 1
