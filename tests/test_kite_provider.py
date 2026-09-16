@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import Mock, patch
 
 from market_bot.intraday_manager import IntradayManager
@@ -83,6 +83,35 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
         "NIFTY_PE": "NIFTY26SEP25000PE",
     }
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
+
+
+def test_refresh_instrument_tokens_combines_futures_and_options():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_both",
+                instrument_tokens={"NIFTY": 100},
+                futures_underlyings=["NIFTY"],
+                options_underlyings=["NIFTY"],
+            )
+        )
+
+    stream._select_current_futures = Mock(return_value={"NIFTY": 300})
+    stream._select_current_options = Mock(return_value={"NIFTY_CE": 200, "NIFTY_PE": 201})
+    stream.contract_specs = {"NIFTY": {"lot_size": 75, "multiplier": 1}}
+    stream.contract_symbols = {"NIFTY": "NIFTY26SEPFUT"}
+
+    resolved = stream.refresh_instrument_tokens()
+
+    assert resolved == {"NIFTY": 300, "NIFTY_CE": 200, "NIFTY_PE": 201}
+    assert stream.config.instrument_tokens == resolved
+    stream._select_current_options.assert_called_once()
 
 
 def test_buy_uses_ce_and_sell_uses_pe_for_underlying():
@@ -260,6 +289,27 @@ def test_option_quality_gate_rejects_low_premium_volume_and_iv():
     assert "premium" in reason.lower() or "volume" in reason.lower() or "iv" in reason.lower()
 
 
+def test_option_quality_gate_allows_quotes_without_unavailable_iv_or_oi():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "option_min_premium": 25.0,
+        "option_max_premium": 150.0,
+        "option_min_volume": 500,
+        "option_min_oi": 2000,
+        "option_iv_min": 0.15,
+        "option_iv_max": 0.80,
+    }
+    bot.option_quote_cache = {
+        "NIFTY_CE": {"last_price": 80.0, "volume": 1000}
+    }
+
+    allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
+
+    assert allowed is True
+    assert reason == "OK"
+
+
 def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
     manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
     manager.daily_max_trades = 1
@@ -284,6 +334,21 @@ def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
     allowed, reason = manager.can_open_trade("NIFTY_PE", "SELL")
     assert allowed is False
     assert "reversed" in reason.lower() or "loss" in reason.lower() or "trade" in reason.lower()
+
+
+def test_option_position_size_uses_contract_lots_and_paper_fallback():
+    manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
+    manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
+
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=10.0, premium_stop_pct=0.35
+    ) == 260
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35
+    ) == 0
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35, allow_paper_lot=True
+    ) == 65
 
 
 def test_refresh_instrument_tokens_fails_for_unresolved_symbols():
@@ -467,6 +532,37 @@ def test_on_ticks_drops_malformed_zero_instrument_tokens():
     stream.on_ticks(None, malformed_ticks)
 
     callback.assert_not_called()
+
+
+def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token")
+        )
+
+    callback = Mock()
+    stream.on_tick_callback = callback
+    exchange_timestamp = datetime(2026, 9, 16, 14, 10)
+
+    stream.on_ticks(
+        None,
+        [
+            {
+                "instrument_token": 123,
+                "exchange_timestamp": exchange_timestamp,
+                "last_price": 100.0,
+                "volume_traded": 42,
+            }
+        ],
+    )
+
+    tick = callback.call_args.args[0]
+    assert tick.timestamp.isoformat() == "2026-09-16T14:10:00+05:30"
+    assert tick.volume == 42
 
 
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():

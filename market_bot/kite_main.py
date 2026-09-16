@@ -39,6 +39,9 @@ HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 
 
 class KiteTradingBot:
+    def _options_enabled(self) -> bool:
+        return self.config.get("trading_mode") in {"intraday_options", "intraday_both"}
+
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
         self.config = self._load_config()
@@ -47,6 +50,12 @@ class KiteTradingBot:
         self.intraday_manager = IntradayManager(
             account_size=self.config.get("account_size", 100000),
             risk_per_trade_pct=self.config.get("risk_per_trade_pct", 1.0),
+        )
+        self.intraday_manager.daily_max_trades = int(
+            self.config.get("daily_max_trades", self.intraday_manager.daily_max_trades)
+        )
+        self.intraday_manager.daily_max_loss = float(
+            self.config.get("daily_max_loss", self.intraday_manager.daily_max_loss)
         )
 
         self.bar_builder = BarBuilder(
@@ -114,7 +123,7 @@ class KiteTradingBot:
 
     def _preferred_option_symbol(self, underlying: str, signal: str) -> Optional[str]:
         """Map a directional signal to the correct option contract for one underlying."""
-        if self.config.get("trading_mode") != "intraday_options":
+        if not self._options_enabled():
             return None
         if not underlying:
             return None
@@ -137,7 +146,7 @@ class KiteTradingBot:
 
     def _option_leg_is_active(self, symbol: str, signal: str) -> bool:
         """Only allow the preferred option leg to trade for a given underlying."""
-        if self.config.get("trading_mode") != "intraday_options":
+        if not self._options_enabled():
             return True
         if "_" not in symbol:
             return True
@@ -149,7 +158,7 @@ class KiteTradingBot:
 
     def _option_quality_gate(self, symbol: str, signal: str) -> tuple[bool, str]:
         """Reject options that fail premium, volume, OI, or IV sanity checks."""
-        if self.config.get("trading_mode") != "intraday_options":
+        if not self._options_enabled():
             return True, "OK"
 
         quote_data = self.option_quote_cache.get(symbol, {})
@@ -180,9 +189,11 @@ class KiteTradingBot:
             return False, f"premium too high: {premium} > {max_premium}"
         if volume < min_volume:
             return False, f"volume too low: {volume} < {min_volume}"
-        if oi < min_oi:
+        if "oi" in quote_data and int(quote_data["oi"] or 0) < min_oi:
+            oi = int(quote_data["oi"] or 0)
             return False, f"open interest too low: {oi} < {min_oi}"
-        if iv < iv_min or iv > iv_max:
+        if "iv" in quote_data and not iv_min <= float(quote_data["iv"]) <= iv_max:
+            iv = float(quote_data["iv"])
             return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
         return True, "OK"
 
@@ -345,7 +356,7 @@ class KiteTradingBot:
             )
             return
 
-        if self.config.get("trading_mode") == "intraday_options" and "_" in symbol:
+        if self._options_enabled() and "_" in symbol:
             underlying = symbol.rsplit("_", 1)[0].upper()
             preferred = self._preferred_option_symbol(underlying, market_score.signal)
             if preferred and symbol != preferred:
@@ -388,7 +399,7 @@ class KiteTradingBot:
             )
             self.premarkarket_candidates.clear()
 
-        if self.config.get("trading_mode") == "intraday_options":
+        if self._options_enabled():
             option_allowed, option_reason = self.intraday_manager.can_open_trade(symbol, market_score.signal)
             if not option_allowed:
                 logger.info("[%s] Daily option block: %s", symbol, option_reason)
@@ -428,9 +439,11 @@ class KiteTradingBot:
         self.option_quote_cache[symbol] = {
             "last_price": float(tick.last_price),
             "volume": int(tick.volume),
-            "oi": int(getattr(tick, "oi", 0) or 0),
-            "iv": float(getattr(tick, "iv", 0.0) or 0.0),
         }
+        if tick.oi is not None:
+            self.option_quote_cache[symbol]["oi"] = int(tick.oi)
+        if tick.iv is not None:
+            self.option_quote_cache[symbol]["iv"] = float(tick.iv)
         if self.intraday_manager.should_exit_all_positions():
             self._handle_market_close_exit()
         else:
@@ -493,7 +506,7 @@ class KiteTradingBot:
                 },
                 action,
             )
-        mode = "intraday_options" if self.config.get("trading_mode") == "intraday_options" else "futures"
+        mode = "intraday_options" if self._options_enabled() else "futures"
         option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
         trading_symbol = self.kite_stream.contract_symbols.get(symbol, symbol)
         close_alert = self.telegram_notifier.format_close(
@@ -546,7 +559,7 @@ class KiteTradingBot:
         ):
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
         if open_trade is None:
-            if self.config.get("trading_mode") == "intraday_options" and "_" in symbol:
+            if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
@@ -556,6 +569,7 @@ class KiteTradingBot:
                     premium=max(premium, 0.01),
                     max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
                     premium_stop_pct=premium_stop_pct,
+                    allow_paper_lot=self.paper_trading_enabled,
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -593,7 +607,7 @@ class KiteTradingBot:
             )
             self.intraday_manager.record_trade_open(symbol, "BUY")
 
-            mode = "intraday_options" if self.config.get("trading_mode") == "intraday_options" else "futures"
+            mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
             trading_symbol = self.kite_stream.contract_symbols.get(symbol, symbol)
             alert = self.telegram_notifier.format_trade(
@@ -637,7 +651,7 @@ class KiteTradingBot:
         ):
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
         if open_trade is None:
-            if self.config.get("trading_mode") == "intraday_options" and "_" in symbol:
+            if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
@@ -647,6 +661,7 @@ class KiteTradingBot:
                     premium=max(premium, 0.01),
                     max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
                     premium_stop_pct=premium_stop_pct,
+                    allow_paper_lot=self.paper_trading_enabled,
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -684,7 +699,7 @@ class KiteTradingBot:
             )
             self.intraday_manager.record_trade_open(symbol, "SELL")
 
-            mode = "intraday_options" if self.config.get("trading_mode") == "intraday_options" else "futures"
+            mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
             trading_symbol = self.kite_stream.contract_symbols.get(symbol, symbol)
             alert = self.telegram_notifier.format_trade(
@@ -758,7 +773,10 @@ class KiteTradingBot:
 
     def run(self) -> None:
         """Start the bot and stream market data with intraday monitoring."""
-        logger.info("Starting Kite Trading Bot - INTRADAY FUTURES MODE")
+        logger.info(
+            "Starting Kite Trading Bot - %s MODE",
+            self.config.get("trading_mode", "intraday_futures").upper(),
+        )
         logger.info(
             "Execution mode: %s",
             "REALTIME PAPER TRADING" if self.paper_trading_enabled else "LIVE ORDERS",
@@ -778,6 +796,7 @@ class KiteTradingBot:
                 self.telegram_notifier.send_heartbeat(
                     instruments=len(self.config["instrument_tokens"]),
                     bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
+                    mode=self.config.get("trading_mode", "intraday_futures"),
                 )
                 last_heartbeat = time.monotonic()
                 last_close_check = datetime.now(IST)
@@ -788,6 +807,7 @@ class KiteTradingBot:
                         self.telegram_notifier.send_heartbeat(
                             instruments=len(self.config["instrument_tokens"]),
                             bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
+                            mode=self.config.get("trading_mode", "intraday_futures"),
                         )
                         last_heartbeat = now_monotonic
 
