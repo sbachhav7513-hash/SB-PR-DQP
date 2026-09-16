@@ -28,6 +28,8 @@ class Tick:
     bid: float = 0.0
     ask: float = 0.0
     volume: int = 0
+    oi: Optional[int] = None
+    iv: Optional[float] = None
 
 
 @dataclass
@@ -116,6 +118,24 @@ class KiteMarketStream:
                     "intraday_options requires at least one options_underlyings entry"
                 )
             return self._select_current_options()
+
+        if self.config.trading_mode == "intraday_both":
+            spot_tokens = dict(self.config.instrument_tokens)
+            futures = self._select_current_futures()
+            futures_specs = dict(self.contract_specs)
+            futures_symbols = dict(self.contract_symbols)
+
+            self.config.instrument_tokens = spot_tokens
+            options = self._select_current_options()
+            self.contract_specs = {**futures_specs, **self.contract_specs}
+            self.contract_symbols = {**futures_symbols, **self.contract_symbols}
+            combined = {**futures, **options}
+            self.config.instrument_tokens = combined
+            logger.info(
+                "Combined NFO subscription: %d futures/options contracts",
+                len(combined),
+            )
+            return combined
 
         if self.config.instrument_tokens and not self.config.futures_underlyings:
             master = {
@@ -567,13 +587,28 @@ class KiteMarketStream:
                     logger.warning("Dropping Kite tick with non-positive instrument_token=%s: %s", instrument_token, tick)
                     continue
 
+                raw_timestamp = tick.get("exchange_timestamp", tick.get("timestamp"))
+                if raw_timestamp is None:
+                    logger.warning("Dropping Kite tick without timestamp: %s", tick)
+                    continue
+                if isinstance(raw_timestamp, datetime):
+                    timestamp = (
+                        raw_timestamp.replace(tzinfo=IST)
+                        if raw_timestamp.tzinfo is None
+                        else raw_timestamp.astimezone(IST)
+                    )
+                else:
+                    timestamp = datetime.fromtimestamp(float(raw_timestamp), tz=IST)
+
                 tick_obj = Tick(
                     instrument_token=instrument_token,
-                    timestamp=datetime.fromtimestamp(tick.get("timestamp", 0), tz=IST),
+                    timestamp=timestamp,
                     last_price=float(tick.get("last_price", 0.0)),
                     bid=float(tick.get("bid", 0.0)),
                     ask=float(tick.get("ask", 0.0)),
-                    volume=int(tick.get("volume", 0)),
+                    volume=int(tick.get("volume_traded", tick.get("volume", 0))),
+                    oi=(int(tick["oi"]) if tick.get("oi") is not None else None),
+                    iv=(float(tick["iv"]) if tick.get("iv") is not None else None),
                 )
                 if self.on_tick_callback:
                     self.on_tick_callback(tick_obj)

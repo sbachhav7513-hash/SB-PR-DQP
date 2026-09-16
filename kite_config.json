@@ -1,7 +1,7 @@
 {
   "kite_api_key": null,
   "kite_access_token": null,
-  "trading_mode": "intraday_options",
+  "trading_mode": "intraday_both",
   "paper_trading_enabled": true,
   "live_orders_enabled": false,
   "live_orders_confirmed": false,
@@ -17,7 +17,7 @@
     "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
   ],
   "option_expiry_days": 21,
-  "option_expiry_mode": "next_week",
+  "option_expiry_mode": "nearest",
   "option_strike_step": {
     "NIFTY": 50,
     "BANKNIFTY": 100,

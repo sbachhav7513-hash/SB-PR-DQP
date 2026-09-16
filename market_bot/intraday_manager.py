@@ -260,6 +260,7 @@ class IntradayManager:
         premium: float,
         max_risk_per_trade: Optional[float] = None,
         premium_stop_pct: float = 0.35,
+        allow_paper_lot: bool = False,
     ) -> int:
         """Premium-based sizing for options: risk = premium * quantity * stop_pct."""
         if premium <= 0:
@@ -267,6 +268,17 @@ class IntradayManager:
         risk_budget = max_risk_per_trade if max_risk_per_trade is not None else self.max_risk_per_trade
         if risk_budget <= 0:
             return 0
-        stop_value = premium * premium_stop_pct
-        max_contracts = int(risk_budget / max(stop_value, 1e-6))
-        return max(1, min(max_contracts, 5)) if max_contracts >= 1 else 0
+        lot_size = int(self.contract_specs.get(symbol, {}).get("lot_size", 1))
+        stop_value_per_lot = premium * premium_stop_pct * lot_size
+        max_lots = int(risk_budget / max(stop_value_per_lot, 1e-6))
+        if max_lots < 1:
+            if allow_paper_lot:
+                logger.info(
+                    "[%s] Paper option sizing: simulating one lot; estimated risk %.2f exceeds budget %.2f",
+                    symbol,
+                    stop_value_per_lot,
+                    risk_budget,
+                )
+                return lot_size
+            return 0
+        return min(max_lots, 5) * lot_size
