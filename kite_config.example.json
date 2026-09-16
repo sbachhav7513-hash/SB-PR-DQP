@@ -18,6 +18,13 @@
   "auto_discover_futures": true,
   "max_futures": 8,
   "min_futures_volume": 0,
+  "options_underlyings": ["NIFTY", "BANKNIFTY"],
+  "option_expiry_days": 14,
+  "option_strike_step": {
+    "NIFTY": 50,
+    "BANKNIFTY": 100
+  },
+  "min_options_volume": 0,
   "news_enabled": true,
   "news_refresh_seconds": 900,
   "instrument_tokens": {

@@ -108,6 +108,31 @@ Add or remove candidate underlyings in `futures_underlyings`. Keep
 `min_futures_volume` at `0` before the market opens; raise it only when you
 want startup to exclude contracts with low current-day volume.
 
+### 4. Intraday Options Mode
+
+Options use the same signal, risk, paper-trading, stop/target, journal, and
+15:15 forced-exit flow as futures. To enable them, set
+`trading_mode` to `intraday_options`, keep the underlying spot instrument
+tokens in `instrument_tokens`, and configure the option universe:
+
+```json
+{
+   "trading_mode": "intraday_options",
+   "options_underlyings": ["NIFTY", "BANKNIFTY"],
+   "option_expiry_days": 14,
+   "option_strike_step": {"NIFTY": 50, "BANKNIFTY": 100},
+   "min_options_volume": 0
+}
+```
+
+At startup the bot selects the nearest non-expired expiry within
+`option_expiry_days`, then the ATM call and put for each underlying using the
+spot token price. The selected option premium is streamed and scored directly;
+the configured stop and target percentages therefore apply to the option
+premium. `paper_trading_enabled` should remain `true` until this flow has been
+validated with your account and broker settings. A signal can still be HOLD,
+so this mode does not guarantee a trade every day.
+
 ### 3. Key Parameters
 
 | Parameter | Default | Range | Notes |
