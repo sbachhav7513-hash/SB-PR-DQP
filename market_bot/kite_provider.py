@@ -99,10 +99,11 @@ class KiteMarketStream:
         self.is_connected = False
         self.connection_lock = threading.Lock()
         self.contract_specs: Dict[str, Dict[str, int]] = {}
+        self.contract_symbols: Dict[str, str] = {}
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
-        if self.config.instrument_tokens:
+        if self.config.instrument_tokens and not self.config.futures_underlyings:
             master = {
                 row["tradingsymbol"]: int(row["instrument_token"])
                 for row in self.kite.instruments("NSE")
@@ -268,6 +269,7 @@ class KiteMarketStream:
                 ",".join(self.config.futures_underlyings),
             )
             self.contract_specs = {}
+            self.contract_symbols = {}
             return {}
 
         if self.config.auto_discover_futures:
@@ -289,6 +291,9 @@ class KiteMarketStream:
             }
             for row in selected_rows
         }
+        self.contract_symbols = {
+            row["name"].upper(): row["tradingsymbol"] for row in selected_rows
+        }
         resolved = {
             row["name"].upper(): int(row["instrument_token"])
             for row in selected_rows
@@ -300,6 +305,45 @@ class KiteMarketStream:
             ", ".join(resolved),
         )
         return resolved
+
+    def place_market_order(self, symbol: str, side: str, quantity: int) -> str:
+        """Place one validated MIS market order for a selected NFO contract."""
+        if side not in {"BUY", "SELL"}:
+            raise ValueError(f"Unsupported order side: {side}")
+        if quantity <= 0:
+            raise ValueError("Order quantity must be positive")
+
+        tradingsymbol = self.contract_symbols.get(symbol)
+        if not tradingsymbol:
+            raise RuntimeError(f"No selected NFO contract is available for {symbol}")
+
+        transaction_type = (
+            self.kite.TRANSACTION_TYPE_BUY
+            if side == "BUY"
+            else self.kite.TRANSACTION_TYPE_SELL
+        )
+        order_id = self.kite.place_order(
+            variety=self.kite.VARIETY_REGULAR,
+            exchange=self.kite.EXCHANGE_NFO,
+            tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            order_type=self.kite.ORDER_TYPE_MARKET,
+            product=self.kite.PRODUCT_MIS,
+            validity=self.kite.VALIDITY_DAY,
+        )
+        if not order_id:
+            raise RuntimeError(
+                f"Kite returned no order id for {side} {quantity} {tradingsymbol}"
+            )
+        logger.info(
+            "Kite order accepted: id=%s side=%s quantity=%s contract=%s",
+            order_id,
+            side,
+            quantity,
+            tradingsymbol,
+        )
+        return str(order_id)
 
     def validate_session(self) -> bool:
         """Verify REST authentication before attempting the WebSocket handshake."""
