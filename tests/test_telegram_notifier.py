@@ -32,3 +32,25 @@ def test_close_message_includes_exact_trading_symbol():
 
     assert "Trade Closed: OPTION SELL NIFTY_PE | Leg: PE" in payload["message"]
     assert "Trading symbol: NIFTY26SEP25000PE" in payload["message"]
+
+
+def test_heartbeat_message_uses_configured_trading_mode():
+    notifier = TelegramNotifier()
+
+    message = notifier.build_heartbeat_message(
+        instruments=15,
+        bar_interval_seconds=60,
+        mode="intraday_futures",
+    )
+
+    assert "Mode: Intraday Futures" in message
+    assert "Instruments tracked: 15" in message
+
+    options_message = notifier.build_heartbeat_message(
+        instruments=12,
+        bar_interval_seconds=30,
+        mode="intraday_options",
+    )
+
+    assert "Mode: Intraday Options" in options_message
+    assert "Instruments tracked: 12" in options_message

@@ -43,17 +43,38 @@ class TelegramNotifier:
             logger.error("Telegram returned an invalid response: %s", exc)
             return False
 
-    def send_heartbeat(self, instruments: int, bar_interval_seconds: int) -> bool:
-        return self.send_message(
+    def build_heartbeat_message(
+        self,
+        instruments: int,
+        bar_interval_seconds: int,
+        mode: Optional[str] = None,
+    ) -> str:
+        normalized_mode = str(mode or "intraday_futures").strip().lower()
+        if normalized_mode in {"intraday_options", "options"}:
+            mode_label = "Intraday Options"
+        elif normalized_mode in {"intraday_both", "both"}:
+            mode_label = "Intraday Both"
+        else:
+            mode_label = "Intraday Futures"
+
+        return (
             "Market Bot Status\n"
             "Status: LIVE\n"
-            "Mode: Intraday Futures\n"
+            f"Mode: {mode_label}\n"
             "Signal engine: online\n"
             f"Instruments tracked: {instruments}\n"
             f"Bar interval: {bar_interval_seconds}s\n"
             "Next check: recent bars and live quote feed are being monitored\n"
             "Action: no trade signal yet; confirm signal quality and market context"
         )
+
+    def send_heartbeat(
+        self,
+        instruments: int,
+        bar_interval_seconds: int,
+        mode: Optional[str] = None,
+    ) -> bool:
+        return self.send_message(self.build_heartbeat_message(instruments, bar_interval_seconds, mode))
 
     def send_daily_summary(
         self,
