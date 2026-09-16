@@ -66,6 +66,18 @@ class KiteTradingBot:
             on_tick_callback=self._on_tick,
         )
         self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
+        self.paper_trading_enabled = bool(
+            self.config.get("paper_trading_enabled", True)
+        )
+        self.live_orders_enabled = bool(self.config.get("live_orders_enabled", False))
+        if self.paper_trading_enabled and self.live_orders_enabled:
+            raise RuntimeError(
+                "paper_trading_enabled and live_orders_enabled cannot both be true"
+            )
+        if self.live_orders_enabled and not self.config.get("live_orders_confirmed", False):
+            raise RuntimeError(
+                "live_orders_enabled requires live_orders_confirmed=true in kite_config.json"
+            )
         self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
         self._warm_up_bars()
         self.telegram_notifier = TelegramNotifier(
@@ -313,6 +325,17 @@ class KiteTradingBot:
     def _close_position(self, symbol: str, price: float, reason: str) -> None:
         position = self.intraday_manager.active_positions.get(symbol)
         action = position["direction"] if position else None
+        if self.live_orders_enabled and position:
+            exit_side = "SELL" if action == "BUY" else "BUY"
+            try:
+                self.kite_stream.place_market_order(
+                    symbol, exit_side, int(position["quantity"])
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] Live exit order failed; keeping local position open", symbol
+                )
+                return
         trade = self.trade_journal.get_open_trade(symbol, action)
         journal_pnl = self.trade_journal.close_trade(symbol, price, action, reason)
         exit_info = self.intraday_manager.close_position(symbol, price, reason)
@@ -388,12 +411,25 @@ class KiteTradingBot:
             
             # Calculate position size for futures
             quantity = self.intraday_manager.calculate_position_size(
-                symbol, price, risk_plan.stop_loss
+                symbol,
+                price,
+                risk_plan.stop_loss,
+                allow_paper_lot=self.paper_trading_enabled,
             )
             
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
                 return "position_size_zero"
+
+            order_id = None
+            if self.live_orders_enabled:
+                try:
+                    order_id = self.kite_stream.place_market_order(
+                        symbol, "BUY", quantity
+                    )
+                except Exception:
+                    logger.exception("[%s] Live BUY order failed", symbol)
+                    return "live_order_failed"
             
             # Register position in intraday manager
             self.intraday_manager.register_position(
@@ -413,6 +449,8 @@ class KiteTradingBot:
             alert["stop_loss"] = risk_plan.stop_loss
             alert["take_profit"] = risk_plan.take_profit
             alert["quantity"] = quantity
+            if order_id:
+                alert["order_id"] = order_id
 
             self.trade_journal.log_trade(alert)
             logger.info(
@@ -445,12 +483,25 @@ class KiteTradingBot:
             
             # Calculate position size for futures
             quantity = self.intraday_manager.calculate_position_size(
-                symbol, price, risk_plan.stop_loss
+                symbol,
+                price,
+                risk_plan.stop_loss,
+                allow_paper_lot=self.paper_trading_enabled,
             )
             
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
                 return "position_size_zero"
+
+            order_id = None
+            if self.live_orders_enabled:
+                try:
+                    order_id = self.kite_stream.place_market_order(
+                        symbol, "SELL", quantity
+                    )
+                except Exception:
+                    logger.exception("[%s] Live SELL order failed", symbol)
+                    return "live_order_failed"
             
             # Register position in intraday manager
             self.intraday_manager.register_position(
@@ -470,6 +521,8 @@ class KiteTradingBot:
             alert["stop_loss"] = risk_plan.stop_loss
             alert["take_profit"] = risk_plan.take_profit
             alert["quantity"] = quantity
+            if order_id:
+                alert["order_id"] = order_id
 
             self.trade_journal.log_trade(alert)
             logger.info(
@@ -524,6 +577,10 @@ class KiteTradingBot:
     def run(self) -> None:
         """Start the bot and stream market data with intraday monitoring."""
         logger.info("Starting Kite Trading Bot - INTRADAY FUTURES MODE")
+        logger.info(
+            "Execution mode: %s",
+            "REALTIME PAPER TRADING" if self.paper_trading_enabled else "LIVE ORDERS",
+        )
         logger.info(f"Instruments: {list(self.config['instrument_tokens'].keys())}")
         logger.info(f"Bar interval: {self.config.get('bar_interval_seconds', 60)}s")
         logger.info(f"Market close exit time: {self.intraday_manager.AUTO_EXIT_TIME}")

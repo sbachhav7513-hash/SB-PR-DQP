@@ -28,10 +28,11 @@ class IntradayManager:
         "BANKNIFTY": BANKNIFTY_LOT_SIZE,
     }
     
-    # Instrument multipliers (per point value in INR)
+    # Quantity already contains the complete lot size, so futures use one
+    # rupee of P&L per price point per unit unless the broker provides specs.
     MULTIPLIERS = {
-        "NIFTY": 100,
-        "BANKNIFTY": 100,
+        "NIFTY": 1,
+        "BANKNIFTY": 1,
         "TCS": 1,
         "INFY": 1,
         "WIPRO": 1,
@@ -79,7 +80,8 @@ class IntradayManager:
         self, 
         symbol: str, 
         entry_price: float, 
-        stop_loss_price: float
+        stop_loss_price: float,
+        allow_paper_lot: bool = False,
     ) -> int:
         """
         Calculate position size for futures based on risk management.
@@ -110,11 +112,20 @@ class IntradayManager:
         # Futures risk is based on the complete lot, not one index point unit.
         risk_per_lot = risk_points * multiplier * lot_size
         
-        # Never force a lot when the configured risk budget cannot support it.
+        # Paper mode can observe one complete lot without changing live risk rules.
         if risk_per_lot <= 0:
             return 0
         lots = int(self.max_risk_per_trade / risk_per_lot)
         if lots < 1:
+            if allow_paper_lot:
+                logger.info(
+                    "[%s] Paper position sizing: simulating one lot; "
+                    "estimated risk %.2f exceeds budget %.2f",
+                    symbol,
+                    risk_per_lot,
+                    self.max_risk_per_trade,
+                )
+                return lot_size
             logger.warning(
                 "[%s] One lot risks %.2f, above the configured limit of %.2f; skipping",
                 symbol,
