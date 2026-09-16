@@ -587,13 +587,26 @@ class KiteMarketStream:
                     logger.warning("Dropping Kite tick with non-positive instrument_token=%s: %s", instrument_token, tick)
                     continue
 
+                raw_timestamp = tick.get("exchange_timestamp", tick.get("timestamp"))
+                if raw_timestamp is None:
+                    logger.warning("Dropping Kite tick without timestamp: %s", tick)
+                    continue
+                if isinstance(raw_timestamp, datetime):
+                    timestamp = (
+                        raw_timestamp.replace(tzinfo=IST)
+                        if raw_timestamp.tzinfo is None
+                        else raw_timestamp.astimezone(IST)
+                    )
+                else:
+                    timestamp = datetime.fromtimestamp(float(raw_timestamp), tz=IST)
+
                 tick_obj = Tick(
                     instrument_token=instrument_token,
-                    timestamp=datetime.fromtimestamp(tick.get("timestamp", 0), tz=IST),
+                    timestamp=timestamp,
                     last_price=float(tick.get("last_price", 0.0)),
                     bid=float(tick.get("bid", 0.0)),
                     ask=float(tick.get("ask", 0.0)),
-                    volume=int(tick.get("volume", 0)),
+                    volume=int(tick.get("volume_traded", tick.get("volume", 0))),
                     oi=(int(tick["oi"]) if tick.get("oi") is not None else None),
                     iv=(float(tick["iv"]) if tick.get("iv") is not None else None),
                 )
