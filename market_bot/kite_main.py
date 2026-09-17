@@ -393,10 +393,6 @@ class KiteTradingBot:
                 return
 
         if self.premarkarket_candidates:
-            self.telegram_notifier.send_watchlist(
-                self.premarkarket_candidates,
-                session_label="PREMARKET",
-            )
             self.premarkarket_candidates.clear()
 
         if self._options_enabled():
