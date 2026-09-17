@@ -255,9 +255,6 @@ def run_bot(config: BotConfig) -> None:
                 else:
                     print(f"[{ticker}] HOLD - not enough confidence")
 
-            if premarket_candidates:
-                bot.send_watchlist(premarket_candidates, session_label="PREMARKET")
-
             summary = journal.portfolio_summary()
             print(f"[PORTFOLIO] closed={summary['closed_pnl']:.2f}, open={summary['open_pnl']:.2f}, total={summary['total_pnl']:.2f}")
             print("-")
