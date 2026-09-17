@@ -83,6 +83,22 @@ def test_weak_noisy_uptrend_does_not_trigger_buy_signal():
     assert result.score < 80
 
 
+def test_flat_market_history_is_rejected_by_regime_filter():
+    history = [{"close": 100.0 + index * 0.05} for index in range(80)]
+
+    signal = analyze_history(
+        ticker="TEST",
+        history=history,
+        ema_fast=9,
+        ema_slow=21,
+        rsi_period=14,
+        alert_rsi_low=35,
+        alert_rsi_high=65,
+    )
+
+    assert signal is None
+
+
 def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
     benchmark_history = [{"close": 200.0 - index} for index in range(40)]
 
