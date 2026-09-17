@@ -85,6 +85,11 @@ class IntradayManager:
         """Check if it's time to exit all positions (3:15 PM)."""
         now = datetime.now(IST).time()
         return now >= self.AUTO_EXIT_TIME
+
+    def is_market_closed(self) -> bool:
+        """Check if the regular market session has ended (3:30 PM)."""
+        now = datetime.now(IST).time()
+        return now >= self.MARKET_CLOSE
     
     def calculate_position_size(
         self, 

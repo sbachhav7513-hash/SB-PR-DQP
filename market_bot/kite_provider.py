@@ -551,6 +551,61 @@ class KiteMarketStream:
         )
         return str(order_id)
 
+    def wait_for_order_fill(
+        self, order_id: str, requested_quantity: int, timeout_seconds: float = 10.0
+    ) -> Dict[str, float | int | str]:
+        """Wait for a market order to complete and return its execution details."""
+        deadline = time.monotonic() + timeout_seconds
+        terminal_failures = {"REJECTED", "CANCELLED", "CANCELLED AMO"}
+        while time.monotonic() < deadline:
+            history = self.kite.order_history(order_id)
+            if not history:
+                time.sleep(0.25)
+                continue
+
+            latest = history[-1]
+            status = str(latest.get("status", "")).upper()
+            if status == "COMPLETE":
+                filled_quantity = int(latest.get("filled_quantity", 0) or 0)
+                average_price = float(latest.get("average_price", 0.0) or 0.0)
+                if filled_quantity != requested_quantity or average_price <= 0:
+                    raise RuntimeError(
+                        f"Order {order_id} completed with invalid fill: "
+                        f"quantity={filled_quantity}, average_price={average_price}"
+                    )
+                return {
+                    "order_id": str(order_id),
+                    "status": status,
+                    "filled_quantity": filled_quantity,
+                    "average_price": average_price,
+                }
+            if status in terminal_failures:
+                message = latest.get("status_message") or latest.get("status_message_raw")
+                raise RuntimeError(f"Order {order_id} {status}: {message or 'no reason'}")
+            time.sleep(0.25)
+
+        raise TimeoutError(
+            f"Timed out waiting for order {order_id} to complete after {timeout_seconds:.1f}s"
+        )
+
+    def assert_flat_account(self) -> None:
+        """Fail closed when live trading starts with an unmanaged position."""
+        positions = self.kite.positions()
+        open_positions = [
+            position
+            for position in positions.get("net", [])
+            if int(position.get("quantity", 0) or 0) != 0
+        ]
+        if open_positions:
+            symbols = ", ".join(
+                str(position.get("tradingsymbol", "unknown"))
+                for position in open_positions
+            )
+            raise RuntimeError(
+                "Live trading requires a flat account at startup; unmanaged positions: "
+                + symbols
+            )
+
     def validate_session(self) -> bool:
         """Verify REST authentication before attempting the WebSocket handshake."""
         try:
