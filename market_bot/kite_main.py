@@ -93,6 +93,8 @@ class KiteTradingBot:
             raise RuntimeError(
                 "live_orders_enabled requires live_orders_confirmed=true in kite_config.json"
             )
+        if self.live_orders_enabled:
+            self.kite_stream.assert_flat_account()
         self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
         self._warm_up_bars()
         self.telegram_notifier = TelegramNotifier(
@@ -395,21 +397,6 @@ class KiteTradingBot:
         if self.premarkarket_candidates:
             self.premarkarket_candidates.clear()
 
-        if self._options_enabled():
-            option_allowed, option_reason = self.intraday_manager.can_open_trade(symbol, market_score.signal)
-            if not option_allowed:
-                logger.info("[%s] Daily option block: %s", symbol, option_reason)
-                self._record_decision(
-                    symbol,
-                    bar,
-                    bars,
-                    market_score,
-                    market_score.signal,
-                    f"OPTION_BLOCK_{option_reason.upper().replace(' ', '_')}",
-                    news_context,
-                )
-                return
-
         if market_score.signal == "BUY":
             outcome = self._handle_buy_signal(symbol, bar.close, market_score.score)
         elif market_score.signal == "SELL":
@@ -475,12 +462,17 @@ class KiteTradingBot:
         if self.live_orders_enabled and position:
             exit_side = "SELL" if action == "BUY" else "BUY"
             try:
-                self.kite_stream.place_market_order(
+                exit_order_id = self.kite_stream.place_market_order(
                     symbol, exit_side, int(position["quantity"])
                 )
+                fill = self.kite_stream.wait_for_order_fill(
+                    exit_order_id, int(position["quantity"])
+                )
+                price = float(fill["average_price"])
             except Exception:
                 logger.exception(
-                    "[%s] Live exit order failed; keeping local position open", symbol
+                    "[%s] Live exit order was not filled; keeping local position open",
+                    symbol,
                 )
                 return
         trade = self.trade_journal.get_open_trade(symbol, action)
@@ -491,6 +483,9 @@ class KiteTradingBot:
 
         pnl = exit_info["pnl_rupees"] if exit_info else journal_pnl
         if exit_info:
+            self.intraday_manager.record_trade_close(
+                symbol, reason, exit_info["pnl_rupees"]
+            )
             self.trade_journal.annotate_trade(
                 symbol,
                 {
@@ -554,7 +549,16 @@ class KiteTradingBot:
             and self.intraday_manager.active_positions[symbol]["direction"] == "SELL"
         ):
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
+            if (
+                symbol in self.intraday_manager.active_positions
+                or self.trade_journal.get_open_trade(symbol, "SELL")
+            ):
+                return "reversal_close_failed"
         if open_trade is None:
+            allowed, reason = self.intraday_manager.can_open_trade(symbol, "BUY")
+            if not allowed:
+                logger.info("[%s] Trade blocked: %s", symbol, reason)
+                return "trade_blocked"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
                 premium = float(self.latest_prices.get(symbol, price))
@@ -593,8 +597,23 @@ class KiteTradingBot:
                     order_id = self.kite_stream.place_market_order(
                         symbol, "BUY", quantity
                     )
+                    fill = self.kite_stream.wait_for_order_fill(order_id, quantity)
+                    quantity = int(fill["filled_quantity"])
+                    price = float(fill["average_price"])
+                    if self._options_enabled() and "_" in symbol:
+                        stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
+                        take_profit = price * (1.0 + premium_stop_pct * 1.8)
+                    else:
+                        risk_plan = build_risk_plan(
+                            price,
+                            "BUY",
+                            stop_loss_pct=self.config.get("stop_loss_pct", 0.75),
+                            take_profit_pct=self.config.get("take_profit_pct", 1.5),
+                        )
+                        stop_loss = risk_plan.stop_loss
+                        take_profit = risk_plan.take_profit
                 except Exception:
-                    logger.exception("[%s] Live BUY order failed", symbol)
+                    logger.exception("[%s] Live BUY order was not filled", symbol)
                     return "live_order_failed"
 
             # Register position in intraday manager
@@ -646,7 +665,16 @@ class KiteTradingBot:
             and self.intraday_manager.active_positions[symbol]["direction"] == "BUY"
         ):
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
+            if (
+                symbol in self.intraday_manager.active_positions
+                or self.trade_journal.get_open_trade(symbol, "BUY")
+            ):
+                return "reversal_close_failed"
         if open_trade is None:
+            allowed, reason = self.intraday_manager.can_open_trade(symbol, "SELL")
+            if not allowed:
+                logger.info("[%s] Trade blocked: %s", symbol, reason)
+                return "trade_blocked"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
                 premium = float(self.latest_prices.get(symbol, price))
@@ -685,8 +713,23 @@ class KiteTradingBot:
                     order_id = self.kite_stream.place_market_order(
                         symbol, "SELL", quantity
                     )
+                    fill = self.kite_stream.wait_for_order_fill(order_id, quantity)
+                    quantity = int(fill["filled_quantity"])
+                    price = float(fill["average_price"])
+                    if self._options_enabled() and "_" in symbol:
+                        stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
+                        take_profit = max(price * (1.0 - premium_stop_pct * 1.8), 0.01)
+                    else:
+                        risk_plan = build_risk_plan(
+                            price,
+                            "SELL",
+                            stop_loss_pct=self.config.get("stop_loss_pct", 0.75),
+                            take_profit_pct=self.config.get("take_profit_pct", 1.5),
+                        )
+                        stop_loss = risk_plan.stop_loss
+                        take_profit = risk_plan.take_profit
                 except Exception:
-                    logger.exception("[%s] Live SELL order failed", symbol)
+                    logger.exception("[%s] Live SELL order was not filled", symbol)
                     return "live_order_failed"
 
             # Register position in intraday manager
@@ -737,7 +780,12 @@ class KiteTradingBot:
             for pos_symbol, pos_details in positions.items():
                 price = self.latest_prices.get(pos_symbol, pos_details["entry_price"])
                 self._close_position(pos_symbol, price, "MARKET_CLOSE_FORCED_EXIT")
+
+    def _finalize_daily_session(self, now: datetime) -> None:
+        """Complete post-close reporting before allowing the service to exit."""
+        self._handle_market_close_exit()
         self._write_daily_summary_if_due()
+        self._run_weekly_report_if_due(now)
 
     def _write_daily_summary_if_due(self) -> None:
         """Publish one daily paper-trading summary after the session closes."""
@@ -810,15 +858,12 @@ class KiteTradingBot:
                     # Check every 30 seconds if it's time to force exit
                     now = datetime.now(IST)
                     if (now - last_close_check).total_seconds() >= 30:
-                        if self.intraday_manager.should_exit_all_positions():
-                            positions = self.intraday_manager.get_all_open_positions()
-                            if positions:
-                                self._handle_market_close_exit()
-                            else:
-                                self._write_daily_summary_if_due()
-                            self._run_weekly_report_if_due(now)
+                        if self.intraday_manager.is_market_closed():
+                            self._finalize_daily_session(now)
                             logger.info("Market session complete; shutting down bot.")
                             break
+                        if self.intraday_manager.should_exit_all_positions():
+                            self._handle_market_close_exit()
                         last_close_check = now
 
                     time.sleep(1)

@@ -10,6 +10,9 @@ WorkingDirectory=/opt/sb-pr-dqp
 EnvironmentFile=-/opt/sb-pr-dqp/.env
 ExecStart=/opt/sb-pr-dqp/.venv/bin/python /opt/sb-pr-dqp/run_kite_bot.py
 Restart=no
+# The bot exits normally after post-close reporting; systemd then marks this
+# daily service inactive without restarting it.
+RemainAfterExit=no
 KillSignal=SIGINT
 TimeoutStopSec=30
 

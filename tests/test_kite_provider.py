@@ -664,3 +664,64 @@ def test_place_market_order_uses_selected_nfo_contract():
         product="MIS",
         validity="DAY",
     )
+
+
+def test_wait_for_order_fill_returns_verified_execution_details():
+    kite = Mock()
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(KiteConfig(api_key="key", access_token="token"))
+
+    kite.order_history.return_value = [
+        {
+            "status": "COMPLETE",
+            "filled_quantity": 65,
+            "average_price": 123.45,
+        }
+    ]
+
+    assert stream.wait_for_order_fill("order-123", 65) == {
+        "order_id": "order-123",
+        "status": "COMPLETE",
+        "filled_quantity": 65,
+        "average_price": 123.45,
+    }
+
+
+def test_wait_for_order_fill_rejects_broker_rejection():
+    kite = Mock()
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(KiteConfig(api_key="key", access_token="token"))
+
+    kite.order_history.return_value = [
+        {"status": "REJECTED", "status_message": "Insufficient margin"}
+    ]
+
+    try:
+        stream.wait_for_order_fill("order-123", 65)
+    except RuntimeError as exc:
+        assert "Insufficient margin" in str(exc)
+    else:
+        raise AssertionError("Expected broker rejection to abort the entry")
+
+
+def test_assert_flat_account_rejects_unmanaged_positions():
+    kite = Mock()
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(KiteConfig(api_key="key", access_token="token"))
+
+    kite.positions.return_value = {
+        "net": [{"tradingsymbol": "NIFTY26SEP", "quantity": 65}]
+    }
+
+    try:
+        stream.assert_flat_account()
+    except RuntimeError as exc:
+        assert "NIFTY26SEP" in str(exc)
+    else:
+        raise AssertionError("Expected startup to reject unmanaged positions")
