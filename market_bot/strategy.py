@@ -113,6 +113,10 @@ def analyze_history(
     breakout_up = price > recent_high * 1.01
     breakout_down = price < recent_low * 0.99
 
+    ema_spread_pct = abs(fast_now - slow_now) / max(price, 1.0) * 100.0
+    if ema_spread_pct < 0.18:
+        return None
+
     if bullish_trend and in_uptrend and rsi_now > 45 and rsi_now < 70:
         if fast_prev <= slow_prev or breakout_up:
             stop_loss, take_profit = _trade_levels(price, "BUY", stop_loss_pct, take_profit_pct)
