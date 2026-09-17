@@ -261,16 +261,17 @@ Example:
 - Risk %: 1% = ₹1,000
 - NIFTY price: 19,200
 - SL: 19,100 (100 points)
-- Multiplier: ₹100/point
+- Multiplier: 1 rupee/point/unit; the exchange lot size is applied separately
 
-Risk per contract = 100 × ₹100 = ₹10,000
-Quantity = ₹1,000 / ₹10,000 = 0.1 → 1 lot minimum
+Risk per lot = 100 × 1 × 50 = ₹5,000
+Quantity = ₹1,000 / ₹5,000 = 0.2 → one lot minimum when paper trading
 ```
 
 ### Risk Limits
 - **Max risk per trade**: Calculated from `account_size × risk_per_trade_pct`
 - **Max 1 contract**: Prevents over-leverage with small SL
-- **Daily loss limit**: Monitor trades.jsonl and close bot if down 3%
+- **Daily loss limit**: Enforced across futures and options before new entries
+- **Daily trade and loss-streak limits**: Updated after every managed close
 
 ### Safety Features
 ✅ Auto position sizing (no manual entry required)
@@ -278,6 +279,8 @@ Quantity = ₹1,000 / ₹10,000 = 0.1 → 1 lot minimum
 ✅ Telegram alerts for all trades
 ✅ Trade journal logging
 ✅ Stop loss enforcement
+✅ Live fill confirmation before tracking a new position
+✅ Startup fails closed when the account has unmanaged positions
 
 ---
 
