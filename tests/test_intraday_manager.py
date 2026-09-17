@@ -1,7 +1,21 @@
 import json
+from datetime import datetime
+from unittest.mock import patch
 
 from market_bot.intraday_manager import IntradayManager
 from market_bot.trade_journal import TradeJournal
+
+
+def test_preclose_exit_and_market_close_are_distinct_boundaries():
+    manager = IntradayManager()
+
+    with patch("market_bot.intraday_manager.datetime") as clock:
+        clock.now.return_value = datetime(2026, 9, 17, 15, 20)
+        assert manager.should_exit_all_positions() is True
+        assert manager.is_market_closed() is False
+
+        clock.now.return_value = datetime(2026, 9, 17, 15, 30)
+        assert manager.is_market_closed() is True
 
 
 def test_index_quantity_uses_complete_lot_size():
@@ -53,3 +67,14 @@ def test_consecutive_losses_trigger_circuit_breaker():
     allowed, reason = manager.can_open_trade("NIFTY", "BUY")
     assert allowed is False
     assert "consecutive loss" in reason.lower()
+
+
+def test_close_position_updates_daily_risk_state():
+    manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
+    manager.register_position("NIFTY", "BUY", 50, 100.0, 99.0, 102.0)
+
+    closed = manager.close_position("NIFTY", 99.0, "STOP_LOSS")
+    manager.record_trade_close("NIFTY", "STOP_LOSS", closed["pnl_rupees"])
+
+    assert manager.daily_pnl == -50.0
+    assert manager.consecutive_losses == 1

@@ -49,12 +49,16 @@ class BarBuilder:
         self.bars: Dict[int, List[Bar]] = defaultdict(list)
         self.current_bar: Dict[int, dict] = {}
         self.last_bar_time: Dict[int, datetime] = {}
+        self.last_cumulative_volume: Dict[int, int] = {}
 
     def process_tick(self, tick: Tick) -> None:
         """Process a single tick and aggregate into bars."""
         token = tick.instrument_token
         price = tick.last_price
         timestamp = tick.timestamp
+        previous_volume = self.last_cumulative_volume.get(token)
+        volume_delta = 0 if previous_volume is None else max(tick.volume - previous_volume, 0)
+        self.last_cumulative_volume[token] = tick.volume
 
         if token not in self.last_bar_time:
             self.last_bar_time[token] = timestamp
@@ -63,7 +67,7 @@ class BarBuilder:
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": tick.volume,
+                "volume": volume_delta,
                 "start_time": timestamp,
             }
             return
@@ -101,7 +105,7 @@ class BarBuilder:
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": tick.volume,
+                "volume": volume_delta,
                 "start_time": bar_end,
             }
         else:
@@ -110,7 +114,7 @@ class BarBuilder:
             bar["high"] = max(bar["high"], price)
             bar["low"] = min(bar["low"], price)
             bar["close"] = price
-            bar["volume"] += tick.volume
+            bar["volume"] += volume_delta
 
     def _session_bars(self, bars: List[Bar]) -> List[Bar]:
         """Keep the current market session and fall back to the latest bars if needed."""
