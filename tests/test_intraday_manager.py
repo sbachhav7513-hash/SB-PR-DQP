@@ -38,3 +38,18 @@ def test_close_trade_records_exit_reason(tmp_path):
     record = json.loads(path.read_text(encoding="utf-8").strip())
     assert record["status"] == "closed"
     assert record["reason"] == "MARKET_CLOSE_FORCED_EXIT"
+
+
+def test_consecutive_losses_trigger_circuit_breaker():
+    manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
+    manager.max_consecutive_losses = 2
+
+    assert manager.can_open_trade("NIFTY", "BUY")[0] is True
+
+    manager.record_trade_close("NIFTY", "STOP_LOSS", pnl=-200.0)
+    assert manager.can_open_trade("NIFTY", "BUY")[0] is True
+
+    manager.record_trade_close("NIFTY", "STOP_LOSS", pnl=-300.0)
+    allowed, reason = manager.can_open_trade("NIFTY", "BUY")
+    assert allowed is False
+    assert "consecutive loss" in reason.lower()
