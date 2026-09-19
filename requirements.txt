@@ -1,3 +1,5 @@
 requests>=2.31.0
 kiteconnect>=4.3.0
 tzdata>=2023.3
+pandas>=2.0.0
+fastparquet>=2024.2.0
