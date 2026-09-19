@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
+from .accuracy_filters import AccuracyFilters
 from .bar_builder import BarBuilder, Bar
 from .engine import market_session_label, market_session_state, score_market
 from .intraday_manager import IntradayManager
@@ -118,6 +119,7 @@ class KiteTradingBot:
         self.premarkarket_candidates: list[tuple[str, str, int, str]] = []
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
+        self.accuracy_filters = AccuracyFilters()
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
@@ -396,6 +398,39 @@ class KiteTradingBot:
 
         if self.premarkarket_candidates:
             self.premarkarket_candidates.clear()
+
+        if market_score.signal in {"BUY", "SELL"}:
+            previous_bar = bars[-2].to_dict() if len(bars) > 1 else bars[-1].to_dict()
+            current_time = time.time()
+            now = datetime.now(IST)
+            allowed = self.accuracy_filters.validate_entry(
+                symbol=symbol,
+                signal=market_score.signal,
+                score=market_score.score,
+                history=[b.to_dict() for b in bars],
+                current_bar=bar.to_dict(),
+                previous_bar=previous_bar,
+                current_time=current_time,
+                hour=now.hour,
+                minute=now.minute,
+            )
+            if not allowed:
+                logger.info(
+                    "[%s] Signal rejected by accuracy filters: score=%s signal=%s",
+                    symbol,
+                    market_score.score,
+                    market_score.signal,
+                )
+                self._record_decision(
+                    symbol,
+                    bar,
+                    bars,
+                    market_score,
+                    market_score.signal,
+                    "accuracy_filter_rejected",
+                    news_context,
+                )
+                return
 
         if market_score.signal == "BUY":
             outcome = self._handle_buy_signal(symbol, bar.close, market_score.score)

@@ -15,6 +15,20 @@ class AccuracyFilters:
     def __init__(self):
         self.last_entry_time: Dict[str, float] = {}
         self.COOLDOWN_SECONDS = 300  # 5 minutes between entries
+        self.min_score_floor = 90
+        self.min_score_ceiling = 98
+
+    def get_min_score(self, recent_trades: int, recent_win_rate: float) -> int:
+        """Increase the entry threshold when recent performance is weak."""
+        if recent_trades < 5:
+            return self.min_score_floor
+        if recent_win_rate < 35.0:
+            return max(self.min_score_floor + 2, 92)
+        if recent_win_rate < 45.0:
+            return max(self.min_score_floor + 1, 91)
+        if recent_win_rate < 55.0:
+            return self.min_score_floor
+        return max(self.min_score_floor - 1, 88)
     
     # ========== FILTER 1: Volatility Check ==========
     @staticmethod
@@ -158,7 +172,7 @@ class AccuracyFilters:
         if signal == "HOLD":
             return False
         
-        # Check 2: RAISED THRESHOLD from 85 to 90
+        # Check 2: Adaptive threshold based on recent performance quality
         if score < 90:
             logger.debug(f"Score filter rejected: {score}/100 (need 90+)")
             return False
