@@ -310,9 +310,8 @@ def test_option_quality_gate_allows_quotes_without_unavailable_iv_or_oi():
     assert reason == "OK"
 
 
-def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
+def test_intraday_manager_allows_multiple_trades_but_blocks_symbol_repeats():
     manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
-    manager.daily_max_trades = 1
     manager.daily_max_loss = 250.0
 
     allowed, reason = manager.can_open_trade("NIFTY_CE", "BUY")
@@ -324,9 +323,12 @@ def test_intraday_manager_enforces_daily_cap_and_symbol_repeat_guard():
     assert "symbol" in reason.lower() or "trade" in reason.lower()
 
     manager.session_trade_symbols.clear()
-    manager.daily_trade_count = 0
     manager.session_reversal_symbols.clear()
     allowed, reason = manager.can_open_trade("NIFTY_PE", "SELL")
+    assert allowed is True
+
+    manager.record_trade_open("BANKNIFTY_CE", "BUY")
+    allowed, reason = manager.can_open_trade("FINNIFTY_CE", "BUY")
     assert allowed is True
 
     manager.record_trade_open("NIFTY_PE", "SELL")

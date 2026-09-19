@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import logging
 from collections import defaultdict
@@ -248,7 +247,7 @@ def _date_records(path: Path, target_date) -> List[Dict[str, Any]]:
 def write_daily_summary(
     data_dir: str = ".", paper_data_dir: str = "paper_trading_data", target_date=None
 ) -> Path:
-    """Write a compact daily CSV snapshot for the paper-trading session."""
+    """Write a compact compressed Parquet snapshot for the paper-trading session."""
     now = datetime.now()
     target_date = target_date or now.date()
     trades = [
@@ -273,12 +272,13 @@ def write_daily_summary(
     }
     recorder = PaperTradingRecorder(paper_data_dir)
     destination = recorder._day_path(
-        datetime.combine(target_date, datetime.min.time()).isoformat(), "daily_summary.csv"
+        datetime.combine(target_date, datetime.min.time()).isoformat(), "daily_summary.parquet"
     )
-    with destination.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["metric", "value"])
-        writer.writeheader()
-        writer.writerows({"metric": key, "value": value} for key, value in values.items())
+    recorder._write_parquet(
+        destination,
+        [{"metric": key, "value": value} for key, value in values.items()],
+        ["metric", "value"],
+    )
     return destination
 
 
@@ -289,7 +289,7 @@ def write_weekly_review(
     report = build_weekly_report(data_dir, days)
     now = datetime.now()
     recorder = PaperTradingRecorder(paper_data_dir)
-    day_path = recorder._day_path(now.isoformat(), "daily_summary.csv")
+    day_path = recorder._day_path(now.isoformat(), "daily_summary.parquet")
     destination = day_path.parent.parent / f"weekly_review_{now:%Y_%m_%d}.md"
     issues: List[str] = []
     improvements: List[str] = []
@@ -327,7 +327,7 @@ def write_weekly_review(
         *[f"- {improvement}" for improvement in improvements],
         "",
         "## Review Before Changing",
-        "- Compare the daily trades.csv files for the week, not just the aggregate P&L.",
+        "- Compare the daily trades.parquet files for the week, not just the aggregate P&L.",
         "- Check whether losses cluster by symbol, BUY/SELL direction, time, or exit reason.",
         "- Change one strategy or risk parameter at a time and continue paper trading.",
         "",
