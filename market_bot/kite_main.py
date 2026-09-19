@@ -52,9 +52,6 @@ class KiteTradingBot:
             account_size=self.config.get("account_size", 100000),
             risk_per_trade_pct=self.config.get("risk_per_trade_pct", 1.0),
         )
-        self.intraday_manager.daily_max_trades = int(
-            self.config.get("daily_max_trades", self.intraday_manager.daily_max_trades)
-        )
         self.intraday_manager.daily_max_loss = float(
             self.config.get("daily_max_loss", self.intraday_manager.daily_max_loss)
         )
