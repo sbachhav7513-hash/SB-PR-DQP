@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
-import csv
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+
+import pandas as pd
+from fastparquet import ParquetFile, write as write_parquet
 
 
 logger = logging.getLogger(__name__)
@@ -14,7 +16,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class PaperTradingRecorder:
-    """Store paper-trading events in date-partitioned CSV files."""
+    """Store paper-trading events in date-partitioned compressed Parquet files."""
 
     TRADE_COLUMNS = [
         "trade_id", "timestamp", "ticker", "action", "quantity", "entry",
@@ -55,43 +57,60 @@ class PaperTradingRecorder:
         return directory / filename
 
     @staticmethod
-    def _csv_value(value: Any) -> str:
+    def _parquet_value(value: Any) -> str:
         if isinstance(value, (dict, list, tuple)):
             return json.dumps(value, default=str, separators=(",", ":"))
         return "" if value is None else str(value)
 
+    @staticmethod
+    def _read_parquet(path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        return pd.read_parquet(path, engine="fastparquet").to_dict(orient="records")
+
+    @staticmethod
+    def _write_parquet(path: Path, rows: List[Dict[str, Any]], columns: List[str]) -> None:
+        frame = pd.DataFrame([
+            {
+                column: PaperTradingRecorder._parquet_value(row.get(column, ""))
+                for column in columns
+            }
+            for row in rows
+        ], columns=columns)
+        temporary = path.with_name(f".{path.name}.tmp")
+        write_parquet(temporary, frame, compression="SNAPPY")
+        temporary.replace(path)
+
     def _append(self, path: Path, record: Dict[str, Any], columns: List[str]) -> None:
-        exists = path.exists() and path.stat().st_size > 0
-        with path.open("a", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
-            if not exists:
-                writer.writeheader()
-            writer.writerow({column: self._csv_value(record.get(column)) for column in columns})
+        frame = pd.DataFrame([{
+            column: self._parquet_value(record.get(column)) for column in columns
+        }], columns=columns)
+        write_parquet(path, frame, compression="SNAPPY", append=path.exists())
 
     def record_decision(self, payload: Dict[str, Any]) -> None:
         timestamp = payload.get("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
-        self._append(self._day_path(timestamp, "decisions.csv"), payload, self.DECISION_COLUMNS)
+        self._append(self._day_path(timestamp, "decisions.parquet"), payload, self.DECISION_COLUMNS)
 
     def record_trade(self, payload: Dict[str, Any]) -> None:
         timestamp = payload.get("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
-        path = self._day_path(timestamp, "trades.csv")
-        rows: List[Dict[str, str]] = []
-        if path.exists():
-            with path.open("r", newline="", encoding="utf-8") as handle:
-                rows = list(csv.DictReader(handle))
+        path = self._day_path(timestamp, "trades.parquet")
+        rows = self._read_parquet(path)
         trade_id = str(payload.get("trade_id", ""))
         updated = False
         for index, row in enumerate(rows):
             if trade_id and row.get("trade_id") == trade_id:
-                rows[index] = {column: self._csv_value(payload.get(column)) for column in self.TRADE_COLUMNS}
+                rows[index] = {
+                    column: self._parquet_value(payload.get(column))
+                    for column in self.TRADE_COLUMNS
+                }
                 updated = True
                 break
         if not updated:
-            rows.append({column: self._csv_value(payload.get(column)) for column in self.TRADE_COLUMNS})
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=self.TRADE_COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
+            rows.append({
+                column: self._parquet_value(payload.get(column))
+                for column in self.TRADE_COLUMNS
+            })
+        self._write_parquet(path, rows, self.TRADE_COLUMNS)
 
 
 class DecisionJournal:

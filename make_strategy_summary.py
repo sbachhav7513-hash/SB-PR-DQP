@@ -30,7 +30,7 @@ items = [
     ),
     (
         "4. Risk management",
-        "Risk control is handled by IntradayManager. It calculates risk based on account size and configured risk per trade, tracks a daily loss cap, enforces daily trade limits, and monitors active positions. Futures position sizing is derived from the stop-loss distance, contract multiplier, and lot size. It sets SL and TP for each trade, auto-closes on TP/SL, and force-closes all open positions at 3:15 PM IST to avoid overnight exposure.",
+        "Risk control is handled by IntradayManager. It calculates risk based on account size and configured risk per trade, tracks a daily loss cap, applies loss-streak and symbol-level safeguards, and monitors active positions. Futures position sizing is derived from the stop-loss distance, contract multiplier, and lot size. It sets SL and TP for each trade, auto-closes on TP/SL, and force-closes all open positions at 3:15 PM IST to avoid overnight exposure.",
     ),
     (
         "5. Repo workflow / execution steps",
@@ -42,7 +42,7 @@ items = [
     ),
     (
         "7. Final summary",
-        "In short, this repo is using a disciplined intraday trend-following system: EMA + RSI for futures, filtered option selection for options, strong risk controls, daily trade caps, and a forced 3:15 PM exit. The operational model is: monitor live bars, take only clean setups, protect capital, log every decision, and refine every week using real market results.",
+        "In short, this repo is using a disciplined intraday trend-following system: EMA + RSI for futures, filtered option selection for options, strong risk controls, accuracy filters, and a forced 3:15 PM exit. The operational model is: monitor live bars, take only clean setups, protect capital, log every decision, and refine every week using real market results.",
     ),
 ]
 
