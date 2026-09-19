@@ -4,7 +4,7 @@ import csv
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,7 +18,7 @@ def _load_jsonl(path: Path, days: int) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
 
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     records: List[Dict[str, Any]] = []
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -27,8 +27,13 @@ def _load_jsonl(path: Path, days: int) -> List[Dict[str, Any]]:
                     continue
                 try:
                     record = json.loads(line)
-                    timestamp = datetime.fromisoformat(record.get("timestamp", ""))
-                    if timestamp > cutoff:
+                    timestamp_raw = str(record.get("timestamp", "")).replace("Z", "+00:00")
+                    if not timestamp_raw:
+                        continue
+                    timestamp = datetime.fromisoformat(timestamp_raw)
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    if timestamp.astimezone(timezone.utc) > cutoff:
                         records.append(record)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     logger.warning("Skipping invalid record in %s at line %s", path, line_number)
@@ -171,10 +176,50 @@ def build_weekly_report(data_dir: str = ".", days: int = 7) -> Dict[str, Any]:
     }
 
 
+def summarize_best_setup_windows(data_dir: str = ".", days: int = 7) -> List[Dict[str, Any]]:
+    """Find the strongest daily time-direction windows based on recent trade records."""
+    trades = [
+        trade for trade in _load_jsonl(Path(data_dir) / "trades.jsonl", days)
+        if trade.get("status") == "closed"
+    ]
+    if not trades:
+        return []
+
+    grouped: Dict[str, List[float]] = defaultdict(list)
+    for trade in trades:
+        try:
+            stamp = datetime.fromisoformat(str(trade.get("timestamp", "")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        hour = stamp.hour
+        label = f"{hour:02d}:{trade.get('action', 'UNKNOWN')}"
+        grouped[label].append(_number(trade.get("pnl", 0.0)))
+
+    summaries: List[Dict[str, Any]] = []
+    for label, pnls in grouped.items():
+        wins = sum(1 for pnl in pnls if pnl > 0)
+        total = sum(pnls)
+        if not pnls:
+            continue
+        summaries.append({
+            "label": label,
+            "trades": len(pnls),
+            "wins": wins,
+            "losses": len(pnls) - wins,
+            "win_rate": round((wins / len(pnls)) * 100.0, 2),
+            "total_pnl": round(total, 2),
+            "average_pnl": round(total / len(pnls), 2),
+        })
+
+    summaries.sort(key=lambda item: (item["win_rate"], item["average_pnl"]), reverse=True)
+    return summaries[:5]
+
+
 def write_weekly_report(
     data_dir: str = ".", days: int = 7, output_dir: str = "."
 ) -> Path:
     report = build_weekly_report(data_dir, days)
+    report["best_setup_windows"] = summarize_best_setup_windows(data_dir, days)
     destination = Path(output_dir) / f"weekly_report_{datetime.now():%Y_%m_%d}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
