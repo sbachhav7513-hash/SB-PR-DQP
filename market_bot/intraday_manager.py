@@ -64,7 +64,6 @@ class IntradayManager:
         self.contract_specs: Dict[str, dict] = {}
 
         self.daily_trade_count = 0
-        self.daily_max_trades = 2
         self.daily_max_loss = max(account_size * 0.02, 250.0)
         self.max_consecutive_losses = 3
         self.consecutive_losses = 0
@@ -167,13 +166,11 @@ class IntradayManager:
         return quantity
     
     def can_open_trade(self, symbol: str, direction: str) -> tuple[bool, str]:
-        """Policy gate for one option trade per symbol per session and daily caps."""
+        """Policy gate for one trade per symbol per session and risk limits."""
         if symbol in self.session_reversal_symbols:
             return False, f"{symbol} already reversed this session; no new trade allowed"
         if symbol in self.session_trade_symbols:
             return False, f"{symbol} already traded this session; only one trade per symbol per session is allowed"
-        if self.daily_trade_count >= self.daily_max_trades:
-            return False, f"Daily option trade cap reached ({self.daily_trade_count}/{self.daily_max_trades})"
         if self.daily_pnl <= -self.daily_max_loss:
             return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
         if self.consecutive_losses >= self.max_consecutive_losses:
