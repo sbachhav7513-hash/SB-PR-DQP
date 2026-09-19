@@ -69,6 +69,11 @@ class IntradayManager:
         self.max_consecutive_losses = 3
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
+        self.loss_cooldown_seconds = 1800
+        self.min_symbol_trades_for_cap = 5
+        self.symbol_min_win_rate = 35.0
+        self.symbol_performance: Dict[str, Dict[str, float]] = {}
+        self.recent_loss_symbols: Dict[str, datetime] = {}
         self.session_trade_symbols: set[str] = set()
         self.session_reversal_symbols: set[str] = set()
         self.trade_history: list[dict] = []
@@ -176,6 +181,23 @@ class IntradayManager:
                 f"Consecutive loss circuit breaker triggered "
                 f"({self.consecutive_losses}/{self.max_consecutive_losses})"
             )
+        perf = self.symbol_performance.get(symbol, {})
+        trades = int(perf.get("trades", 0))
+        win_rate = float(perf.get("win_rate", 100.0))
+        if trades >= self.min_symbol_trades_for_cap and win_rate < self.symbol_min_win_rate:
+            return False, (
+                f"Win-rate cap active for {symbol}: "
+                f"{win_rate:.1f}% over {trades} trades below {self.symbol_min_win_rate:.0f}%"
+            )
+        if symbol in self.recent_loss_symbols and self.consecutive_losses >= 2:
+            last_loss_at = self.recent_loss_symbols[symbol]
+            elapsed = (datetime.now(IST) - last_loss_at).total_seconds()
+            if elapsed < self.loss_cooldown_seconds:
+                remaining = self.loss_cooldown_seconds - elapsed
+                return False, (
+                    f"Recent loss cooldown active for {symbol}: "
+                    f"{remaining:.0f}s remaining"
+                )
         return True, "OK"
 
     def record_trade_open(self, symbol: str, direction: str) -> None:
@@ -193,10 +215,18 @@ class IntradayManager:
         if pnl < 0 and abs(pnl) >= self.daily_max_loss * 0.5:
             self.session_reversal_symbols.add(symbol)
 
+        perf = self.symbol_performance.setdefault(symbol, {"trades": 0, "wins": 0, "win_rate": 100.0})
+        perf["trades"] = int(perf.get("trades", 0)) + 1
+        if pnl > 0:
+            perf["wins"] = int(perf.get("wins", 0)) + 1
+        perf["win_rate"] = (perf["wins"] / perf["trades"]) * 100.0
+
         if pnl < 0:
             self.consecutive_losses += 1
+            self.recent_loss_symbols[symbol] = datetime.now(IST)
         else:
             self.consecutive_losses = 0
+            self.recent_loss_symbols.pop(symbol, None)
 
     def register_position(self, symbol: str, direction: str, quantity: int, 
                          entry_price: float, stop_loss: float, take_profit: float) -> None:
