@@ -65,13 +65,38 @@ def load_decisions(days=7):
         print(f"⚠️  Could not read decision_log.jsonl: {e}")
     return decisions
 
+def iter_decisions(days=7):
+    """Yield recent decisions one at a time to keep analysis memory bounded."""
+    decision_file = Path('decision_log.jsonl')
+    if not decision_file.exists():
+        print("⚠️  Note: decision_log.jsonl not found yet (restart the bot after this update)")
+        return
+
+    cutoff_date = datetime.now() - timedelta(days=days)
+    try:
+        with decision_file.open('r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    decision = json.loads(line)
+                    decision_time = datetime.fromisoformat(decision.get('timestamp', ''))
+                    if decision_time > cutoff_date:
+                        yield decision
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except OSError as e:
+        print(f"⚠️  Could not read decision_log.jsonl: {e}")
+
 def analyze_decisions(decisions):
     """Summarize what the strategy evaluated, rejected, and attempted."""
     signal_counts = defaultdict(int)
     outcome_counts = defaultdict(int)
     symbol_counts = defaultdict(lambda: {'bars': 0, 'buy': 0, 'sell': 0, 'hold': 0})
+    total_decisions = 0
 
     for decision in decisions:
+        total_decisions += 1
         signal = decision.get('signal', 'UNKNOWN')
         symbol = decision.get('ticker', 'UNKNOWN')
         signal_counts[signal] += 1
@@ -85,7 +110,7 @@ def analyze_decisions(decisions):
             symbol_counts[symbol]['hold'] += 1
 
     return {
-        'total_decisions': len(decisions),
+        'total_decisions': total_decisions,
         'signal_counts': dict(signal_counts),
         'outcome_counts': dict(outcome_counts),
         'symbol_counts': dict(symbol_counts),
@@ -365,11 +390,10 @@ def main():
     
     # Load data
     trades = load_trades(days)
-    decisions = load_decisions(days)
     filter_stats = load_filter_stats(days)
-    decision_analysis = analyze_decisions(decisions)
+    decision_analysis = analyze_decisions(iter_decisions(days))
     
-    if not trades and not decisions:
+    if not trades and not decision_analysis['total_decisions']:
         print("\n❌ No trades found. Run the bot first:")
         print("   python run_kite_bot.py")
         return
