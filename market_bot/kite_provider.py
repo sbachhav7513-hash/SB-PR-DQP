@@ -106,6 +106,7 @@ class KiteMarketStream:
         )
         self.on_tick_callback = on_tick_callback
         self.is_connected = False
+        self._stopping = False
         self.connection_lock = threading.Lock()
         self.contract_specs: Dict[str, Dict[str, int]] = {}
         self.contract_symbols: Dict[str, str] = {}
@@ -672,6 +673,10 @@ class KiteMarketStream:
 
     def on_connect(self, ws: any, response: any) -> None:
         """Callback when WebSocket connects."""
+        if self._stopping:
+            logger.info("Ignoring Kite WebSocket connection during shutdown")
+            ws.close()
+            return
         logger.info("Kite WebSocket connected")
         self.is_connected = True
         tokens = list(self.config.instrument_tokens.values())
@@ -707,6 +712,9 @@ class KiteMarketStream:
 
     def on_reconnect(self, ws: any, attempts_count: int) -> None:
         """Log an automatic WebSocket reconnect attempt."""
+        if self._stopping:
+            logger.info("Ignoring Kite WebSocket reconnect during shutdown")
+            return
         logger.warning("Kite WebSocket reconnecting (attempt %d)", attempts_count)
 
     def on_noreconnect(self, ws: any) -> None:
@@ -719,6 +727,7 @@ class KiteMarketStream:
     def start(self) -> None:
         """Connect and start streaming."""
         logger.info("Starting Kite market stream")
+        self._stopping = False
         if not self.validate_session():
             raise RuntimeError("Kite REST authentication failed; WebSocket was not started")
         self.ticker.on_ticks = self.on_ticks
@@ -732,7 +741,9 @@ class KiteMarketStream:
     def stop(self) -> None:
         """Disconnect the stream."""
         logger.info("Stopping Kite market stream")
+        self._stopping = True
         if self.ticker:
+            self.ticker.stop_retry()
             self.ticker.close()
         self.is_connected = False
 

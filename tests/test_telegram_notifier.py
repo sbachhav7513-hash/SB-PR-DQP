@@ -34,6 +34,30 @@ def test_close_message_includes_exact_trading_symbol():
     assert "Trading symbol: NIFTY26SEP25000PE" in payload["message"]
 
 
+def test_trailing_stop_is_clear_in_telegram_messages():
+    notifier = TelegramNotifier()
+
+    trade = notifier.format_trade(
+        ticker="NIFTY_CE",
+        action="BUY",
+        score=8,
+        entry=55.0,
+        stop_loss=50.0,
+        take_profit=85.0,
+        trailing_enabled=True,
+    )
+    close = notifier.format_close(
+        ticker="NIFTY_CE",
+        action="BUY",
+        exit_price=76.0,
+        pnl=21.0,
+        reason="TRAILING_STOP",
+    )
+
+    assert "Trailing reference: 85.00" in trade["message"]
+    assert "Reason: Trailing Stop" in close["message"]
+
+
 def test_heartbeat_message_uses_configured_trading_mode():
     notifier = TelegramNotifier()
 

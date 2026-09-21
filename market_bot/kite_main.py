@@ -51,6 +51,9 @@ class KiteTradingBot:
         self.intraday_manager = IntradayManager(
             account_size=self.config.get("account_size", 100000),
             risk_per_trade_pct=self.config.get("risk_per_trade_pct", 1.0),
+            trailing_enabled=self.config.get("trailing_enabled", True),
+            trailing_activation_ratio=self.config.get("trailing_activation_ratio", 0.5),
+            trailing_distance_ratio=self.config.get("trailing_distance_ratio", 0.25),
         )
         self.intraday_manager.daily_max_loss = float(
             self.config.get("daily_max_loss", self.intraday_manager.daily_max_loss)
@@ -470,17 +473,23 @@ class KiteTradingBot:
         if not position:
             return None
 
+        trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
+
         if position["direction"] == "BUY":
             if price <= position["stop_loss"]:
                 reason = "STOP_LOSS"
-            elif price >= position["take_profit"]:
+            elif trailing_stop is not None and price <= trailing_stop:
+                reason = "TRAILING_STOP"
+            elif not self.intraday_manager.trailing_enabled and price >= position["take_profit"]:
                 reason = "TAKE_PROFIT"
             else:
                 return None
         else:
             if price >= position["stop_loss"]:
                 reason = "STOP_LOSS"
-            elif price <= position["take_profit"]:
+            elif trailing_stop is not None and price >= trailing_stop:
+                reason = "TRAILING_STOP"
+            elif not self.intraday_manager.trailing_enabled and price <= position["take_profit"]:
                 reason = "TAKE_PROFIT"
             else:
                 return None
@@ -667,6 +676,7 @@ class KiteTradingBot:
                 mode=mode,
                 option_leg=option_leg,
                 trading_symbol=trading_symbol,
+                trailing_enabled=self.intraday_manager.trailing_enabled,
             )
             alert["pnl"] = 0.0
             alert["status"] = "open"
@@ -783,6 +793,7 @@ class KiteTradingBot:
                 mode=mode,
                 option_leg=option_leg,
                 trading_symbol=trading_symbol,
+                trailing_enabled=self.intraday_manager.trailing_enabled,
             )
             alert["pnl"] = 0.0
             alert["status"] = "open"

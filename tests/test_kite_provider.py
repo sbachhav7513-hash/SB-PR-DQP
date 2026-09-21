@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
@@ -83,6 +83,21 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
         "NIFTY_PE": "NIFTY26SEP25000PE",
     }
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
+
+
+def test_stop_disables_retries_before_closing_stream():
+    with patch("market_bot.kite_provider.KiteConnect"), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ) as ticker_factory:
+        stream = KiteMarketStream(KiteConfig(api_key="key", access_token="token"))
+
+    stream.stop()
+
+    assert stream._stopping is True
+    assert ticker_factory.return_value.method_calls[:2] == [
+        call.stop_retry(),
+        call.close(),
+    ]
 
 
 def test_refresh_instrument_tokens_combines_futures_and_options():
