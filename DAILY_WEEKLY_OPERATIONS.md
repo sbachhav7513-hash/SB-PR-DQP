@@ -78,18 +78,27 @@ sudo systemctl enable kite-trading-bot.service
 sudo systemctl start kite-trading-bot.service
 ```
 
-The bot exits normally after the configured 15:15 IST market-close exit, daily
-summary, and Friday weekly analysis have completed. The unit deliberately uses
-`Restart=no`, so systemd will then show `inactive (dead)` and will not start the
-bot again until the next trading day:
+After copying a new unit file, verify that systemd loaded the intended setting:
+
+```bash
+systemctl show kite-trading-bot.service -p ExecStart -p Restart -p User -p WorkingDirectory
+```
+
+The bot exits normally after the 15:15 IST forced position exit, the 15:30 IST
+market-close check, daily summary, and Friday weekly analysis have completed.
+The unit deliberately uses `Restart=no`, so systemd will then show `inactive
+(dead)` and will not start the bot again until the next trading day:
 
 ```bash
 systemctl status kite-trading-bot.service
 journalctl -u kite-trading-bot.service -e
 ```
 
-Do not add `Restart=always` or `Restart=on-failure` to this unit, otherwise
-systemd will restart the bot after its normal end-of-day exit.
+Use `systemctl stop kite-trading-bot.service` to stop it after close. `systemctl
+restart kite-trading-bot.service` always starts a new process, even when the
+previous process exited normally, so do not use `restart` as the end-of-day
+stop command. Do not add `Restart=always` or `Restart=on-failure` to this unit,
+otherwise systemd will restart the bot after its normal end-of-day exit.
 
 #### 4. **Monitor Real-Time Dashboard**
 While bot runs, monitor:
