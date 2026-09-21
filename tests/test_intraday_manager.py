@@ -1,9 +1,10 @@
 import json
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.intraday_manager import IntradayManager
+from market_bot.kite_main import KiteTradingBot
 from market_bot.trade_journal import TradeJournal
 from market_bot.weekly_report import summarize_best_setup_windows
 
@@ -82,11 +83,62 @@ def test_close_position_updates_daily_risk_state():
     assert manager.consecutive_losses == 1
 
 
+def test_buy_trailing_stop_ratchets_up_after_half_target_move():
+    manager = IntradayManager()
+    manager.register_position("NIFTY_CE", "BUY", 1, 55.0, 50.0, 85.0)
+
+    assert manager.update_trailing_stop("NIFTY_CE", 70.0) == 62.5
+    assert manager.update_trailing_stop("NIFTY_CE", 80.0) == 72.5
+    assert manager.update_trailing_stop("NIFTY_CE", 75.0) == 72.5
+
+
+def test_sell_trailing_stop_ratchets_down_after_half_target_move():
+    manager = IntradayManager()
+    manager.register_position("NIFTY_PE", "SELL", 1, 55.0, 60.0, 25.0)
+
+    assert manager.update_trailing_stop("NIFTY_PE", 40.0) == 47.5
+    assert manager.update_trailing_stop("NIFTY_PE", 30.0) == 37.5
+    assert manager.update_trailing_stop("NIFTY_PE", 35.0) == 37.5
+
+
+def test_tick_exit_holds_past_target_until_trailing_stop_is_hit():
+    manager = IntradayManager()
+    manager.register_position("NIFTY_CE", "BUY", 1, 55.0, 50.0, 85.0)
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY_CE", 85.0) is None
+    assert bot._check_position_exit("NIFTY_CE", 76.0) == "TRAILING_STOP"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 76.0, "TRAILING_STOP")
+
+
+def test_disabling_trailing_keeps_fixed_target_exit():
+    manager = IntradayManager(trailing_enabled=False)
+    manager.register_position("NIFTY", "BUY", 1, 55.0, 50.0, 85.0)
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY", 85.0) == "TAKE_PROFIT"
+
+
 def test_adaptive_score_threshold_rises_for_weak_symbol_performance():
     filters = AccuracyFilters()
 
     assert filters.get_min_score(recent_trades=7, recent_win_rate=20.0) >= 92
     assert filters.get_min_score(recent_trades=7, recent_win_rate=72.0) <= 90
+
+
+def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
+    filters = AccuracyFilters()
+
+    assert filters.should_enter_trade(
+        signal="BUY",
+        score=85,
+        volatility_acceptable=True,
+        confirmation=True,
+    ) is True
 
 
 def test_symbol_win_rate_cap_blocks_weak_symbols():

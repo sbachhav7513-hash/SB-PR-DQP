@@ -58,6 +58,9 @@
   "alert_rsi_high": 70,
   "stop_loss_pct": 0.75,
   "take_profit_pct": 1.5,
+  "trailing_enabled": true,
+  "trailing_activation_ratio": 0.5,
+  "trailing_distance_ratio": 0.25,
   "telegram_token": null,
   "telegram_chat_id": null
 }

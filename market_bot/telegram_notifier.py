@@ -102,9 +102,11 @@ class TelegramNotifier:
         mode: str = "FUTURE",
         option_leg: Optional[str] = None,
         trading_symbol: Optional[str] = None,
+        trailing_enabled: bool = False,
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
+        target_label = "Trailing reference" if trailing_enabled else "Target"
         return {
             "ticker": ticker,
             "action": action,
@@ -119,7 +121,7 @@ class TelegramNotifier:
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Entry: {entry:.2f}\n"
                 f"Stop Loss: {stop_loss:.2f}\n"
-                f"Target: {take_profit:.2f}"
+                f"{target_label}: {take_profit:.2f}"
             ),
         }
 
@@ -163,6 +165,11 @@ class TelegramNotifier:
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
+        reason_label = {
+            "TRAILING_STOP": "Trailing Stop",
+            "TAKE_PROFIT": "Take Profit",
+            "STOP_LOSS": "Stop Loss",
+        }.get(reason, reason.replace("_", " ").title())
         payload = {
             "ticker": ticker,
             "action": action,
@@ -175,7 +182,7 @@ class TelegramNotifier:
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Exit: {exit_price:.2f}\n"
                 f"P&L: {pnl:.2f}\n"
-                f"Reason: {reason}"
+                f"Reason: {reason_label}"
             ),
         }
         return payload
