@@ -15,7 +15,7 @@ class AccuracyFilters:
     def __init__(self):
         self.last_entry_time: Dict[str, float] = {}
         self.COOLDOWN_SECONDS = 300  # 5 minutes between entries
-        self.min_score_floor = 90
+        self.min_score_floor = 85
         self.min_score_ceiling = 98
 
     def get_min_score(self, recent_trades: int, recent_win_rate: float) -> int:
@@ -172,9 +172,9 @@ class AccuracyFilters:
         if signal == "HOLD":
             return False
         
-        # Check 2: Adaptive threshold based on recent performance quality
-        if score < 90:
-            logger.debug(f"Score filter rejected: {score}/100 (need 90+)")
+        # Check 2: Keep the threshold within the score producer's 0-85 range.
+        if score < 85:
+            logger.debug(f"Score filter rejected: {score}/100 (need 85+)")
             return False
         
         # Check 3: Volatility must be acceptable

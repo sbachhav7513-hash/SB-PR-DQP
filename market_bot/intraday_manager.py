@@ -49,7 +49,14 @@ class IntradayManager:
         "SUNPHARMA": 1,
     }
     
-    def __init__(self, account_size: float = 100000, risk_per_trade_pct: float = 1.0):
+    def __init__(
+        self,
+        account_size: float = 100000,
+        risk_per_trade_pct: float = 1.0,
+        trailing_enabled: bool = True,
+        trailing_activation_ratio: float = 0.5,
+        trailing_distance_ratio: float = 0.25,
+    ):
         """
         Initialize the intraday manager.
         
@@ -60,6 +67,9 @@ class IntradayManager:
         self.account_size = account_size
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_risk_per_trade = (account_size * risk_per_trade_pct) / 100.0
+        self.trailing_enabled = trailing_enabled
+        self.trailing_activation_ratio = trailing_activation_ratio
+        self.trailing_distance_ratio = trailing_distance_ratio
         self.active_positions: Dict[str, dict] = {}
         self.contract_specs: Dict[str, dict] = {}
 
@@ -234,12 +244,56 @@ class IntradayManager:
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "highest_price": entry_price,
+            "lowest_price": entry_price,
+            "trailing_stop": None,
+            "trailing_active": False,
             "entry_time": datetime.now(IST),
         }
         logger.info(
             f"[{symbol}] Position registered: {direction} {quantity} "
             f"@ {entry_price:.2f} | SL={stop_loss:.2f} TP={take_profit:.2f}"
         )
+
+    def update_trailing_stop(self, symbol: str, price: float) -> Optional[float]:
+        """Update and return a ratcheting stop after a favorable move."""
+        position = self.active_positions.get(symbol)
+        if not position or not self.trailing_enabled:
+            return None
+
+        entry_price = float(position["entry_price"])
+        take_profit = float(position["take_profit"])
+        target_distance = abs(take_profit - entry_price)
+        if target_distance <= 0:
+            return None
+
+        activation_distance = target_distance * self.trailing_activation_ratio
+        trailing_distance = target_distance * self.trailing_distance_ratio
+
+        if position["direction"] == "BUY":
+            position["highest_price"] = max(float(position["highest_price"]), price)
+            if price - entry_price >= activation_distance:
+                position["trailing_active"] = True
+            if not position["trailing_active"]:
+                return None
+            candidate = position["highest_price"] - trailing_distance
+            previous = position["trailing_stop"]
+            position["trailing_stop"] = (
+                candidate if previous is None else max(float(previous), candidate)
+            )
+        else:
+            position["lowest_price"] = min(float(position["lowest_price"]), price)
+            if entry_price - price >= activation_distance:
+                position["trailing_active"] = True
+            if not position["trailing_active"]:
+                return None
+            candidate = position["lowest_price"] + trailing_distance
+            previous = position["trailing_stop"]
+            position["trailing_stop"] = (
+                candidate if previous is None else min(float(previous), candidate)
+            )
+
+        return float(position["trailing_stop"])
     
     def close_position(self, symbol: str, exit_price: float, reason: str = "SIGNAL") -> Optional[dict]:
         """
