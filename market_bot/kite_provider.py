@@ -666,6 +666,13 @@ class KiteMarketStream:
                     oi=(int(tick["oi"]) if tick.get("oi") is not None else None),
                     iv=(float(tick["iv"]) if tick.get("iv") is not None else None),
                 )
+                if tick_obj.last_price <= 0:
+                    logger.warning(
+                        "Dropping Kite tick with non-positive last_price=%s for instrument_token=%s",
+                        tick_obj.last_price,
+                        instrument_token,
+                    )
+                    continue
                 if self.on_tick_callback:
                     self.on_tick_callback(tick_obj)
             except Exception as exc:

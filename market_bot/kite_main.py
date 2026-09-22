@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from .accuracy_filters import AccuracyFilters
 from .bar_builder import BarBuilder, Bar
-from .engine import market_session_label, market_session_state, score_market
+from .engine import market_session_state, score_market
 from .intraday_manager import IntradayManager
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
@@ -119,7 +119,9 @@ class KiteTradingBot:
         self.premarkarket_candidates: list[tuple[str, str, int, str]] = []
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
-        self.accuracy_filters = AccuracyFilters()
+        self.accuracy_filters = AccuracyFilters(
+            min_entry_score=int(self.config.get("min_entry_score", 75))
+        )
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
@@ -288,8 +290,12 @@ class KiteTradingBot:
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in bars]
-        session_state = market_session_state(history)
-        session_label = market_session_label(history)
+        session_state = market_session_state(history, now=datetime.now(IST))
+        session_label = {
+            "BEFORE_OPEN": "before open",
+            "REGULAR_SESSION": "regular session",
+            "AFTER_CLOSE": "after close",
+        }.get(session_state, "unknown")
         logger.info(f"[{symbol}] status={session_label}")
 
         if session_state == "AFTER_CLOSE":
@@ -318,6 +324,7 @@ class KiteTradingBot:
                 rsi_period=self.config.get("rsi_period", 14),
                 context_history=benchmark_history,
                 allow_before_open=(session_state == "BEFORE_OPEN"),
+                session_state=session_state,
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -360,7 +367,11 @@ class KiteTradingBot:
             )
             return
 
-        if self._options_enabled() and "_" in symbol:
+        if (
+            self._options_enabled()
+            and "_" in symbol
+            and market_score.signal in {"BUY", "SELL"}
+        ):
             underlying = symbol.rsplit("_", 1)[0].upper()
             preferred = self._preferred_option_symbol(underlying, market_score.signal)
             if preferred and symbol != preferred:
@@ -403,7 +414,7 @@ class KiteTradingBot:
             previous_bar = bars[-2].to_dict() if len(bars) > 1 else bars[-1].to_dict()
             current_time = time.time()
             now = datetime.now(IST)
-            allowed = self.accuracy_filters.validate_entry(
+            allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
                 symbol=symbol,
                 signal=market_score.signal,
                 score=market_score.score,
@@ -416,8 +427,9 @@ class KiteTradingBot:
             )
             if not allowed:
                 logger.info(
-                    "[%s] Signal rejected by accuracy filters: score=%s signal=%s",
+                    "[%s] Signal rejected by accuracy filter (%s): score=%s signal=%s",
                     symbol,
+                    rejection_reason,
                     market_score.score,
                     market_score.signal,
                 )
@@ -427,7 +439,7 @@ class KiteTradingBot:
                     bars,
                     market_score,
                     market_score.signal,
-                    "accuracy_filter_rejected",
+                    f"accuracy_filter_rejected:{rejection_reason}",
                     news_context,
                 )
                 return
