@@ -54,6 +54,7 @@
   "ema_fast": 9,
   "ema_slow": 21,
   "rsi_period": 14,
+  "min_entry_score": 75,
   "alert_rsi_low": 30,
   "alert_rsi_high": 70,
   "stop_loss_pct": 0.75,
