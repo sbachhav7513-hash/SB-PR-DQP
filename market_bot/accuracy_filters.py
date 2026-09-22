@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 class AccuracyFilters:
     """Filters to reduce false signals and improve trade accuracy."""
     
-    def __init__(self):
+    def __init__(self, min_entry_score: int = 75):
         self.last_entry_time: Dict[str, float] = {}
         self.COOLDOWN_SECONDS = 300  # 5 minutes between entries
-        self.min_score_floor = 85
+        self.min_score_floor = max(0, min(int(min_entry_score), 85))
         self.min_score_ceiling = 98
 
     def get_min_score(self, recent_trades: int, recent_win_rate: float) -> int:
@@ -148,7 +148,8 @@ class AccuracyFilters:
         signal: str,
         score: int,
         volatility_acceptable: bool,
-        confirmation: bool
+        confirmation: bool,
+        min_score: int = 75,
     ) -> bool:
         """
         Final gate to decide if we should actually enter trade.
@@ -172,9 +173,9 @@ class AccuracyFilters:
         if signal == "HOLD":
             return False
         
-        # Check 2: Keep the threshold within the score producer's 0-85 range.
-        if score < 85:
-            logger.debug(f"Score filter rejected: {score}/100 (need 85+)")
+        # Keep the threshold below the score producer's maximum for both directions.
+        if score < min_score:
+            logger.debug(f"Score filter rejected: {score}/100 (need {min_score}+)")
             return False
         
         # Check 3: Volatility must be acceptable
@@ -269,36 +270,71 @@ class AccuracyFilters:
         hour: int,
         minute: int
     ) -> bool:
+        allowed, _ = self.validate_entry_with_reason(
+            symbol=symbol,
+            signal=signal,
+            score=score,
+            history=history,
+            current_bar=current_bar,
+            previous_bar=previous_bar,
+            current_time=current_time,
+            hour=hour,
+            minute=minute,
+        )
+        return allowed
+
+    def validate_entry_with_reason(
+        self,
+        symbol: str,
+        signal: str,
+        score: int,
+        history: List[Dict],
+        current_bar: Dict,
+        previous_bar: Dict,
+        current_time: float,
+        hour: int,
+        minute: int,
+    ) -> tuple[bool, str]:
         """
         All filters combined for final entry decision.
         
-        Returns: True ONLY if ALL filters pass
+        Returns whether entry is allowed and the first failed gate.
         """
         # Filter 1: Volatility
         volatility_ok = self.is_volatility_acceptable(history)
         if not volatility_ok:
-            return False
+            return False, "volatility"
         
         # Filter 2: Confirmation candle
         confirmation = self.has_confirmation(signal, current_bar, previous_bar)
         if not confirmation:
-            return False
+            return False, "confirmation"
         
         # Filter 3: Score threshold & signal
-        should_enter = self.should_enter_trade(signal, score, volatility_ok, confirmation)
+        should_enter = self.should_enter_trade(
+            signal,
+            score,
+            volatility_ok,
+            confirmation,
+            min_score=self.min_score_floor,
+        )
         if not should_enter:
-            return False
+            if signal == "HOLD":
+                return False, "signal"
+            if score < self.min_score_floor:
+                return False, f"score<{self.min_score_floor}"
+            return False, "signal_quality"
         
         # Filter 4: Cooldown period
         can_enter = self.can_enter_signal(symbol, current_time)
         if not can_enter:
-            return False
+            return False, "cooldown"
         
         # Filter 5: Trading hours
         good_hour = self.is_trading_hour_good(hour, minute)
         if not good_hour:
-            return False
+            return False, "trading_hours"
         
         # ALL FILTERS PASSED ✅
         self.record_entry(symbol, current_time)
-        return True
+        return True, "OK"

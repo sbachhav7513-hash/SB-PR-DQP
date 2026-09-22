@@ -85,8 +85,22 @@ def _current_session_history(history: List[Dict]) -> List[Dict]:
     return same_session if same_session else list(history)
 
 
-def market_session_state(history: List[Dict]) -> str:
-    """Classify bar timestamps as before-open, regular-session, or after-close."""
+def market_session_state(
+    history: List[Dict], now: Optional[datetime] = None
+) -> str:
+    """Classify bar timestamps, or the live clock when explicitly provided."""
+    if now is not None:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=IST)
+        else:
+            now = now.astimezone(IST)
+        current_minutes = now.hour * 60 + now.minute
+        if current_minutes < 9 * 60 + 15:
+            return "BEFORE_OPEN"
+        if current_minutes >= 15 * 60 + 30:
+            return "AFTER_CLOSE"
+        return "REGULAR_SESSION"
+
     history = _current_session_history(history)
     timestamps = _extract_timestamps(history)
     if not timestamps:
@@ -119,13 +133,14 @@ def score_market(
     rsi_period: int = 14,
     context_history: Optional[List[Dict]] = None,
     allow_before_open: bool = False,
+    session_state: Optional[str] = None,
 ) -> TradingScore:
     history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
     if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
 
-    session_state = market_session_state(history)
+    session_state = session_state or market_session_state(history)
     if session_state == "BEFORE_OPEN" and not allow_before_open:
         return TradingScore(
             ticker=ticker,
@@ -178,7 +193,7 @@ def score_market(
         score += 18
         reasons.append("MACD improving")
     elif macd <= 0 and macd <= prev_macd + 1e-9:
-        score += 10
+        score += 18
         reasons.append("MACD weakening")
 
     if 45 <= rsi_now <= 70:
@@ -195,7 +210,7 @@ def score_market(
         score += 10
         reasons.append("Price near recent high")
     elif price < recent_low * 1.005:
-        score += 8
+        score += 10
         reasons.append("Price near recent low")
 
     if trend_strength > 0.02:

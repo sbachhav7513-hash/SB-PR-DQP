@@ -123,6 +123,26 @@ def test_before_open_data_should_not_trigger_trade_signal():
     assert "before open" in result.reasons[0].lower()
 
 
+def test_live_session_state_uses_current_ist_clock_for_stale_bar_timestamps():
+    stale_history = [
+        {"time": datetime(2026, 9, 22, 9, 0, 0), "close": 100.0 + index * 1.2}
+        for index in range(60)
+    ]
+
+    assert (
+        market_session_state(stale_history, now=datetime(2026, 9, 22, 10, 0, 0))
+        == "REGULAR_SESSION"
+    )
+    result = score_market(
+        "TEST",
+        stale_history,
+        session_state="REGULAR_SESSION",
+    )
+
+    assert result.signal == "BUY"
+    assert "before open" not in " ".join(result.reasons).lower()
+
+
 def test_regular_session_data_can_trigger_buy_signal():
     regular_history = [
         {"time": datetime(2026, 9, 15, 9, 30 + index // 10, 0), "close": 100.0 + index * 1.2}

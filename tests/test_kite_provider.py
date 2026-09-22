@@ -100,6 +100,24 @@ def test_stop_disables_retries_before_closing_stream():
     ]
 
 
+def test_on_ticks_drops_non_positive_prices_before_callback():
+    callback = Mock()
+    with patch("market_bot.kite_provider.KiteConnect"), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token"),
+            on_tick_callback=callback,
+        )
+
+    stream.on_ticks(
+        None,
+        [{"instrument_token": 100, "timestamp": 1700000000, "last_price": 0}],
+    )
+
+    callback.assert_not_called()
+
+
 def test_refresh_instrument_tokens_combines_futures_and_options():
     kite = Mock()
 

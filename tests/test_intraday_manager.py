@@ -141,6 +141,33 @@ def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
     ) is True
 
 
+def test_configured_entry_score_floor_allows_conservative_directional_score():
+    filters = AccuracyFilters(min_entry_score=75)
+    history = [
+        {"high": 101.0 + index, "low": 99.0 + index, "close": 100.0 + index}
+        for index in range(30)
+    ]
+
+    allowed, reason = filters.validate_entry_with_reason(
+        symbol="NIFTY",
+        signal="BUY",
+        score=75,
+        history=history,
+        current_bar={"close": 130.0},
+        previous_bar={"close": 129.0},
+        current_time=0.0,
+        hour=10,
+        minute=0,
+    )
+
+    assert allowed is True
+    assert reason == "OK"
+
+
+def test_entry_score_floor_is_capped_at_strategy_maximum():
+    assert AccuracyFilters(min_entry_score=100).min_score_floor == 85
+
+
 def test_symbol_win_rate_cap_blocks_weak_symbols():
     manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
     manager.min_symbol_trades_for_cap = 5
