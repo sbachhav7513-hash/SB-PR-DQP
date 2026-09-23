@@ -235,15 +235,31 @@ class IntradayManager:
             self.consecutive_losses = 0
             self.recent_loss_symbols.pop(symbol, None)
 
-    def register_position(self, symbol: str, direction: str, quantity: int, 
-                         entry_price: float, stop_loss: float, take_profit: float) -> None:
+    def register_position(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        signal_score: Optional[int] = None,
+        staged_targets_enabled: bool = False,
+        target_increment_pct: float = 0.10,
+    ) -> None:
         """Register a new position."""
+        target_distance = abs(take_profit - entry_price)
         self.active_positions[symbol] = {
             "direction": direction,
             "quantity": quantity,
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "initial_target_distance": target_distance,
+            "signal_score": signal_score,
+            "staged_targets_enabled": staged_targets_enabled,
+            "target_increment_pct": max(float(target_increment_pct), 0.0),
+            "target_stage": 0,
             "highest_price": entry_price,
             "lowest_price": entry_price,
             "trailing_stop": None,
@@ -261,9 +277,10 @@ class IntradayManager:
         if not position or not self.trailing_enabled:
             return None
 
+        position["target_advanced"] = False
         entry_price = float(position["entry_price"])
         take_profit = float(position["take_profit"])
-        target_distance = abs(take_profit - entry_price)
+        target_distance = float(position.get("initial_target_distance", 0.0))
         if target_distance <= 0:
             return None
 
@@ -272,6 +289,15 @@ class IntradayManager:
 
         if position["direction"] == "BUY":
             position["highest_price"] = max(float(position["highest_price"]), price)
+            if position.get("staged_targets_enabled") and price >= take_profit:
+                position["target_stage"] = int(position.get("target_stage", 0)) + 1
+                next_target = entry_price * (
+                    1.0
+                    + (target_distance / entry_price)
+                    + position["target_stage"] * float(position["target_increment_pct"])
+                )
+                position["take_profit"] = max(take_profit, next_target)
+                position["target_advanced"] = True
             if price - entry_price >= activation_distance:
                 position["trailing_active"] = True
             if not position["trailing_active"]:
@@ -283,6 +309,15 @@ class IntradayManager:
             )
         else:
             position["lowest_price"] = min(float(position["lowest_price"]), price)
+            if position.get("staged_targets_enabled") and price <= take_profit:
+                position["target_stage"] = int(position.get("target_stage", 0)) + 1
+                next_target = entry_price * (
+                    1.0
+                    - (target_distance / entry_price)
+                    - position["target_stage"] * float(position["target_increment_pct"])
+                )
+                position["take_profit"] = min(take_profit, next_target)
+                position["target_advanced"] = True
             if entry_price - price >= activation_distance:
                 position["trailing_active"] = True
             if not position["trailing_active"]:

@@ -161,6 +161,162 @@ def calculate_adx(history: List[Dict], period: int = 14) -> Optional[float]:
     return sum(dx_values[-period:]) / period
 
 
+def calculate_atr(history: List[Dict], period: int = 14) -> Optional[float]:
+    """Calculate ATR from completed OHLC bars without using the current bar."""
+    if len(history) < period + 1 or not all(
+        all(key in bar for key in ("high", "low", "close")) for bar in history
+    ):
+        return None
+
+    true_ranges = [
+        max(
+            current["high"] - current["low"],
+            abs(current["high"] - previous["close"]),
+            abs(current["low"] - previous["close"]),
+        )
+        for current, previous in zip(history[1:], history[:-1])
+    ]
+    return sum(true_ranges[-period:]) / period
+
+
+def calculate_vwap(history: List[Dict], period: int = 20) -> Optional[float]:
+    """Calculate a volume-weighted average price when OHLCV data is available."""
+    if len(history) < period or not all(
+        all(key in bar for key in ("high", "low", "close", "volume"))
+        for bar in history[-period:]
+    ):
+        return None
+
+    bars = history[-period:]
+    volume = sum(float(bar["volume"]) for bar in bars)
+    if volume <= 0:
+        return None
+    return sum(
+        ((bar["high"] + bar["low"] + bar["close"]) / 3.0) * float(bar["volume"])
+        for bar in bars
+    ) / volume
+
+
+def _bollinger_widths(closes: List[float], period: int = 20) -> List[float]:
+    if len(closes) < period:
+        return []
+    widths = []
+    for end in range(period, len(closes) + 1):
+        window = closes[end - period:end]
+        mean = sum(window) / period
+        variance = sum((value - mean) ** 2 for value in window) / period
+        widths.append((4.0 * variance**0.5) / max(mean, 1e-9))
+    return widths
+
+
+def is_compression_breakout(history: List[Dict], lookback: int = 20) -> bool:
+    """Return whether the bars before the latest bar contracted before expansion."""
+    if len(history) < lookback + 20:
+        return False
+    closes = [bar["close"] for bar in history]
+    widths = _bollinger_widths(closes[:-1])
+    if len(widths) < 5:
+        return False
+    recent_widths = widths[-4:]
+    contraction = all(
+        recent_widths[index] <= recent_widths[index - 1] + 1e-12
+        for index in range(1, len(recent_widths))
+    )
+    previous_widths = widths[-10:-4]
+    narrower_than_average = bool(previous_widths) and recent_widths[-1] < (
+        sum(previous_widths) / len(previous_widths)
+    )
+    previous_ranges = [
+        bar["high"] - bar["low"]
+        for bar in history[-12:-2]
+        if "high" in bar and "low" in bar
+    ]
+    pre_breakout_range = history[-2].get("high", 0) - history[-2].get("low", 0)
+    current_range = history[-1].get("high", 0) - history[-1].get("low", 0)
+    range_contracted = bool(previous_ranges) and pre_breakout_range < (
+        sum(previous_ranges) / len(previous_ranges)
+    )
+    range_expanded = bool(previous_ranges) and current_range > (
+        sum(previous_ranges) / len(previous_ranges)
+    )
+    return contraction and narrower_than_average and range_contracted and range_expanded
+
+
+def breakout_quality(history: List[Dict], direction: str, lookback: int = 20) -> bool:
+    """Validate close, volume, and ATR quality for a completed breakout candle."""
+    if len(history) < lookback + 15:
+        return False
+    if not all(
+        all(key in bar for key in ("high", "low", "close", "volume"))
+        for bar in history
+    ):
+        return False
+
+    current = history[-1]
+    previous = history[-lookback - 1:-1]
+    prior_high = max(bar["high"] for bar in previous)
+    prior_low = min(bar["low"] for bar in previous)
+    average_volume = sum(float(bar["volume"]) for bar in previous) / lookback
+    atr = calculate_atr(history[:-1])
+    if atr is None or atr <= 0 or average_volume <= 0:
+        return False
+
+    candle_range = current["high"] - current["low"]
+    size_ok = 0.5 * atr <= candle_range <= 2.0 * atr
+    volume_ok = float(current["volume"]) > average_volume
+    if direction == "BUY":
+        close_outside = current["close"] > prior_high and current["close"] >= current["open"]
+    elif direction == "SELL":
+        close_outside = current["close"] < prior_low and current["close"] <= current["open"]
+    else:
+        return False
+    return close_outside and volume_ok and size_ok
+
+
+def higher_timeframe_signal(history: List[Dict], group_size: int = 5) -> str:
+    """Derive a slower trend from groups of lower-timeframe completed bars."""
+    closes = [bar["close"] for bar in history if "close" in bar]
+    grouped = [
+        closes[index + group_size - 1]
+        for index in range(0, len(closes) - group_size + 1, group_size)
+    ]
+    if len(grouped) < 16:
+        return "UNKNOWN"
+    fast = sum(grouped[-4:]) / 4
+    slow = sum(grouped[-12:]) / 12
+    if fast > slow and grouped[-1] > grouped[-4]:
+        return "BULLISH"
+    if fast < slow and grouped[-1] < grouped[-4]:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def classify_price_regime(closes: List[float]) -> str:
+    """Classify close-only data for entry filtering."""
+    if len(closes) < 21:
+        return "UNKNOWN"
+
+    previous_window = closes[-21:-1]
+    recent_window = closes[-10:-1]
+    recent_range_pct = (
+        (max(recent_window) - min(recent_window)) / max(closes[-1], 1e-9) * 100.0
+    )
+    net_move_pct = abs(closes[-1] - closes[-20]) / max(closes[-20], 1e-9) * 100.0
+    if recent_range_pct < 1.0 and net_move_pct < 1.0:
+        return "SIDEWAYS"
+
+    previous_moves = [
+        abs(previous_window[index] - previous_window[index - 1])
+        for index in range(1, len(previous_window))
+    ]
+    average_move = sum(previous_moves) / len(previous_moves)
+    latest_move = abs(closes[-1] - closes[-2])
+    if average_move > 0 and latest_move > average_move * 3:
+        return "EXTENDED"
+
+    return "TRENDING"
+
+
 def score_market(
     ticker: str,
     history: List[Dict],
@@ -168,6 +324,7 @@ def score_market(
     ema_slow: int = 21,
     rsi_period: int = 14,
     context_history: Optional[List[Dict]] = None,
+    context_histories: Optional[Dict[str, List[Dict]]] = None,
     allow_before_open: bool = False,
     session_state: Optional[str] = None,
     hard_context_filter: bool = True,
@@ -221,10 +378,31 @@ def score_market(
     rsi_now = latest_rsi[-1]
     macd = fast_now - slow_now
     prev_macd = fast[-2] - slow[-2] if len(fast) >= 2 and len(slow) >= 2 else macd
-    recent_window = closes[-10:]
+    recent_window = closes[-11:-1]
     recent_high = max(recent_window)
     recent_low = min(recent_window)
     trend_strength = abs(price - closes[-20]) / max(closes[-20], 1e-9)
+    regime = classify_price_regime(closes)
+    complete_ohlcv = len(history) == len(closes) and all(
+        all(key in bar for key in ("open", "high", "low", "close", "volume"))
+        for bar in history
+    )
+
+    if regime == "SIDEWAYS":
+        return TradingScore(
+            ticker=ticker,
+            score=0,
+            signal="HOLD",
+            reasons=["Sideways regime: range too narrow for a directional entry"],
+        )
+
+    if regime == "EXTENDED":
+        return TradingScore(
+            ticker=ticker,
+            score=0,
+            signal="HOLD",
+            reasons=["Extended move: wait for a pullback or retest before entering"],
+        )
 
     score = 0
     reasons: List[str] = []
@@ -299,12 +477,58 @@ def score_market(
     else:
         signal = "HOLD"
 
+    if complete_ohlcv and signal in {"BUY", "SELL"}:
+        vwap = calculate_vwap(history)
+        current_adx = adx
+        previous_adx = calculate_adx(history[:-1])
+        current_spread = abs(fast_now - slow_now) / max(price, 1e-9)
+        previous_spread = abs(fast[-2] - slow[-2]) / max(closes[-2], 1e-9)
+        higher_timeframe = higher_timeframe_signal(history)
+        quality_reasons: List[str] = []
+
+        if not is_compression_breakout(history):
+            quality_reasons.append("No volatility compression before breakout")
+        if not breakout_quality(history, signal):
+            quality_reasons.append("Breakout lacks close, volume, or ATR confirmation")
+        if current_adx is not None and previous_adx is not None and current_adx <= previous_adx:
+            quality_reasons.append("ADX is not rising")
+        if current_spread <= previous_spread:
+            quality_reasons.append("EMA spread is not expanding")
+        if vwap is not None and (
+            (signal == "BUY" and price <= vwap)
+            or (signal == "SELL" and price >= vwap)
+        ):
+            quality_reasons.append("Price is on the wrong side of VWAP")
+        if higher_timeframe not in {"UNKNOWN", "NEUTRAL"} and (
+            (signal == "BUY" and higher_timeframe != "BULLISH")
+            or (signal == "SELL" and higher_timeframe != "BEARISH")
+        ):
+            quality_reasons.append(
+                f"Higher-timeframe trend disagrees ({higher_timeframe})"
+            )
+
+        if quality_reasons:
+            signal = "HOLD"
+            reasons.extend(quality_reasons)
+        else:
+            reasons.extend(
+                [
+                    "Compression breakout confirmed",
+                    "Volume and ATR candle-size confirmed",
+                    "ADX rising and EMA spread expanding",
+                    "VWAP and higher-timeframe trend aligned",
+                ]
+            )
+
+    contexts = dict(context_histories or {})
     if context_history:
+        contexts.setdefault("benchmark", context_history)
+    for context_name, context_bars in contexts.items():
         signal, context_reason = filter_signal_by_context(
-            signal, context_history, ema_fast, ema_slow, hard_context_filter
+            signal, context_bars, ema_fast, ema_slow, hard_context_filter
         )
         if context_reason:
-            reasons.append(context_reason)
+            reasons.append(f"{context_name}: {context_reason}")
 
     if reason is not None:
         reasons.append(reason)

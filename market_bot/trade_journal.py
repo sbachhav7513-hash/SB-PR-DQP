@@ -306,6 +306,23 @@ class TradeJournal:
             return True
         return False
 
+    def update_open_trade(
+        self, ticker: str, fields: Dict[str, Any], action: Optional[str] = None
+    ) -> bool:
+        """Update live target and risk fields without closing the trade."""
+        trades = self.read_trades()
+        for trade in reversed(trades):
+            if trade.get("ticker") != ticker or trade.get("status") != "open":
+                continue
+            if action and trade.get("action") != action:
+                continue
+            trade.update(fields)
+            self._write_trades(trades)
+            if self.paper_recorder:
+                self.paper_recorder.record_trade(trade)
+            return True
+        return False
+
     def current_pnl(self) -> float:
         trades = self.read_trades()
         pnl = 0.0

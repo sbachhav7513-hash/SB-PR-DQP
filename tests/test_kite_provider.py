@@ -159,6 +159,14 @@ def test_buy_uses_ce_and_sell_uses_pe_for_underlying():
     assert bot._preferred_option_symbol("NIFTY", "HOLD") is None
 
 
+def test_bearish_option_signal_buys_pe_instead_of_shorting_it():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_options"}
+
+    assert bot._option_trade_action("NIFTY_CE", "BUY") == "BUY"
+    assert bot._option_trade_action("NIFTY_PE", "SELL") == "BUY"
+
+
 def test_near_atm_option_selection_prefers_closest_strike_within_allowed_distance():
     kite = Mock()
     today = date.today()
@@ -341,6 +349,24 @@ def test_option_quality_gate_allows_quotes_without_unavailable_iv_or_oi():
 
     assert allowed is True
     assert reason == "OK"
+
+
+def test_option_quality_gate_rejects_expiry_day_risk():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "avoid_option_expiry_day": True,
+    }
+    bot.option_quote_cache = {
+        "NIFTY_CE": {"last_price": 80.0, "volume": 1000}
+    }
+    bot.kite_stream = Mock()
+    bot.kite_stream.contract_expiries = {"NIFTY_CE": date.today()}
+
+    allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
+
+    assert allowed is False
+    assert reason == "option expiry-day risk"
 
 
 def test_intraday_manager_allows_multiple_trades_but_blocks_symbol_repeats():

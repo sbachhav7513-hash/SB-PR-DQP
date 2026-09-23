@@ -113,6 +113,112 @@ def test_tick_exit_holds_past_target_until_trailing_stop_is_hit():
     bot._close_position.assert_called_once_with("NIFTY_CE", 76.0, "TRAILING_STOP")
 
 
+def test_staged_buy_target_advances_by_configured_increment():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        80.0,
+        140.0,
+        signal_score=78,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+    )
+
+    manager.update_trailing_stop("NIFTY_CE", 140.0)
+    position = manager.active_positions["NIFTY_CE"]
+
+    assert position["target_stage"] == 1
+    assert position["take_profit"] == 150.0
+    assert position["trailing_stop"] == 130.0
+    assert position["signal_score"] == 78
+
+
+def test_staged_sell_target_advances_by_configured_increment():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_PE",
+        "SELL",
+        1,
+        100.0,
+        120.0,
+        60.0,
+        signal_score=85,
+        staged_targets_enabled=True,
+        target_increment_pct=0.20,
+    )
+
+    manager.update_trailing_stop("NIFTY_PE", 60.0)
+    position = manager.active_positions["NIFTY_PE"]
+
+    assert position["target_stage"] == 1
+    assert position["take_profit"] == 40.0
+    assert position["trailing_stop"] == 70.0
+
+
+def test_staged_target_does_not_move_back_when_price_retraces():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        80.0,
+        140.0,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+    )
+
+    manager.update_trailing_stop("NIFTY_CE", 140.0)
+    manager.update_trailing_stop("NIFTY_CE", 145.0)
+    manager.update_trailing_stop("NIFTY_CE", 135.0)
+
+    position = manager.active_positions["NIFTY_CE"]
+    assert position["take_profit"] == 150.0
+    assert position["trailing_stop"] == 135.0
+
+
+def test_target_advance_updates_open_journal_and_telegram(tmp_path):
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        80.0,
+        140.0,
+        signal_score=85,
+        staged_targets_enabled=True,
+        target_increment_pct=0.20,
+    )
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+            "stop_loss": 80.0,
+            "take_profit": 140.0,
+        }
+    )
+    notifier = Mock()
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.trade_journal = journal
+    bot.telegram_notifier = notifier
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY_CE", 140.0) is None
+
+    open_trade = journal.get_open_trade("NIFTY_CE", "BUY")
+    assert open_trade["take_profit"] == 160.0
+    assert open_trade["target_stage"] == 1
+    notifier.send_message.assert_called_once()
+    assert "Next target: 160.00" in notifier.send_message.call_args.args[0]
+
+
 def test_disabling_trailing_keeps_fixed_target_exit():
     manager = IntradayManager(trailing_enabled=False)
     manager.register_position("NIFTY", "BUY", 1, 55.0, 50.0, 85.0)
