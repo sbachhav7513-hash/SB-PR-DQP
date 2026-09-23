@@ -325,6 +325,8 @@ class KiteTradingBot:
                 context_history=benchmark_history,
                 allow_before_open=(session_state == "BEFORE_OPEN"),
                 session_state=session_state,
+                hard_context_filter=bool(self.config.get("hard_context_filter", True)),
+                min_adx=float(self.config.get("min_adx", 18.0)),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -613,10 +615,11 @@ class KiteTradingBot:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return "trade_blocked"
             if self._options_enabled() and "_" in symbol:
-                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
+                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
+                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
-                take_profit = price * (1.0 + premium_stop_pct * 1.8)
+                take_profit = price * (1.0 + premium_target_pct)
                 quantity = self.intraday_manager.calculate_option_size(
                     symbol,
                     premium=max(premium, 0.01),
@@ -655,7 +658,7 @@ class KiteTradingBot:
                     price = float(fill["average_price"])
                     if self._options_enabled() and "_" in symbol:
                         stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
-                        take_profit = price * (1.0 + premium_stop_pct * 1.8)
+                        take_profit = price * (1.0 + premium_target_pct)
                     else:
                         risk_plan = build_risk_plan(
                             price,
@@ -730,10 +733,11 @@ class KiteTradingBot:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return "trade_blocked"
             if self._options_enabled() and "_" in symbol:
-                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.35))
+                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
+                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
-                take_profit = max(price * (1.0 - premium_stop_pct * 1.8), 0.01)
+                take_profit = max(price * (1.0 - premium_target_pct), 0.01)
                 quantity = self.intraday_manager.calculate_option_size(
                     symbol,
                     premium=max(premium, 0.01),
@@ -772,7 +776,7 @@ class KiteTradingBot:
                     price = float(fill["average_price"])
                     if self._options_enabled() and "_" in symbol:
                         stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
-                        take_profit = max(price * (1.0 - premium_stop_pct * 1.8), 0.01)
+                        take_profit = max(price * (1.0 - premium_target_pct), 0.01)
                     else:
                         risk_plan = build_risk_plan(
                             price,

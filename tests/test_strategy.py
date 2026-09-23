@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
+    calculate_adx,
     filter_signal_by_context,
     market_context_signal,
     market_session_state,
@@ -107,6 +108,39 @@ def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
     assert market_context_signal(benchmark_history) == "BEARISH"
     assert signal == "BUY"
     assert reason == "Benchmark trend bearish (soft context warning)"
+
+
+def test_hard_context_filter_blocks_buy_against_bearish_benchmark():
+    symbol_history = [{"close": 100.0 + index * 1.2} for index in range(60)]
+    benchmark_history = [{"close": 200.0 - index * 1.2} for index in range(60)]
+
+    result = score_market(
+        "TEST",
+        symbol_history,
+        context_history=benchmark_history,
+        hard_context_filter=True,
+    )
+
+    assert result.signal == "HOLD"
+    assert "BUY blocked" in " ".join(result.reasons)
+
+
+def test_adx_rejects_flat_ohlc_and_accepts_directional_ohlc():
+    flat_history = [
+        {"high": 100.1, "low": 99.9, "close": 100.0}
+        for _ in range(40)
+    ]
+    rising_history = [
+        {
+            "high": 100.5 + index * 1.2,
+            "low": 99.5 + index * 1.2,
+            "close": 100.0 + index * 1.2,
+        }
+        for index in range(40)
+    ]
+
+    assert calculate_adx(flat_history) < 18.0
+    assert calculate_adx(rising_history) >= 18.0
 
 
 def test_before_open_data_should_not_trigger_trade_signal():

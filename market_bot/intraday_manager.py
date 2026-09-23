@@ -357,7 +357,7 @@ class IntradayManager:
         symbol: str,
         premium: float,
         max_risk_per_trade: Optional[float] = None,
-        premium_stop_pct: float = 0.35,
+        premium_stop_pct: float = 0.20,
         allow_paper_lot: bool = False,
     ) -> int:
         """Premium-based sizing for options: risk = premium * quantity * stop_pct."""
