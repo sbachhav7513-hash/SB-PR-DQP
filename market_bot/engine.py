@@ -124,6 +124,42 @@ def market_session_label(history: List[Dict]) -> str:
     }
     return labels.get(state, "unknown")
 
+def calculate_adx(history: List[Dict], period: int = 14) -> Optional[float]:
+    """Calculate ADX from completed OHLC bars, or return None without OHLC data."""
+    if len(history) < period * 2 or not all(
+        all(key in bar for key in ("high", "low", "close")) for bar in history
+    ):
+        return None
+
+    true_ranges: List[float] = []
+    plus_moves: List[float] = []
+    minus_moves: List[float] = []
+    for current, previous in zip(history[1:], history[:-1]):
+        true_ranges.append(max(
+            current["high"] - current["low"],
+            abs(current["high"] - previous["close"]),
+            abs(current["low"] - previous["close"]),
+        ))
+        up_move = current["high"] - previous["high"]
+        down_move = previous["low"] - current["low"]
+        plus_moves.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_moves.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+
+    dx_values: List[float] = []
+    for index in range(period - 1, len(true_ranges)):
+        tr_sum = sum(true_ranges[index - period + 1:index + 1])
+        if tr_sum <= 0:
+            dx_values.append(0.0)
+            continue
+        plus_di = 100.0 * sum(plus_moves[index - period + 1:index + 1]) / tr_sum
+        minus_di = 100.0 * sum(minus_moves[index - period + 1:index + 1]) / tr_sum
+        denominator = plus_di + minus_di
+        dx_values.append(100.0 * abs(plus_di - minus_di) / denominator if denominator else 0.0)
+
+    if len(dx_values) < period:
+        return None
+    return sum(dx_values[-period:]) / period
+
 
 def score_market(
     ticker: str,
@@ -134,6 +170,8 @@ def score_market(
     context_history: Optional[List[Dict]] = None,
     allow_before_open: bool = False,
     session_state: Optional[str] = None,
+    hard_context_filter: bool = True,
+    min_adx: float = 18.0,
 ) -> TradingScore:
     history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
@@ -168,6 +206,15 @@ def score_market(
     if not fast or not slow or not latest_rsi:
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Indicators unavailable"])
 
+    adx = calculate_adx(history)
+    if adx is not None and adx < min_adx:
+        return TradingScore(
+            ticker=ticker,
+            score=0,
+            signal="HOLD",
+            reasons=[f"ADX too weak ({adx:.1f} < {min_adx:.1f})"],
+        )
+
     price = closes[-1]
     fast_now = fast[-1]
     slow_now = slow[-1]
@@ -196,15 +243,24 @@ def score_market(
         score += 18
         reasons.append("MACD weakening")
 
-    if 45 <= rsi_now <= 70:
+    bullish_market = fast_now > slow_now
+    bearish_market = fast_now < slow_now
+    if bullish_market and 45 <= rsi_now <= 70:
         score += 20
         reasons.append("RSI in trend zone")
-    elif rsi_now < 35:
+    elif bearish_market and 30 <= rsi_now <= 55:
+        score += 20
+        reasons.append("RSI in trend zone")
+    elif bullish_market and rsi_now < 35:
         score += 15
         reasons.append("RSI oversold")
-    elif rsi_now > 65:
+    elif bearish_market and rsi_now > 65:
         score += 12
         reasons.append("RSI overbought")
+    elif bullish_market and rsi_now > 70:
+        reasons.append("RSI overbought against BUY")
+    elif bearish_market and rsi_now < 30:
+        reasons.append("RSI oversold against SELL")
 
     if price > recent_high * 0.995:
         score += 10
@@ -245,7 +301,7 @@ def score_market(
 
     if context_history:
         signal, context_reason = filter_signal_by_context(
-            signal, context_history, ema_fast, ema_slow
+            signal, context_history, ema_fast, ema_slow, hard_context_filter
         )
         if context_reason:
             reasons.append(context_reason)
@@ -261,11 +317,16 @@ def filter_signal_by_context(
     history: List[Dict],
     ema_fast: int = 9,
     ema_slow: int = 21,
+    hard_block: bool = False,
 ) -> tuple[str, Optional[str]]:
     context_signal = market_context_signal(history, ema_fast, ema_slow)
     if context_signal == "BEARISH" and signal == "BUY":
+        if hard_block:
+            return "HOLD", "Benchmark trend bearish; BUY blocked"
         return signal, "Benchmark trend bearish (soft context warning)"
     if context_signal == "BULLISH" and signal == "SELL":
+        if hard_block:
+            return "HOLD", "Benchmark trend bullish; SELL blocked"
         return signal, "Benchmark trend bullish (soft context warning)"
     return signal, None
 

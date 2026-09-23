@@ -57,6 +57,8 @@
   "bar_interval_seconds": 60,
   "benchmark_symbol": "NIFTY",
   "use_market_context": true,
+  "hard_context_filter": true,
+  "min_adx": 18.0,
   "ema_fast": 9,
   "ema_slow": 21,
   "rsi_period": 14,
@@ -74,7 +76,8 @@
   "option_min_oi": 1000,
   "option_iv_min": 0.15,
   "option_iv_max": 0.85,
-  "option_premium_stop_pct": 0.35,
+  "option_premium_stop_pct": 0.20,
+  "option_premium_target_pct": 0.40,
   "daily_max_loss": 250.0,
   "telegram_token": null,
   "telegram_chat_id": null
