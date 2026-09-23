@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 try:
@@ -93,7 +94,12 @@ class KiteHistoricalProvider:
 
 
 class KiteMarketStream:
-    def __init__(self, config: KiteConfig, on_tick_callback: Optional[Callable[[Tick], None]] = None) -> None:
+    def __init__(
+        self,
+        config: KiteConfig,
+        on_tick_callback: Optional[Callable[[Tick], None]] = None,
+        on_connection_change: Optional[Callable[[bool, str], None]] = None,
+    ) -> None:
         self.config = config
         self.kite = KiteConnect(api_key=config.api_key)
         self.kite.set_access_token(config.access_token)
@@ -105,11 +111,14 @@ class KiteMarketStream:
             reconnect_max_delay=60,
         )
         self.on_tick_callback = on_tick_callback
+        self.on_connection_change = on_connection_change
         self.is_connected = False
         self._stopping = False
         self.connection_lock = threading.Lock()
         self.contract_specs: Dict[str, Dict[str, int]] = {}
         self.contract_symbols: Dict[str, str] = {}
+        self.contract_expiries: Dict[str, date] = {}
+        self.contract_tick_sizes: Dict[str, float] = {}
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
@@ -125,11 +134,18 @@ class KiteMarketStream:
             futures = self._select_current_futures()
             futures_specs = dict(self.contract_specs)
             futures_symbols = dict(self.contract_symbols)
+            futures_expiries = dict(self.contract_expiries)
+            futures_tick_sizes = dict(self.contract_tick_sizes)
 
             self.config.instrument_tokens = spot_tokens
             options = self._select_current_options()
             self.contract_specs = {**futures_specs, **self.contract_specs}
             self.contract_symbols = {**futures_symbols, **self.contract_symbols}
+            self.contract_expiries = {**futures_expiries, **self.contract_expiries}
+            self.contract_tick_sizes = {
+                **futures_tick_sizes,
+                **self.contract_tick_sizes,
+            }
             combined = {**futures, **options}
             self.config.instrument_tokens = combined
             logger.info(
@@ -305,6 +321,8 @@ class KiteMarketStream:
             )
             self.contract_specs = {}
             self.contract_symbols = {}
+            self.contract_expiries = {}
+            self.contract_tick_sizes = {}
             return {}
 
         if self.config.auto_discover_futures:
@@ -326,8 +344,15 @@ class KiteMarketStream:
             }
             for row in selected_rows
         }
+        self.contract_expiries = {
+            row["name"].upper(): row["expiry"] for row in selected_rows
+        }
         self.contract_symbols = {
             row["name"].upper(): row["tradingsymbol"] for row in selected_rows
+        }
+        self.contract_tick_sizes = {
+            row["name"].upper(): float(row.get("tick_size", 0.05) or 0.05)
+            for row in selected_rows
         }
         resolved = {
             row["name"].upper(): int(row["instrument_token"])
@@ -402,8 +427,20 @@ class KiteMarketStream:
             for underlying in selected_expiries
             if underlying in self.config.instrument_tokens
         }
-        if len(underlying_tokens) != len(selected_expiries):
+        missing = sorted(set(selected_expiries) - set(underlying_tokens))
+        if missing:
+            spot_master = {
+                str(row.get("tradingsymbol", "")).upper(): int(row["instrument_token"])
+                for row in self.kite.instruments("NSE")
+                if row.get("tradingsymbol") and row.get("instrument_token")
+            }
+            for underlying in missing:
+                token = spot_master.get(underlying)
+                if token is not None:
+                    underlying_tokens[underlying] = token
+                    self.config.instrument_tokens[underlying] = token
             missing = sorted(set(selected_expiries) - set(underlying_tokens))
+        if len(underlying_tokens) != len(selected_expiries):
             raise RuntimeError(
                 "Options require spot instrument_tokens for: " + ", ".join(missing)
             )
@@ -501,6 +538,13 @@ class KiteMarketStream:
             symbol: {"lot_size": int(row.get("lot_size", 1)), "multiplier": 1}
             for symbol, row in eligible.items()
         }
+        self.contract_tick_sizes = {
+            symbol: float(row.get("tick_size", 0.05) or 0.05)
+            for symbol, row in eligible.items()
+        }
+        self.contract_expiries = {
+            symbol: row["expiry"] for symbol, row in eligible.items()
+        }
         self.contract_symbols = {
             symbol: row["tradingsymbol"]
             for symbol, row in eligible.items()
@@ -552,6 +596,83 @@ class KiteMarketStream:
         )
         return str(order_id)
 
+    def place_protective_stop_order(
+        self, symbol: str, position_side: str, quantity: int, trigger_price: float
+    ) -> str:
+        """Place a broker-side stop-market order for the actual filled quantity."""
+        if position_side not in {"BUY", "SELL"}:
+            raise ValueError(f"Unsupported position side: {position_side}")
+        if quantity <= 0 or trigger_price <= 0:
+            raise ValueError("Protective stop quantity and trigger price must be positive")
+
+        tradingsymbol = self.contract_symbols.get(symbol)
+        if not tradingsymbol:
+            raise RuntimeError(f"No selected NFO contract is available for {symbol}")
+
+        tick_size = self.contract_tick_sizes.get(symbol, 0.05)
+        if position_side == "BUY":
+            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
+        else:
+            trigger_price = math.ceil(trigger_price / tick_size - 1e-9) * tick_size
+        trigger_price = round(trigger_price, 10)
+        if trigger_price <= 0:
+            raise ValueError("Rounded protective stop trigger price must be positive")
+
+        transaction_type = (
+            self.kite.TRANSACTION_TYPE_SELL
+            if position_side == "BUY"
+            else self.kite.TRANSACTION_TYPE_BUY
+        )
+        order_type = getattr(self.kite, "ORDER_TYPE_SL_MARKET", "SL-M")
+        order_id = self.kite.place_order(
+            variety=self.kite.VARIETY_REGULAR,
+            exchange=self.kite.EXCHANGE_NFO,
+            tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            order_type=order_type,
+            product=self.kite.PRODUCT_MIS,
+            validity=self.kite.VALIDITY_DAY,
+            trigger_price=float(trigger_price),
+        )
+        if not order_id:
+            raise RuntimeError(f"Kite returned no protective stop id for {symbol}")
+        logger.info(
+            "Kite protective stop accepted: id=%s symbol=%s side=%s quantity=%s trigger=%.2f",
+            order_id,
+            symbol,
+            position_side,
+            quantity,
+            trigger_price,
+        )
+        return str(order_id)
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        """Return broker net positions, raising when the broker cannot be queried."""
+        response = self.kite.positions()
+        return list(response.get("net", []))
+
+    def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        tradingsymbol = self.contract_symbols.get(symbol, symbol)
+        for position in self.get_positions():
+            if position.get("tradingsymbol") == tradingsymbol:
+                return position
+        return None
+
+    def get_position_quantity(self, symbol: str) -> int:
+        position = self.get_position(symbol)
+        return int(position.get("quantity", 0) or 0) if position else 0
+
+    def get_completed_orders(self) -> List[Dict[str, Any]]:
+        return [
+            order for order in self.kite.orders()
+            if str(order.get("status", "")).upper() == "COMPLETE"
+        ]
+
+    def cancel_order(self, order_id: str) -> None:
+        self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR, order_id=str(order_id))
+        logger.warning("Cancelled remaining quantity for Kite order %s", order_id)
+
     def wait_for_order_fill(
         self, order_id: str, requested_quantity: int, timeout_seconds: float = 10.0
     ) -> Dict[str, float | int | str]:
@@ -585,6 +706,28 @@ class KiteMarketStream:
                 raise RuntimeError(f"Order {order_id} {status}: {message or 'no reason'}")
             time.sleep(0.25)
 
+        history = self.kite.order_history(order_id)
+        latest = history[-1] if history else {}
+        filled_quantity = int(latest.get("filled_quantity", 0) or 0)
+        if filled_quantity > 0:
+            if filled_quantity < requested_quantity:
+                try:
+                    self.cancel_order(order_id)
+                except Exception:
+                    logger.exception("Could not cancel remainder of partially filled order %s", order_id)
+            average_price = float(latest.get("average_price", 0.0) or 0.0)
+            if average_price <= 0:
+                raise RuntimeError(f"Order {order_id} has a fill without an average price")
+            return {
+                "order_id": str(order_id),
+                "status": str(latest.get("status", "PARTIAL")).upper(),
+                "filled_quantity": filled_quantity,
+                "average_price": average_price,
+            }
+        try:
+            self.cancel_order(order_id)
+        except Exception:
+            logger.exception("Could not cancel timed-out order %s", order_id)
         raise TimeoutError(
             f"Timed out waiting for order {order_id} to complete after {timeout_seconds:.1f}s"
         )
@@ -686,6 +829,8 @@ class KiteMarketStream:
             return
         logger.info("Kite WebSocket connected")
         self.is_connected = True
+        if self.on_connection_change:
+            self.on_connection_change(True, "connected")
         tokens = list(self.config.instrument_tokens.values())
         if tokens:
             ws.subscribe(tokens)
@@ -704,6 +849,8 @@ class KiteMarketStream:
         else:
             logger.warning(f"Kite WebSocket closed: {message}")
         self.is_connected = False
+        if self.on_connection_change:
+            self.on_connection_change(False, f"closed: {message}")
 
     def on_error(self, ws: any, code: int, reason: str) -> None:
         """Callback on WebSocket error."""
@@ -716,6 +863,8 @@ class KiteMarketStream:
         else:
             logger.error(f"Kite WebSocket error: {message}")
         self.is_connected = False
+        if self.on_connection_change:
+            self.on_connection_change(False, f"error: {message}")
 
     def on_reconnect(self, ws: any, attempts_count: int) -> None:
         """Log an automatic WebSocket reconnect attempt."""
@@ -730,6 +879,9 @@ class KiteMarketStream:
             "Kite WebSocket could not reconnect after %d attempts; restart the bot.",
             self.ticker.reconnect_max_tries,
         )
+        self.is_connected = False
+        if self.on_connection_change:
+            self.on_connection_change(False, "reconnect attempts exhausted")
 
     def start(self) -> None:
         """Connect and start streaming."""

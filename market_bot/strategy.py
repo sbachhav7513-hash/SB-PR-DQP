@@ -107,7 +107,7 @@ def analyze_history(
     in_uptrend = price > sma_20
     in_downtrend = price < sma_20
 
-    recent_window = closes[-10:]
+    recent_window = closes[-11:-1]
     recent_high = max(recent_window)
     recent_low = min(recent_window)
     breakout_up = price > recent_high * 1.01

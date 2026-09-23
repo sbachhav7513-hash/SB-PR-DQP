@@ -4,6 +4,10 @@ from datetime import datetime, timedelta
 from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
     calculate_adx,
+    calculate_atr,
+    calculate_vwap,
+    breakout_quality,
+    classify_price_regime,
     filter_signal_by_context,
     market_context_signal,
     market_session_state,
@@ -98,6 +102,74 @@ def test_flat_market_history_is_rejected_by_regime_filter():
     )
 
     assert signal is None
+
+
+def test_close_only_regime_classifier_identifies_sideways_market():
+    history = [100.0 + (index % 2) * 0.1 for index in range(30)]
+
+    assert classify_price_regime(history) == "SIDEWAYS"
+    result = score_market("TEST", [{"close": close} for close in history])
+
+    assert result.signal == "HOLD"
+    assert "Sideways regime" in result.reasons[0]
+
+
+def test_close_only_regime_classifier_rejects_single_bar_exhaustion():
+    history = [100.0 + index * 0.1 for index in range(29)]
+    history.append(105.0)
+
+    assert classify_price_regime(history) == "EXTENDED"
+    result = score_market("TEST", [{"close": close} for close in history])
+
+    assert result.signal == "HOLD"
+    assert "Extended move" in result.reasons[0]
+
+
+def test_breakout_quality_requires_close_volume_and_atr_sized_candle():
+    history = [
+        {
+            "open": 100.0,
+            "high": 100.4,
+            "low": 99.6,
+            "close": 100.0,
+            "volume": 100,
+        }
+        for _ in range(35)
+    ]
+    history.append(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 100.0,
+            "close": 100.8,
+            "volume": 250,
+        }
+    )
+
+    assert abs(calculate_atr(history[:-1]) - 0.8) < 1e-9
+    assert breakout_quality(history, "BUY") is True
+
+    history[-1]["close"] = 100.2
+    assert breakout_quality(history, "BUY") is False
+
+
+def test_vwap_is_available_for_volume_weighted_direction_check():
+    history = [
+        {
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 100,
+        },
+        {
+            "high": 103.0,
+            "low": 101.0,
+            "close": 102.0,
+            "volume": 300,
+        },
+    ]
+
+    assert calculate_vwap(history, period=2) == 101.5
 
 
 def test_bearish_benchmark_does_not_hard_block_a_buy_signal():
