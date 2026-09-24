@@ -7,14 +7,20 @@ Wants=network-online.target
 Type=simple
 User=trader
 WorkingDirectory=/opt/sb-pr-dqp
-EnvironmentFile=-/opt/sb-pr-dqp/.env
-ExecStart=/opt/sb-pr-dqp/.venv/bin/python /opt/sb-pr-dqp/run_kite_bot.py
-Restart=no
-# The bot exits normally after post-close reporting; systemd then marks this
-# daily service inactive without restarting it.
+EnvironmentFile=/opt/sb-pr-dqp/.env
+ExecStart=/opt/sb-pr-dqp/.venv/bin/python /opt/sb-pr-dqp/run_kite_bot.py --no-auth
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# The bot exits normally after post-close reporting; systemd does not restart
+# a clean end-of-day exit, but does recover from crashes and network failures.
 RemainAfterExit=no
 KillSignal=SIGINT
 TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

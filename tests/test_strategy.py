@@ -1,5 +1,6 @@
 import random
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
@@ -112,6 +113,28 @@ def test_close_only_regime_classifier_identifies_sideways_market():
 
     assert result.signal == "HOLD"
     assert "Sideways regime" in result.reasons[0]
+
+
+def test_compression_breakout_can_pass_sideways_regime_gate():
+    history = [
+        {
+            "open": 100.0 + index * 1.2 + index * index * 0.01,
+            "high": 100.5 + index * 1.2 + index * index * 0.01,
+            "low": 99.5 + index * 1.2 + index * index * 0.01,
+            "close": 100.0 + index * 1.2 + index * index * 0.01,
+            "volume": 100,
+        }
+        for index in range(60)
+    ]
+
+    with patch("market_bot.engine.classify_price_regime", return_value="SIDEWAYS"), \
+        patch("market_bot.engine.is_compression_breakout", return_value=True), \
+        patch("market_bot.engine.breakout_quality", return_value=True), \
+        patch("market_bot.engine.calculate_adx", side_effect=[30.0, 20.0]):
+        result = score_market("TEST", history, min_adx=0.0)
+
+    assert result.score > 0
+    assert "Sideways regime" not in result.reasons
 
 
 def test_close_only_regime_classifier_rejects_single_bar_exhaustion():

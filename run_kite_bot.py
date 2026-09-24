@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -136,9 +137,19 @@ def main() -> None:
         action="store_true",
         help="Open the Kite login page locally instead of printing its URL.",
     )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Fail clearly when the daily access token is invalid instead of prompting for login.",
+    )
     args = parser.parse_args()
 
     if not has_valid_access_token(args.config):
+        if args.no_auth or not sys.stdin.isatty():
+            raise RuntimeError(
+                "KITE_ACCESS_TOKEN is missing or expired. Refresh it interactively "
+                "with run_kite_bot.py, then restart the service."
+            )
         authorize(args.config, open_browser=args.open_browser)
     KiteTradingBot(str(args.config)).run()
 
