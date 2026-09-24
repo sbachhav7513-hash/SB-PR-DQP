@@ -512,6 +512,13 @@ class KiteTradingBot:
                 session_state=session_state,
                 hard_context_filter=bool(self.config.get("hard_context_filter", True)),
                 min_adx=float(self.config.get("min_adx", 18.0)),
+                sideways_range_pct=float(self.config.get("sideways_range_pct", 1.0)),
+                sideways_net_move_pct=float(
+                    self.config.get("sideways_net_move_pct", 1.0)
+                ),
+                min_trend_strength=float(
+                    self.config.get("min_trend_strength", 0.02)
+                ),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -525,7 +532,13 @@ class KiteTradingBot:
             if news_reason:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
-        logger.info(f"[{symbol}] Score={market_score.score} Signal={market_score.signal}")
+        logger.info(
+            "[%s] Score=%s Signal=%s Reasons=%s",
+            symbol,
+            market_score.score,
+            market_score.signal,
+            "; ".join(market_score.reasons) or "none",
+        )
 
         if session_state == "BEFORE_OPEN":
             logger.info(
@@ -840,6 +853,9 @@ class KiteTradingBot:
         outcome: str,
         news_context=None,
     ) -> None:
+        reasons = list(market_score.reasons) if market_score else []
+        if not reasons:
+            reasons = [outcome]
         self.decision_journal.log_decision(
             {
                 "event": "bar_decision",
@@ -850,7 +866,7 @@ class KiteTradingBot:
                 "bars_available": len(bars),
                 "history": [item.to_dict() for item in bars],
                 "score": market_score.score if market_score else None,
-                "reasons": market_score.reasons if market_score else [],
+                "reasons": reasons,
                 "news_risk": news_context.risk_level if news_context else "DISABLED",
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
                 "news_headlines": news_context.headlines[:5] if news_context else [],
