@@ -291,7 +291,11 @@ def higher_timeframe_signal(history: List[Dict], group_size: int = 5) -> str:
     return "NEUTRAL"
 
 
-def classify_price_regime(closes: List[float]) -> str:
+def classify_price_regime(
+    closes: List[float],
+    sideways_range_pct: float = 1.0,
+    sideways_net_move_pct: float = 1.0,
+) -> str:
     """Classify close-only data for entry filtering."""
     if len(closes) < 21:
         return "UNKNOWN"
@@ -302,7 +306,10 @@ def classify_price_regime(closes: List[float]) -> str:
         (max(recent_window) - min(recent_window)) / max(closes[-1], 1e-9) * 100.0
     )
     net_move_pct = abs(closes[-1] - closes[-20]) / max(closes[-20], 1e-9) * 100.0
-    if recent_range_pct < 1.0 and net_move_pct < 1.0:
+    if (
+        recent_range_pct < sideways_range_pct
+        and net_move_pct < sideways_net_move_pct
+    ):
         return "SIDEWAYS"
 
     previous_moves = [
@@ -329,6 +336,9 @@ def score_market(
     session_state: Optional[str] = None,
     hard_context_filter: bool = True,
     min_adx: float = 18.0,
+    sideways_range_pct: float = 1.0,
+    sideways_net_move_pct: float = 1.0,
+    min_trend_strength: float = 0.02,
 ) -> TradingScore:
     history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
@@ -382,7 +392,11 @@ def score_market(
     recent_high = max(recent_window)
     recent_low = min(recent_window)
     trend_strength = abs(price - closes[-20]) / max(closes[-20], 1e-9)
-    regime = classify_price_regime(closes)
+    regime = classify_price_regime(
+        closes,
+        sideways_range_pct=sideways_range_pct,
+        sideways_net_move_pct=sideways_net_move_pct,
+    )
     complete_ohlcv = len(history) == len(closes) and all(
         all(key in bar for key in ("open", "high", "low", "close", "volume"))
         for bar in history
@@ -454,14 +468,14 @@ def score_market(
     up_trend_conf = (
         fast_now > slow_now
         and price > closes[-20]
-        and trend_strength > 0.02
+        and trend_strength > min_trend_strength
         and macd >= 0
         and macd >= prev_macd - 1e-9
     )
     down_trend_conf = (
         fast_now < slow_now
         and price < closes[-20]
-        and trend_strength > 0.02
+        and trend_strength > min_trend_strength
         and macd <= 0
         and macd <= prev_macd + 1e-9
     )
