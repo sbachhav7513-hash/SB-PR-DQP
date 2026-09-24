@@ -402,7 +402,16 @@ def score_market(
         for bar in history
     )
 
-    if regime == "SIDEWAYS":
+    compression_breakout = (
+        complete_ohlcv
+        and is_compression_breakout(history)
+        and (
+            breakout_quality(history, "BUY")
+            or breakout_quality(history, "SELL")
+        )
+    )
+
+    if regime == "SIDEWAYS" and not compression_breakout:
         return TradingScore(
             ticker=ticker,
             score=0,
