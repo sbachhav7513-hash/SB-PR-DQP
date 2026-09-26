@@ -1,9 +1,10 @@
 from datetime import datetime
+from datetime import timezone
 
 import pandas as pd
 from fastparquet import ParquetFile
 
-from market_bot.trade_journal import DecisionJournal, TradeJournal
+from market_bot.trade_journal import DecisionJournal, PaperTradingRecorder, TradeJournal
 from market_bot.weekly_report import write_daily_summary, write_weekly_review
 
 
@@ -53,3 +54,68 @@ def test_daily_and_weekly_documents_are_written(tmp_path):
     assert summary.name == "daily_summary.parquet"
     assert review.name.startswith("weekly_review_")
     assert "negative" in review.read_text(encoding="utf-8")
+
+
+def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatch):
+    from analyze_weekly import iter_decisions, load_filter_stats, load_trades
+
+    monkeypatch.chdir(tmp_path)
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    recorder = PaperTradingRecorder(str(tmp_path / "paper_trading_data"))
+    recorder.record_trade(
+        {
+            "timestamp": timestamp,
+            "ticker": "NIFTY",
+            "action": "BUY",
+            "status": "closed",
+            "pnl": 100.0,
+        }
+    )
+    decisions_journal = DecisionJournal(
+        str(tmp_path / "decision_log.jsonl"), str(tmp_path / "paper_trading_data")
+    )
+    decisions_journal.log_decision(
+        {
+            "timestamp": timestamp,
+            "ticker": "NIFTY",
+            "signal": "BUY",
+            "outcome": "accuracy_filter_rejected:volatility",
+        }
+    )
+
+    assert len(load_trades()) == 1
+    decisions = list(iter_decisions())
+    assert len(decisions) == 1
+    assert decisions[0]["outcome"] == "accuracy_filter"
+    assert decisions[0]["outcome_detail"] == "accuracy_filter_rejected:volatility"
+    assert load_filter_stats(decisions=iter_decisions())["volatility_rejected"] == 1
+
+
+def test_decision_parquet_schema_migrates_when_new_session_fields_are_added(tmp_path):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    recorder = PaperTradingRecorder(str(tmp_path / "paper"))
+    path = recorder._day_path(timestamp, "decisions.parquet")
+    legacy_columns = [
+        "timestamp", "ticker", "signal", "outcome", "score", "reasons",
+        "bars_available", "bar", "history",
+    ]
+    recorder._write_parquet(
+        path,
+        [{"timestamp": timestamp, "ticker": "NIFTY", "signal": "HOLD", "outcome": "hold"}],
+        legacy_columns,
+    )
+
+    recorder.record_decision({
+        "timestamp": timestamp,
+        "ticker": "NIFTY",
+        "signal": "BUY",
+        "outcome": "accuracy_filter",
+        "outcome_detail": "accuracy_filter_rejected:volatility",
+        "market_session": "regular_session",
+        "session_timezone": "Asia/Kolkata",
+    })
+
+    rows = PaperTradingRecorder._read_parquet(path)
+    assert len(rows) == 2
+    assert rows[1]["outcome_detail"] == "accuracy_filter_rejected:volatility"
+    assert rows[1]["market_session"] == "regular_session"

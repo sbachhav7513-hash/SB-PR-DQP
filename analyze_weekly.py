@@ -6,12 +6,69 @@ Usage: python analyze_weekly.py [days=7]
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
+from zoneinfo import ZoneInfo
+
+from market_bot.trade_journal import PaperTradingRecorder, normalize_decision_outcome
+
+
+IST = ZoneInfo('Asia/Kolkata')
+
+
+def parse_timestamp(value):
+    """Parse journal timestamps as UTC when they do not include a timezone."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_paper_records(parquet_name, days, columns):
+    paper_root = Path('paper_trading_data')
+    paths = sorted(paper_root.glob(f'*/*/day_*/{parquet_name}'))
+    if not paths:
+        return None
+
+    valid_records = []
+    for path in paths:
+        try:
+            rows = PaperTradingRecorder._read_parquet(path, columns=columns)
+        except Exception:
+            try:
+                rows = PaperTradingRecorder._read_parquet(path)
+            except Exception as error:
+                print(f'⚠️  Could not read {path}: {error}')
+                continue
+        for record in rows:
+            timestamp = parse_timestamp(record.get('timestamp', ''))
+            if timestamp is not None:
+                valid_records.append((timestamp, record))
+
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+    recent = [record for timestamp, record in valid_records if timestamp > cutoff_date]
+    if recent:
+        return recent
+    if not valid_records:
+        return []
+    fallback_cutoff = max(timestamp for timestamp, _ in valid_records) - timedelta(days=days)
+    return [
+        record for timestamp, record in valid_records
+        if timestamp >= fallback_cutoff
+    ]
 
 def load_trades(days=7):
     """Load trades from the past N days"""
+    paper_trades = load_paper_records(
+        'trades.parquet', days, ['timestamp', 'ticker', 'action', 'status', 'pnl']
+    )
+    if paper_trades is not None:
+        return [trade for trade in paper_trades if trade.get('status') == 'closed']
+
     trades = []
     trades_file = Path('trades.jsonl')
     
@@ -20,7 +77,7 @@ def load_trades(days=7):
         print("   Make sure the bot has run and created trades.jsonl")
         return []
     
-    cutoff_date = datetime.now() - timedelta(days=days)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     
     try:
         with open(trades_file, 'r') as f:
@@ -28,9 +85,9 @@ def load_trades(days=7):
                 if line.strip():
                     try:
                         trade = json.loads(line)
-                        trade_time = datetime.fromisoformat(trade.get('timestamp', ''))
+                        trade_time = parse_timestamp(trade.get('timestamp', ''))
                         
-                        if trade_time > cutoff_date and trade.get('status') == 'closed':
+                        if trade_time and trade_time > cutoff_date and trade.get('status') == 'closed':
                             trades.append(trade)
                     except (json.JSONDecodeError, ValueError) as e:
                         continue
@@ -42,13 +99,22 @@ def load_trades(days=7):
 
 def load_decisions(days=7):
     """Load strategy decisions and their analyzed market windows."""
+    paper_decisions = load_paper_records(
+        'decisions.parquet', days, [
+            'timestamp', 'ticker', 'signal', 'outcome', 'outcome_detail',
+            'rejection_reason', 'market_session', 'market_hours', 'session_timezone',
+        ]
+    )
+    if paper_decisions is not None:
+        return paper_decisions
+
     decisions = []
     decision_file = Path('decision_log.jsonl')
     if not decision_file.exists():
         print("⚠️  Note: decision_log.jsonl not found yet (restart the bot after this update)")
         return decisions
 
-    cutoff_date = datetime.now() - timedelta(days=days)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     try:
         with open(decision_file, 'r', encoding='utf-8') as f:
             for line in f:
@@ -56,8 +122,8 @@ def load_decisions(days=7):
                     continue
                 try:
                     decision = json.loads(line)
-                    decision_time = datetime.fromisoformat(decision.get('timestamp', ''))
-                    if decision_time > cutoff_date:
+                    decision_time = parse_timestamp(decision.get('timestamp', ''))
+                    if decision_time and decision_time > cutoff_date:
                         decisions.append(decision)
                 except (json.JSONDecodeError, ValueError):
                     continue
@@ -67,12 +133,22 @@ def load_decisions(days=7):
 
 def iter_decisions(days=7):
     """Yield recent decisions one at a time to keep analysis memory bounded."""
+    paper_decisions = load_paper_records(
+        'decisions.parquet', days, [
+            'timestamp', 'ticker', 'signal', 'outcome', 'outcome_detail',
+            'rejection_reason', 'market_session', 'market_hours', 'session_timezone',
+        ]
+    )
+    if paper_decisions is not None:
+        yield from paper_decisions
+        return
+
     decision_file = Path('decision_log.jsonl')
     if not decision_file.exists():
         print("⚠️  Note: decision_log.jsonl not found yet (restart the bot after this update)")
         return
 
-    cutoff_date = datetime.now() - timedelta(days=days)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     try:
         with decision_file.open('r', encoding='utf-8') as f:
             for line in f:
@@ -80,8 +156,8 @@ def iter_decisions(days=7):
                     continue
                 try:
                     decision = json.loads(line)
-                    decision_time = datetime.fromisoformat(decision.get('timestamp', ''))
-                    if decision_time > cutoff_date:
+                    decision_time = parse_timestamp(decision.get('timestamp', ''))
+                    if decision_time and decision_time > cutoff_date:
                         yield decision
                 except (json.JSONDecodeError, ValueError):
                     continue
@@ -92,6 +168,7 @@ def analyze_decisions(decisions):
     """Summarize what the strategy evaluated, rejected, and attempted."""
     signal_counts = defaultdict(int)
     outcome_counts = defaultdict(int)
+    market_session_counts = defaultdict(int)
     symbol_counts = defaultdict(lambda: {'bars': 0, 'buy': 0, 'sell': 0, 'hold': 0})
     total_decisions = 0
 
@@ -100,7 +177,19 @@ def analyze_decisions(decisions):
         signal = decision.get('signal', 'UNKNOWN')
         symbol = decision.get('ticker', 'UNKNOWN')
         signal_counts[signal] += 1
-        outcome_counts[decision.get('outcome', 'UNKNOWN')] += 1
+        outcome_counts[normalize_decision_outcome(decision.get('outcome', 'UNKNOWN'))] += 1
+        session = decision.get('market_session')
+        if not session:
+            timestamp = parse_timestamp(decision.get('timestamp', ''))
+            session = 'unknown'
+            if timestamp:
+                local_time = timestamp.astimezone(IST).time()
+                session = (
+                    'regular_session' if time(9, 15) <= local_time < time(15, 30)
+                    else 'before_open' if local_time < time(9, 15)
+                    else 'after_close'
+                )
+        market_session_counts[str(session)] += 1
         symbol_counts[symbol]['bars'] += 1
         if signal == 'BUY':
             symbol_counts[symbol]['buy'] += 1
@@ -109,14 +198,29 @@ def analyze_decisions(decisions):
         elif signal == 'HOLD':
             symbol_counts[symbol]['hold'] += 1
 
+    rejected = sum(
+        outcome_counts[name]
+        for name in ('accuracy_filter', 'option_filter', 'risk_blocked', 'execution_failed')
+    )
+    approved = outcome_counts['trade_opened']
+    non_entry = total_decisions - approved - rejected
     return {
         'total_decisions': total_decisions,
+        'session_timezone': IST.key,
         'signal_counts': dict(signal_counts),
         'outcome_counts': dict(outcome_counts),
+        'market_session_counts': dict(market_session_counts),
+        'decision_reconciliation': {
+            'approved_entries': approved,
+            'classified_rejections': rejected,
+            'non_entry_decisions': non_entry,
+            'accounted_decisions': approved + rejected + non_entry,
+            'matches_decisions_recorded': approved + rejected + non_entry == total_decisions,
+        },
         'symbol_counts': dict(symbol_counts),
     }
 
-def load_filter_stats(days=7):
+def load_filter_stats(days=7, decisions=None):
     """Load filter statistics"""
     stats = {
         'volatility_rejected': 0,
@@ -124,8 +228,48 @@ def load_filter_stats(days=7):
         'cooldown_rejected': 0,
         'hours_rejected': 0,
         'threshold_rejected': 0,
-        'approved_entries': 0
+        'approved_entries': 0,
+        'option_rejected': 0,
+        'risk_rejected': 0,
+        'execution_failures': 0,
     }
+
+    if decisions is not None:
+        has_decisions = False
+        for decision in decisions:
+            has_decisions = True
+            outcome = str(decision.get('outcome', ''))
+            detail = str(decision.get('outcome_detail') or outcome)
+            category = normalize_decision_outcome(outcome)
+            if category == 'trade_opened':
+                stats['approved_entries'] += 1
+            elif category == 'accuracy_filter' or detail.startswith('accuracy_filter_rejected:'):
+                reason = str(decision.get('rejection_reason', '')) or detail.split(':', 1)[-1]
+                if reason == 'volatility':
+                    stats['volatility_rejected'] += 1
+                elif reason == 'confirmation':
+                    stats['confirmation_rejected'] += 1
+                elif reason == 'cooldown':
+                    stats['cooldown_rejected'] += 1
+                elif reason == 'trading_hours':
+                    stats['hours_rejected'] += 1
+                else:
+                    stats['threshold_rejected'] += 1
+            elif category == 'option_filter' or detail.startswith('OPTION_FILTER_'):
+                stats['option_rejected'] += 1
+            elif category == 'risk_blocked':
+                stats['risk_rejected'] += 1
+            elif category == 'execution_failed':
+                stats['execution_failures'] += 1
+        if has_decisions:
+            stats['total_rejected'] = sum(
+                stats[name] for name in (
+                    'volatility_rejected', 'confirmation_rejected',
+                    'cooldown_rejected', 'hours_rejected', 'threshold_rejected',
+                    'option_rejected', 'risk_rejected', 'execution_failures',
+                )
+            )
+            return stats
     
     filter_log = Path('filter_log.jsonl')
     
@@ -133,7 +277,7 @@ def load_filter_stats(days=7):
         print("⚠️  Note: filter_log.jsonl not found yet (will be created after bot runs with updated code)")
         return stats
     
-    cutoff_date = datetime.now() - timedelta(days=days)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     
     try:
         with open(filter_log, 'r') as f:
@@ -141,9 +285,9 @@ def load_filter_stats(days=7):
                 if line.strip():
                     try:
                         entry = json.loads(line)
-                        entry_time = datetime.fromisoformat(entry.get('timestamp', ''))
+                        entry_time = parse_timestamp(entry.get('timestamp', ''))
                         
-                        if entry_time > cutoff_date:
+                        if entry_time and entry_time > cutoff_date:
                             filter_name = entry.get('filter', '')
                             action = entry.get('action', '')
                             
@@ -203,8 +347,10 @@ def analyze_trades(trades):
     
     for trade in trades:
         try:
-            trade_time = datetime.fromisoformat(trade.get('timestamp', ''))
-            hour = trade_time.hour
+            trade_time = parse_timestamp(trade.get('timestamp', ''))
+            if trade_time is None:
+                continue
+            hour = trade_time.astimezone(IST).hour
             trade_profit = profit(trade)
             
             hour_stats[hour]['count'] += 1
@@ -392,6 +538,7 @@ def main():
     trades = load_trades(days)
     filter_stats = load_filter_stats(days)
     decision_analysis = analyze_decisions(iter_decisions(days))
+    filter_stats = load_filter_stats(days, iter_decisions(days))
     
     if not trades and not decision_analysis['total_decisions']:
         print("\n❌ No trades found. Run the bot first:")

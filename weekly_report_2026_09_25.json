@@ -1,0 +1,71 @@
+{
+  "generated": "2026-09-25T15:41:10.778304",
+  "metrics": {
+    "total_trades": 6,
+    "win_rate": 33.33333333333333,
+    "total_profit": -2175.4999999999995,
+    "avg_win": 1185.6250000000005,
+    "avg_loss": -1136.6875,
+    "profit_factor": 0.5215263649859792
+  },
+  "symbol_stats": {
+    "LT_CE": {
+      "wins": 1,
+      "losses": 1,
+      "profit": 1391.2500000000005,
+      "count": 2
+    },
+    "LT_PE": {
+      "wins": 1,
+      "losses": 1,
+      "profit": -1898.7500000000002,
+      "count": 2
+    },
+    "INFY_PE": {
+      "wins": 0,
+      "losses": 1,
+      "profit": -839.9999999999991,
+      "count": 1
+    },
+    "BANKNIFTY_CE": {
+      "wins": 0,
+      "losses": 1,
+      "profit": -828.0000000000007,
+      "count": 1
+    }
+  },
+  "hour_stats": {
+    "4": {
+      "wins": 1,
+      "losses": 1,
+      "profit": 280.0000000000002,
+      "count": 2
+    },
+    "3": {
+      "wins": 1,
+      "losses": 1,
+      "profit": 901.2500000000014,
+      "count": 2
+    },
+    "6": {
+      "wins": 0,
+      "losses": 2,
+      "profit": -3356.750000000001,
+      "count": 2
+    }
+  },
+  "filter_stats": {
+    "volatility_rejected": 0,
+    "confirmation_rejected": 0,
+    "cooldown_rejected": 0,
+    "hours_rejected": 0,
+    "threshold_rejected": 0,
+    "approved_entries": 0
+  },
+  "decision_analysis": {
+    "total_decisions": 0,
+    "signal_counts": {},
+    "outcome_counts": {},
+    "symbol_counts": {}
+  }
+}

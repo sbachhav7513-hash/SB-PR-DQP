@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -15,6 +15,45 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 
+def normalize_decision_outcome(value: Any) -> str:
+    """Map detailed decision results into stable report categories."""
+    outcome = str(value or "UNKNOWN")
+    lowered = outcome.lower()
+    if outcome in {
+        "trade_opened", "accuracy_filter", "option_filter", "risk_blocked",
+        "execution_failed", "premarket", "market_closed", "hold", "operational",
+    }:
+        return outcome
+    if outcome == "trade_opened":
+        return "trade_opened"
+    if outcome.startswith("accuracy_filter_rejected:"):
+        return "accuracy_filter"
+    if outcome.startswith("OPTION_FILTER_"):
+        return "option_filter"
+    if outcome in {
+        "trade_blocked", "live_entry_paused", "position_size_zero",
+        "late_window_blocked",
+    } or outcome.startswith(("trade_blocked:", "risk_blocked:")):
+        return "risk_blocked"
+    if outcome in {
+        "live_order_failed", "protective_stop_failed", "reversal_close_failed",
+        "execution_failed",
+    }:
+        return "execution_failed"
+    if outcome == "PREMARKET_WATCHLIST":
+        return "premarket"
+    if outcome == "MARKET_CLOSED" or "after close" in lowered:
+        return "market_closed"
+    if outcome in {
+        "not_enough_bars", "underlying_signal_unavailable", "strategy_error",
+        "forced_exit_check", "position_updated", "UNKNOWN",
+    }:
+        return "operational"
+    if lowered == "hold" or outcome == "HOLD":
+        return "hold"
+    return "operational"
+
+
 class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
@@ -22,10 +61,12 @@ class PaperTradingRecorder:
         "trade_id", "timestamp", "ticker", "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
+        "protection_order_id",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
-        "bars_available", "bar", "history",
+        "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
+        "market_session", "market_hours", "session_timezone",
     ]
 
     def __init__(self, root: str = "paper_trading_data") -> None:
@@ -63,10 +104,14 @@ class PaperTradingRecorder:
         return "" if value is None else str(value)
 
     @staticmethod
-    def _read_parquet(path: Path) -> List[Dict[str, Any]]:
+    def _read_parquet(
+        path: Path, columns: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         if not path.exists():
             return []
-        return pd.read_parquet(path, engine="fastparquet").to_dict(orient="records")
+        return pd.read_parquet(
+            path, engine="fastparquet", columns=columns
+        ).to_dict(orient="records")
 
     @staticmethod
     def _write_parquet(path: Path, rows: List[Dict[str, Any]], columns: List[str]) -> None:
@@ -82,17 +127,20 @@ class PaperTradingRecorder:
         temporary.replace(path)
 
     def _append(self, path: Path, record: Dict[str, Any], columns: List[str]) -> None:
+        if path.exists() and ParquetFile(path).columns != columns:
+            existing_rows = self._read_parquet(path)
+            self._write_parquet(path, existing_rows, columns)
         frame = pd.DataFrame([{
             column: self._parquet_value(record.get(column)) for column in columns
         }], columns=columns)
         write_parquet(path, frame, compression="SNAPPY", append=path.exists())
 
     def record_decision(self, payload: Dict[str, Any]) -> None:
-        timestamp = payload.get("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
+        timestamp = payload.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         self._append(self._day_path(timestamp, "decisions.parquet"), payload, self.DECISION_COLUMNS)
 
     def record_trade(self, payload: Dict[str, Any]) -> None:
-        timestamp = payload.get("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
+        timestamp = payload.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         path = self._day_path(timestamp, "trades.parquet")
         rows = self._read_parquet(path)
         trade_id = str(payload.get("trade_id", ""))
@@ -116,6 +164,8 @@ class PaperTradingRecorder:
 class DecisionJournal:
     """Append-only audit log for market data and strategy decisions."""
 
+    MAX_HISTORY_BARS = 5
+
     def __init__(self, path: str = "decision_log.jsonl", paper_data_dir: Optional[str] = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +173,35 @@ class DecisionJournal:
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
-        entry.setdefault("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
+        history = entry.get("history")
+        if isinstance(history, list) and len(history) > self.MAX_HISTORY_BARS:
+            entry["history"] = history[-self.MAX_HISTORY_BARS:]
+        entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        detail = str(entry.get("outcome", "UNKNOWN"))
+        entry.setdefault("outcome_detail", detail)
+        entry["outcome"] = normalize_decision_outcome(detail)
+        if entry["outcome"] in {
+            "accuracy_filter", "option_filter", "risk_blocked", "execution_failed",
+        }:
+            rejection_reason = detail
+            if detail.startswith("accuracy_filter_rejected:"):
+                rejection_reason = detail.split(":", 1)[1]
+            elif detail.startswith(("trade_blocked:", "risk_blocked:")):
+                rejection_reason = detail.split(":", 1)[1]
+            elif detail.startswith("OPTION_FILTER_"):
+                rejection_reason = detail.removeprefix("OPTION_FILTER_").lower().replace("_", " ")
+            entry.setdefault("rejection_reason", rejection_reason)
+        event_time = PaperTradingRecorder._event_datetime(entry["timestamp"])
+        local_time = event_time.time()
+        in_market_hours = time(9, 15) <= local_time < time(15, 30)
+        entry.setdefault(
+            "market_session",
+            "regular_session" if in_market_hours else (
+                "before_open" if local_time < time(9, 15) else "after_close"
+            ),
+        )
+        entry.setdefault("market_hours", in_market_hours)
+        entry.setdefault("session_timezone", IST.key)
         try:
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(entry, default=str) + "\n")
@@ -147,7 +225,7 @@ class TradeJournal:
 
     def log_trade(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
-        entry.setdefault("timestamp", datetime.utcnow().isoformat(timespec="seconds"))
+        entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
         entry.setdefault("trade_id", f"{entry['ticker']}-{entry['timestamp']}-{entry.get('action', 'UNKNOWN')}")
@@ -202,7 +280,7 @@ class TradeJournal:
                     trade["status"] = "closed"
                     trade["exit_price"] = current_price
                     trade["pnl"] = stop_loss - entry_price
-                    trade["closed_at"] = datetime.utcnow().isoformat(timespec="seconds")
+                    trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "STOP_LOSS"
                     self._write_trades(trades)
                     if self.paper_recorder:
@@ -212,7 +290,7 @@ class TradeJournal:
                     trade["status"] = "closed"
                     trade["exit_price"] = current_price
                     trade["pnl"] = take_profit - entry_price
-                    trade["closed_at"] = datetime.utcnow().isoformat(timespec="seconds")
+                    trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "TAKE_PROFIT"
                     self._write_trades(trades)
                     if self.paper_recorder:
@@ -224,7 +302,7 @@ class TradeJournal:
                     trade["status"] = "closed"
                     trade["exit_price"] = current_price
                     trade["pnl"] = entry_price - stop_loss
-                    trade["closed_at"] = datetime.utcnow().isoformat(timespec="seconds")
+                    trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "STOP_LOSS"
                     self._write_trades(trades)
                     if self.paper_recorder:
@@ -234,7 +312,7 @@ class TradeJournal:
                     trade["status"] = "closed"
                     trade["exit_price"] = current_price
                     trade["pnl"] = entry_price - take_profit
-                    trade["closed_at"] = datetime.utcnow().isoformat(timespec="seconds")
+                    trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "TAKE_PROFIT"
                     self._write_trades(trades)
                     if self.paper_recorder:
@@ -245,7 +323,7 @@ class TradeJournal:
 
             trade["pnl"] = pnl
             trade["last_price"] = current_price
-            trade["updated_at"] = datetime.utcnow().isoformat(timespec="seconds")
+            trade["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._write_trades(trades)
             if self.paper_recorder:
                 self.paper_recorder.record_trade(trade)
@@ -280,7 +358,7 @@ class TradeJournal:
             trade["pnl"] = pnl
             trade["exit_price"] = exit_price
             trade["status"] = "closed"
-            trade["closed_at"] = datetime.utcnow().isoformat(timespec="seconds")
+            trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             trade["reason"] = reason
             self._write_trades(trades)
             if self.paper_recorder:

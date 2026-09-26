@@ -12,11 +12,18 @@ logger = logging.getLogger(__name__)
 class AccuracyFilters:
     """Filters to reduce false signals and improve trade accuracy."""
     
-    def __init__(self, min_entry_score: int = 75):
+    def __init__(
+        self,
+        min_entry_score: int = 75,
+        min_volatility_pct: float = 0.05,
+        max_volatility_pct: float = 5.0,
+    ):
         self.last_entry_time: Dict[str, float] = {}
         self.COOLDOWN_SECONDS = 300  # 5 minutes between entries
         self.min_score_floor = max(0, min(int(min_entry_score), 85))
         self.min_score_ceiling = 98
+        self.min_volatility_pct = max(float(min_volatility_pct), 0.0)
+        self.max_volatility_pct = max(float(max_volatility_pct), self.min_volatility_pct)
 
     def get_min_score(self, recent_trades: int, recent_win_rate: float) -> int:
         """Increase the entry threshold when recent performance is weak."""
@@ -67,7 +74,7 @@ class AccuracyFilters:
     @staticmethod
     def is_volatility_acceptable(
         history: List[Dict],
-        min_volatility_pct: float = 0.8,
+        min_volatility_pct: float = 0.05,
         max_volatility_pct: float = 5.0
     ) -> bool:
         """
@@ -247,14 +254,14 @@ class AccuracyFilters:
             logger.debug("Opening hour filter (9:15-9:30): Skipping")
             return False
         
-        # Closing hour (3:15-3:30 PM IST)
-        closing_start = 15 * 60 + 15  # 915 minutes
+        # Closing hour (3:00-3:30 PM IST)
+        closing_start = 15 * 60 + 0  # 900 minutes
         closing_end = 15 * 60 + 30    # 930 minutes
-        
+
         if closing_start <= current_min <= closing_end:
-            logger.debug("Closing hour filter (3:15-3:30): Skipping")
+            logger.debug("Closing hour filter (3:00-3:30): Skipping")
             return False
-        
+
         return True
     
     # ========== COMPOSITE FILTER ==========
@@ -301,7 +308,11 @@ class AccuracyFilters:
         Returns whether entry is allowed and the first failed gate.
         """
         # Filter 1: Volatility
-        volatility_ok = self.is_volatility_acceptable(history)
+        volatility_ok = self.is_volatility_acceptable(
+            history,
+            min_volatility_pct=self.min_volatility_pct,
+            max_volatility_pct=self.max_volatility_pct,
+        )
         if not volatility_ok:
             return False, "volatility"
         
