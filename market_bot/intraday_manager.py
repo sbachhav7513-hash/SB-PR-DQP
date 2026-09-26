@@ -3,7 +3,7 @@ Intraday Futures Trading Manager
 Handles position sizing, time-based exits, and leverage management
 """
 
-from datetime import datetime, time as time_type
+from datetime import datetime, time as time_type, timezone
 from typing import Optional, Dict
 import logging
 from zoneinfo import ZoneInfo
@@ -56,6 +56,7 @@ class IntradayManager:
         trailing_enabled: bool = True,
         trailing_activation_ratio: float = 0.5,
         trailing_distance_ratio: float = 0.25,
+        daily_max_loss: Optional[float] = None,
     ):
         """
         Initialize the intraday manager.
@@ -66,7 +67,13 @@ class IntradayManager:
         """
         self.account_size = account_size
         self.risk_per_trade_pct = risk_per_trade_pct
-        self.max_risk_per_trade = (account_size * risk_per_trade_pct) / 100.0
+        configured_trade_risk = (account_size * risk_per_trade_pct) / 100.0
+        self.daily_max_loss = (
+            max(account_size * 0.02, 250.0)
+            if daily_max_loss is None
+            else max(float(daily_max_loss), 0.0)
+        )
+        self.max_risk_per_trade = min(configured_trade_risk, self.daily_max_loss)
         self.trailing_enabled = trailing_enabled
         self.trailing_activation_ratio = trailing_activation_ratio
         self.trailing_distance_ratio = trailing_distance_ratio
@@ -74,7 +81,6 @@ class IntradayManager:
         self.contract_specs: Dict[str, dict] = {}
 
         self.daily_trade_count = 0
-        self.daily_max_loss = max(account_size * 0.02, 250.0)
         self.max_consecutive_losses = 3
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
@@ -85,6 +91,7 @@ class IntradayManager:
         self.recent_loss_symbols: Dict[str, datetime] = {}
         self.session_trade_symbols: set[str] = set()
         self.session_reversal_symbols: set[str] = set()
+        self._session_date = datetime.now(IST).date()
         self.trade_history: list[dict] = []
 
     def set_contract_specs(self, specs: Dict[str, dict]) -> None:
@@ -177,6 +184,7 @@ class IntradayManager:
     
     def can_open_trade(self, symbol: str, direction: str) -> tuple[bool, str]:
         """Policy gate for one trade per symbol per session and risk limits."""
+        self._refresh_session()
         if symbol in self.session_reversal_symbols:
             return False, f"{symbol} already reversed this session; no new trade allowed"
         if symbol in self.session_trade_symbols:
@@ -207,16 +215,42 @@ class IntradayManager:
                 )
         return True, "OK"
 
+    def estimate_trade_risk(
+        self, symbol: str, quantity: int, entry_price: float, stop_loss_price: float
+    ) -> float:
+        multiplier = self.contract_specs.get(symbol, {}).get(
+            "multiplier", self.MULTIPLIERS.get(symbol, 1)
+        )
+        return abs(entry_price - stop_loss_price) * multiplier * quantity
+
     def record_trade_open(self, symbol: str, direction: str) -> None:
+        self._refresh_session()
         self.daily_trade_count += 1
         self.session_trade_symbols.add(symbol)
         logger.info("[%s] Recorded open trade for %s; daily_trade_count=%d", symbol, direction, self.daily_trade_count)
 
+    def restore_session_trades(self, trades: list[dict]) -> None:
+        """Restore today's symbol exposure from the persistent trade journal."""
+        self._refresh_session()
+        for trade in trades:
+            symbol = trade.get("ticker") or trade.get("symbol")
+            if not symbol:
+                continue
+            try:
+                timestamp = datetime.fromisoformat(
+                    str(trade.get("timestamp", "")).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                continue
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            if timestamp.astimezone(IST).date() == self._session_date:
+                self.session_trade_symbols.add(str(symbol))
+
     def record_trade_close(self, symbol: str, reason: str, pnl: float) -> None:
+        self._refresh_session()
         self.daily_pnl += pnl
         self.trade_history.append({"symbol": symbol, "reason": reason, "pnl": pnl, "time": datetime.now(IST)})
-        if symbol in self.session_trade_symbols:
-            self.session_trade_symbols.discard(symbol)
         if reason == "SIGNAL_REVERSAL":
             self.session_reversal_symbols.add(symbol)
         if pnl < 0 and abs(pnl) >= self.daily_max_loss * 0.5:
@@ -234,6 +268,14 @@ class IntradayManager:
         else:
             self.consecutive_losses = 0
             self.recent_loss_symbols.pop(symbol, None)
+
+    def _refresh_session(self) -> None:
+        session_date = datetime.now(IST).date()
+        if session_date == self._session_date:
+            return
+        self._session_date = session_date
+        self.session_trade_symbols.clear()
+        self.session_reversal_symbols.clear()
 
     def register_position(
         self,

@@ -40,6 +40,25 @@ HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 
 
 class KiteTradingBot:
+    def _late_window_blocked(self, now: Optional[datetime] = None) -> bool:
+        if not self.config.get("late_window_enabled", True):
+            return False
+        start = datetime.strptime(
+            str(self.config.get("late_window_start", "12:00")), "%H:%M"
+        ).time()
+        end = datetime.strptime(
+            str(self.config.get("late_window_end", "13:00")), "%H:%M"
+        ).time()
+        if start == end:
+            return False
+        now = now or datetime.now(IST)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=IST)
+        else:
+            now = now.astimezone(IST)
+        current = now.time()
+        return start <= current < end if start < end else current >= start or current < end
+
     def _options_enabled(self) -> bool:
         return self.config.get("trading_mode") in {"intraday_options", "intraday_both"}
 
@@ -61,9 +80,7 @@ class KiteTradingBot:
             trailing_enabled=self.config.get("trailing_enabled", True),
             trailing_activation_ratio=self.config.get("trailing_activation_ratio", 0.5),
             trailing_distance_ratio=self.config.get("trailing_distance_ratio", 0.25),
-        )
-        self.intraday_manager.daily_max_loss = float(
-            self.config.get("daily_max_loss", self.intraday_manager.daily_max_loss)
+            daily_max_loss=self.config.get("daily_max_loss"),
         )
 
         self.bar_builder = BarBuilder(
@@ -110,6 +127,7 @@ class KiteTradingBot:
         )
         self.paper_trading_dir = self.config.get("paper_trading_dir", "paper_trading_data")
         self.trade_journal = TradeJournal("trades.jsonl", self.paper_trading_dir)
+        self.intraday_manager.restore_session_trades(self.trade_journal.read_trades())
         self.decision_journal = DecisionJournal(
             self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
@@ -130,7 +148,9 @@ class KiteTradingBot:
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
         self.accuracy_filters = AccuracyFilters(
-            min_entry_score=int(self.config.get("min_entry_score", 75))
+            min_entry_score=int(self.config.get("min_entry_score", 75)),
+            min_volatility_pct=float(self.config.get("min_volatility_pct", 0.05)),
+            max_volatility_pct=float(self.config.get("max_volatility_pct", 5.0)),
         )
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
@@ -233,10 +253,24 @@ class KiteTradingBot:
             take_profit = float(trade.get("take_profit", entry_price))
             if entry_price <= 0 or stop_loss <= 0 or take_profit <= 0:
                 raise RuntimeError(f"Open trade {symbol} has incomplete risk levels")
+            if not trade.get("protection_order_id"):
+                raise RuntimeError(f"Open trade {symbol} has no recorded protective stop")
+            estimated_risk = self.intraday_manager.estimate_trade_risk(
+                symbol, quantity, entry_price, stop_loss
+            )
+            if estimated_risk > self.intraday_manager.max_risk_per_trade + 1e-6:
+                raise RuntimeError(
+                    f"Open trade {symbol} exceeds the per-trade risk cap: "
+                    f"{estimated_risk:.2f} > {self.intraday_manager.max_risk_per_trade:.2f}"
+                )
             self.intraday_manager.register_position(
                 symbol, direction, quantity, entry_price, stop_loss, take_profit,
                 signal_score=trade.get("score"),
             )
+            if trade.get("protection_order_id"):
+                self.intraday_manager.active_positions[symbol]["protection_order_id"] = (
+                    trade["protection_order_id"]
+                )
         self._persist_risk_state(positions, orders)
         realized_pnl = sum(
             float(row.get("realised", row.get("realized", 0.0)) or 0.0)
@@ -308,8 +342,13 @@ class KiteTradingBot:
             return "BUY"
         return signal
 
-    def _option_quality_gate(self, symbol: str, signal: str) -> tuple[bool, str]:
-        """Reject options that fail premium, volume, OI, or IV sanity checks."""
+    def _option_quality_gate(
+        self,
+        symbol: str,
+        signal: str,
+        score: Optional[int] = None,
+    ) -> tuple[bool, str]:
+        """Reject options that fail sanity checks, with a softer fallback for healthy setups."""
         if not self._options_enabled():
             return True, "OK"
 
@@ -337,25 +376,44 @@ class KiteTradingBot:
         volume = int(quote_data.get("volume", 0) or 0)
         oi = int(quote_data.get("oi", 0) or 0)
         iv = float(quote_data.get("iv", 0.0) or 0.0)
-        min_premium = float(self.config.get("option_min_premium", 20.0))
-        max_premium = float(self.config.get("option_max_premium", 500.0))
-        min_volume = int(self.config.get("option_min_volume", 300))
-        min_oi = int(self.config.get("option_min_oi", 1000))
-        iv_min = float(self.config.get("option_iv_min", 0.10))
-        iv_max = float(self.config.get("option_iv_max", 1.0))
+        min_premium = float(self.config.get("option_min_premium", 12.0))
+        max_premium = float(self.config.get("option_max_premium", 800.0))
+        min_volume = int(self.config.get("option_min_volume", 200))
+        min_oi = int(self.config.get("option_min_oi", 400))
+        iv_min = float(self.config.get("option_iv_min", 0.08))
+        iv_max = float(self.config.get("option_iv_max", 1.20))
+
+        strong_signal = score is not None and score >= int(self.config.get("strong_signal_score", 82))
+        premium_floor = min_premium * (0.75 if strong_signal else 0.65)
+        volume_floor = max(int(min_volume * (0.8 if strong_signal else 0.7)), 150)
+        oi_floor = max(int(min_oi * (0.8 if strong_signal else 0.7)), 300)
 
         if premium < min_premium:
-            return False, f"premium too low: {premium} < {min_premium}"
+            if premium >= premium_floor and volume >= volume_floor and oi >= oi_floor:
+                pass
+            else:
+                return False, f"premium too low: {premium} < {min_premium}"
         if premium > max_premium:
             return False, f"premium too high: {premium} > {max_premium}"
         if volume < min_volume:
-            return False, f"volume too low: {volume} < {min_volume}"
+            if volume >= volume_floor and premium >= premium_floor and oi >= oi_floor:
+                pass
+            else:
+                return False, f"volume too low: {volume} < {min_volume}"
         if "oi" in quote_data and int(quote_data["oi"] or 0) < min_oi:
             oi = int(quote_data["oi"] or 0)
-            return False, f"open interest too low: {oi} < {min_oi}"
-        if "iv" in quote_data and not iv_min <= float(quote_data["iv"]) <= iv_max:
-            iv = float(quote_data["iv"])
-            return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
+            if oi >= oi_floor and premium >= premium_floor and volume >= volume_floor:
+                pass
+            else:
+                return False, f"open interest too low: {oi} < {min_oi}"
+        if "iv" in quote_data:
+            iv_current = float(quote_data["iv"])
+            if not iv_min <= iv_current <= iv_max:
+                if strong_signal and iv_min * 0.7 <= iv_current <= iv_max * 1.25:
+                    pass
+                else:
+                    iv = iv_current
+                    return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
         return True, "OK"
 
     def _warm_up_bars(self) -> None:
@@ -568,6 +626,26 @@ class KiteTradingBot:
             return
 
         if (
+            market_score.signal in {"BUY", "SELL"}
+            and self._late_window_blocked(datetime.now(IST))
+        ):
+            logger.info(
+                "[%s] Entry blocked by configured late-window guard at %s IST",
+                symbol,
+                datetime.now(IST).strftime("%H:%M"),
+            )
+            self._record_decision(
+                symbol,
+                bar,
+                bars,
+                market_score,
+                market_score.signal,
+                "late_window_blocked",
+                news_context,
+            )
+            return
+
+        if (
             self._options_enabled()
             and "_" in symbol
             and market_score.signal in {"BUY", "SELL"}
@@ -593,7 +671,11 @@ class KiteTradingBot:
                 )
                 return
 
-            allowed, option_reason = self._option_quality_gate(symbol, market_score.signal)
+            allowed, option_reason = self._option_quality_gate(
+                symbol,
+                market_score.signal,
+                market_score.score,
+            )
             if not allowed:
                 logger.info("[%s] Option quality reject: %s", symbol, option_reason)
                 self._record_decision(
@@ -622,7 +704,7 @@ class KiteTradingBot:
                 symbol=symbol,
                 signal=market_score.signal,
                 score=market_score.score,
-                history=[b.to_dict() for b in bars],
+                history=history,
                 current_bar=signal_bars[-1].to_dict(),
                 previous_bar=previous_bar,
                 current_time=current_time,
@@ -736,6 +818,11 @@ class KiteTradingBot:
                 float(position["stop_loss"]),
             )
             position["protection_order_id"] = order_id
+            self.trade_journal.update_open_trade(
+                symbol,
+                {"protection_order_id": order_id},
+                position["direction"],
+            )
             return True
         except Exception as exc:
             logger.exception("[%s] Protective stop could not be placed", symbol)
@@ -743,6 +830,30 @@ class KiteTradingBot:
                 f"URGENT: protective stop failed for {symbol}; emergency exit required.\n{exc}"
             )
             return False
+
+    def _abort_live_entry(self, symbol: str, price: float, reason: str) -> None:
+        self._entries_paused = True
+        self._risk_state_reconciled = False
+        position = self.intraday_manager.active_positions.get(symbol)
+        if position and not self.trade_journal.get_open_trade(
+            symbol, position["direction"]
+        ):
+            try:
+                self.trade_journal.log_trade({
+                    "ticker": symbol,
+                    "action": position["direction"],
+                    "entry": position["entry_price"],
+                    "stop_loss": position["stop_loss"],
+                    "take_profit": position["take_profit"],
+                    "quantity": position["quantity"],
+                    "score": position.get("signal_score"),
+                    "protection_order_id": position.get("protection_order_id"),
+                    "status": "open",
+                })
+            except Exception:
+                logger.exception("[%s] Could not journal an aborted live entry", symbol)
+        self._close_position(symbol, price, reason)
+        self._reconcile_after_order_failure(symbol)
 
     def _publish_target_update(
         self, symbol: str, position: dict, trailing_stop: Optional[float]
@@ -770,9 +881,11 @@ class KiteTradingBot:
         if self.live_orders_enabled and position:
             exit_side = "SELL" if action == "BUY" else "BUY"
             protection_order_id = position.get("protection_order_id")
+            protection_cancelled = not protection_order_id
             if protection_order_id:
                 try:
                     self.kite_stream.cancel_order(protection_order_id)
+                    protection_cancelled = True
                 except Exception:
                     logger.warning("[%s] Protective stop %s was already active or unavailable", symbol, protection_order_id)
             remaining = abs(int(position["quantity"]))
@@ -799,10 +912,24 @@ class KiteTradingBot:
                 if remaining <= 0:
                     break
             if remaining != 0:
+                protection_restored = False
+                if remaining > 0 and protection_cancelled:
+                    position["quantity"] = remaining
+                    protection_restored = self._place_protective_stop(symbol, position)
+                self._entries_paused = True
+                self._risk_state_reconciled = False
+                protection_state = (
+                    "protective stop was restored"
+                    if protection_restored
+                    else "protective stop status is uncertain; manual protection is required"
+                )
                 self.telegram_notifier.send_message(
-                    f"URGENT: {symbol} is not flat after {max_attempts} exit attempts; manual intervention required."
+                    f"URGENT: {symbol} is not flat after {max_attempts} exit attempts; "
+                    f"{protection_state}. New entries are paused."
                 )
                 logger.error("[%s] Broker position remains open after exit retries", symbol)
+                if protection_restored:
+                    self._reconcile_after_order_failure(symbol)
                 return
         trade = self.trade_journal.get_open_trade(symbol, action)
         journal_pnl = self.trade_journal.close_trade(symbol, price, action, reason)
@@ -893,7 +1020,7 @@ class KiteTradingBot:
             allowed, reason = self.intraday_manager.can_open_trade(symbol, "BUY")
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
-                return "trade_blocked"
+                return f"trade_blocked:{reason}"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
                 premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
@@ -969,12 +1096,20 @@ class KiteTradingBot:
                 ),
                 target_increment_pct=self._option_target_increment(score),
             )
+            self.intraday_manager.record_trade_open(symbol, "BUY")
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
             ):
-                self._close_position(symbol, price, "PROTECTION_FAILED")
+                self._abort_live_entry(symbol, price, "PROTECTION_FAILED")
                 return "protective_stop_failed"
-            self.intraday_manager.record_trade_open(symbol, "BUY")
+            if (
+                self.live_orders_enabled
+                and self.intraday_manager.estimate_trade_risk(
+                    symbol, quantity, price, stop_loss
+                ) > self.intraday_manager.max_risk_per_trade + 1e-6
+            ):
+                self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
+                return "risk_blocked:filled_risk_exceeds_limit"
 
             mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
@@ -998,6 +1133,11 @@ class KiteTradingBot:
             alert["quantity"] = quantity
             if order_id:
                 alert["order_id"] = order_id
+            protection_order_id = self.intraday_manager.active_positions[symbol].get(
+                "protection_order_id"
+            )
+            if protection_order_id:
+                alert["protection_order_id"] = protection_order_id
 
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
@@ -1032,7 +1172,7 @@ class KiteTradingBot:
             allowed, reason = self.intraday_manager.can_open_trade(symbol, "SELL")
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
-                return "trade_blocked"
+                return f"trade_blocked:{reason}"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
                 premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
@@ -1108,12 +1248,20 @@ class KiteTradingBot:
                 ),
                 target_increment_pct=self._option_target_increment(score),
             )
+            self.intraday_manager.record_trade_open(symbol, "SELL")
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
             ):
-                self._close_position(symbol, price, "PROTECTION_FAILED")
+                self._abort_live_entry(symbol, price, "PROTECTION_FAILED")
                 return "protective_stop_failed"
-            self.intraday_manager.record_trade_open(symbol, "SELL")
+            if (
+                self.live_orders_enabled
+                and self.intraday_manager.estimate_trade_risk(
+                    symbol, quantity, price, stop_loss
+                ) > self.intraday_manager.max_risk_per_trade + 1e-6
+            ):
+                self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
+                return "risk_blocked:filled_risk_exceeds_limit"
 
             mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
@@ -1137,6 +1285,11 @@ class KiteTradingBot:
             alert["quantity"] = quantity
             if order_id:
                 alert["order_id"] = order_id
+            protection_order_id = self.intraday_manager.active_positions[symbol].get(
+                "protection_order_id"
+            )
+            if protection_order_id:
+                alert["protection_order_id"] = protection_order_id
 
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
@@ -1294,6 +1447,7 @@ class KiteTradingBot:
                 data_dir=".",
                 days=self.config.get("weekly_report_days", 7),
                 output_dir=str(self.weekly_report_dir),
+                paper_data_dir=self.paper_trading_dir,
             )
             review_path = write_weekly_review(
                 data_dir=".",
