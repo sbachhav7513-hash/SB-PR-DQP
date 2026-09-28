@@ -1,0 +1,36 @@
+{
+  "source": "NSE official F&O daily bhavcopy archive",
+  "start_date_inclusive": "2026-03-29",
+  "end_date_inclusive": "2026-09-28",
+  "underlyings": [
+    "BANKNIFTY",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "LT",
+    "NIFTY",
+    "RELIANCE",
+    "SBIN",
+    "TATAMOTORS",
+    "TCS"
+  ],
+  "weekday_dates_checked": 131,
+  "successful_days": 124,
+  "total_filtered_rows": 543540,
+  "data_granularity": "daily EOD only",
+  "fields_present": [
+    "contract symbol",
+    "underlying",
+    "expiry",
+    "OHLC",
+    "last price",
+    "volume",
+    "open interest"
+  ],
+  "fields_absent": [
+    "minute bars",
+    "historical bid",
+    "historical ask"
+  ],
+  "warning": "Not suitable as input to the requested 1-minute production replay."
+}
