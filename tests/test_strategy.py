@@ -115,6 +115,30 @@ def test_close_only_regime_classifier_identifies_sideways_market():
     assert "Sideways regime" in result.reasons[0]
 
 
+def test_trend_momentum_bonus_threshold_can_align_with_min_trend_strength():
+    history = [{"close": 100.0 + index * 0.04} for index in range(40)]
+
+    default_result = score_market(
+        "TEST",
+        history,
+        min_trend_strength=0.005,
+        sideways_range_pct=0.1,
+        sideways_net_move_pct=0.1,
+    )
+    aligned_result = score_market(
+        "TEST",
+        history,
+        min_trend_strength=0.005,
+        trend_momentum_bonus_threshold=0.005,
+        sideways_range_pct=0.1,
+        sideways_net_move_pct=0.1,
+    )
+
+    assert default_result.signal == "HOLD"
+    assert aligned_result.score == default_result.score + 12
+    assert aligned_result.signal == "BUY"
+
+
 def test_compression_breakout_can_pass_sideways_regime_gate():
     history = [
         {

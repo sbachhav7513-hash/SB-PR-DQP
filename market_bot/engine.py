@@ -339,6 +339,8 @@ def score_market(
     sideways_range_pct: float = 1.0,
     sideways_net_move_pct: float = 1.0,
     min_trend_strength: float = 0.02,
+    trend_momentum_bonus_threshold: float = 0.02,
+    signal_proximity_pct: float = 0.003,
 ) -> TradingScore:
     history = _current_session_history(history)
     closes = [item["close"] for item in history if "close" in item]
@@ -470,7 +472,7 @@ def score_market(
         score += 10
         reasons.append("Price near recent low")
 
-    if trend_strength > 0.02:
+    if trend_strength > trend_momentum_bonus_threshold:
         score += 12
         reasons.append("Trend momentum present")
 
@@ -489,13 +491,11 @@ def score_market(
         and macd <= prev_macd + 1e-9
     )
 
-    if score >= 55 and up_trend_conf and price >= recent_high * 0.997:
+    minimum_buy_price = recent_high * (1.0 - signal_proximity_pct)
+    maximum_sell_price = recent_low * (1.0 + signal_proximity_pct)
+    if score >= 55 and up_trend_conf and price >= minimum_buy_price:
         signal = "BUY"
-    elif score >= 55 and down_trend_conf and price <= recent_low * 1.003:
-        signal = "SELL"
-    elif score >= 60 and up_trend_conf and price >= recent_high * 0.999:
-        signal = "BUY"
-    elif score >= 60 and down_trend_conf and price <= recent_low * 1.001:
+    elif score >= 55 and down_trend_conf and price <= maximum_sell_price:
         signal = "SELL"
     else:
         signal = "HOLD"
