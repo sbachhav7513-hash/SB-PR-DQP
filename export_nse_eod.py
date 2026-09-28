@@ -124,6 +124,11 @@ def main() -> None:
     parser.add_argument("--end", default="2026-09-28", help="Last date, inclusive (YYYY-MM-DD)")
     parser.add_argument("--out-dir", default="data_uploads/nse_eod")
     parser.add_argument("--underlyings", default=DEFAULT_UNDERLYINGS)
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Preserve prior manifest/data and fetch only dates not already downloaded",
+    )
     args = parser.parse_args()
 
     start = dt.date.fromisoformat(args.start)
@@ -136,15 +141,44 @@ def main() -> None:
 
     output_dir = pathlib.Path(args.out_dir)
     (output_dir / "daily_contract_rows").mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "manifest.csv"
+    previous_results = []
+    downloaded_dates = set()
+    if args.append and manifest_path.exists():
+        with manifest_path.open("r", encoding="utf-8", newline="") as source:
+            previous_results = list(csv.DictReader(source))
+        metadata_path = output_dir / "metadata.json"
+        if metadata_path.exists():
+            previous_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            previous_underlyings = set(previous_metadata.get("underlyings", []))
+            if previous_underlyings and previous_underlyings != underlyings:
+                parser.error(
+                    "--underlyings must match the existing export when using --append"
+                )
+        downloaded_dates = {
+            row["date"]
+            for row in previous_results
+            if row.get("status") == "downloaded"
+        }
+
     weekdays = [
         start + dt.timedelta(days=offset)
         for offset in range((end - start).days + 1)
         if (start + dt.timedelta(days=offset)).weekday() < 5
     ]
+    dates_to_fetch = [day for day in weekdays if day.isoformat() not in downloaded_dates]
+    if len(dates_to_fetch) != len(weekdays):
+        print(
+            f"Skipping {len(weekdays) - len(dates_to_fetch)} dates already downloaded.",
+            flush=True,
+        )
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(export_day, day, underlyings, output_dir) for day in weekdays]
+        futures = [
+            pool.submit(export_day, day, underlyings, output_dir)
+            for day in dates_to_fetch
+        ]
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
             results.append(result)
@@ -153,6 +187,10 @@ def main() -> None:
             else:
                 print(f"{result['date']} {result['status']}", flush=True)
 
+    if args.append:
+        updated_by_date = {row["date"]: row for row in previous_results}
+        updated_by_date.update({row["date"]: row for row in results})
+        results = list(updated_by_date.values())
     results.sort(key=lambda row: row["date"])
     manifest_columns = [
         "date",
@@ -165,7 +203,7 @@ def main() -> None:
         "source_zip_sha256",
         "detail",
     ]
-    with (output_dir / "manifest.csv").open("w", encoding="utf-8", newline="") as output:
+    with manifest_path.open("w", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=manifest_columns, extrasaction="ignore")
         writer.writeheader()
         for result in results:
@@ -174,14 +212,15 @@ def main() -> None:
                 row["underlying_counts"] = json.dumps(row["underlying_counts"], sort_keys=True)
             writer.writerow(row)
 
+    dates_in_manifest = [dt.date.fromisoformat(row["date"]) for row in results]
     metadata = {
         "source": "NSE official F&O daily bhavcopy archive",
-        "start_date_inclusive": start.isoformat(),
-        "end_date_inclusive": end.isoformat(),
+        "start_date_inclusive": min(dates_in_manifest).isoformat() if dates_in_manifest else start.isoformat(),
+        "end_date_inclusive": max(dates_in_manifest).isoformat() if dates_in_manifest else end.isoformat(),
         "underlyings": sorted(underlyings),
-        "weekday_dates_checked": len(weekdays),
+        "weekday_dates_checked": len(results),
         "successful_days": sum(row["status"] == "downloaded" for row in results),
-        "total_filtered_rows": sum(row.get("filtered_rows", 0) for row in results),
+        "total_filtered_rows": sum(int(row.get("filtered_rows") or 0) for row in results),
         "data_granularity": "daily EOD only",
         "fields_present": [
             "contract symbol",
