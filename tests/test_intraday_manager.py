@@ -73,6 +73,95 @@ def test_one_minute_volatility_floor_uses_configurable_small_percentage():
     assert reason == "volatility"
 
 
+def test_shadow_validation_does_not_start_entry_cooldown():
+    filters = AccuracyFilters()
+    history = [
+        {"high": 101.0, "low": 99.0, "close": 100.0}
+        for _ in range(14)
+    ]
+
+    allowed, reason = filters.validate_entry_with_reason(
+        symbol="NIFTY",
+        signal="BUY",
+        score=85,
+        history=history,
+        current_bar={"close": 101.0},
+        previous_bar={"close": 100.0},
+        current_time=1000.0,
+        hour=10,
+        minute=0,
+        record_entry=False,
+    )
+
+    assert allowed is True
+    assert reason == "OK"
+    assert filters.last_entry_time == {}
+
+
+def test_lower_score_floor_is_available_for_paper_shadow_only():
+    history = [
+        {"high": 101.0, "low": 99.0, "close": 100.0}
+        for _ in range(14)
+    ]
+    validation = {
+        "symbol": "NIFTY",
+        "signal": "BUY",
+        "score": 60,
+        "history": history,
+        "current_bar": {"close": 101.0},
+        "previous_bar": {"close": 100.0},
+        "current_time": 1000.0,
+        "hour": 10,
+        "minute": 0,
+        "record_entry": False,
+    }
+
+    primary_allowed, primary_reason = AccuracyFilters().validate_entry_with_reason(
+        **validation
+    )
+    shadow_allowed, shadow_reason = AccuracyFilters().validate_entry_with_reason(
+        **validation, min_score=55
+    )
+
+    assert primary_allowed is False
+    assert primary_reason == "score<75"
+    assert shadow_allowed is True
+    assert shadow_reason == "OK"
+
+
+def test_trend_shadow_promotion_is_opt_in_and_paper_only():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_trade_trend_shadow_signals": True}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.accuracy_filters = AccuracyFilters()
+    bot.config["paper_shadow_min_entry_score"] = 55
+    assert bot._paper_shadow_min_entry_score() == 55
+    candidate = SimpleNamespace(
+        signal="HOLD",
+        trend_shadow_signal="BUY",
+        trend_shadow_rejection_reason=None,
+        strategy_variant=None,
+        reasons=[],
+    )
+
+    assert bot._promote_paper_shadow_signal(candidate) is True
+    assert candidate.signal == "BUY"
+    assert candidate.strategy_variant == "trend_shadow_paper"
+
+    bot.live_orders_enabled = True
+    assert bot._paper_shadow_min_entry_score() is None
+    rejected = SimpleNamespace(
+        signal="HOLD",
+        trend_shadow_signal="SELL",
+        trend_shadow_rejection_reason=None,
+        strategy_variant=None,
+        reasons=[],
+    )
+    assert bot._promote_paper_shadow_signal(rejected) is False
+    assert rejected.signal == "HOLD"
+
+
 def test_paper_position_size_simulates_one_lot_when_risk_budget_is_too_small():
     manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
 

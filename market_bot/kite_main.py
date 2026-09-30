@@ -22,7 +22,12 @@ from .market_news import NewsMonitor, apply_news_filter
 from .risk_manager import build_risk_plan
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, TradeJournal
-from .weekly_report import write_daily_summary, write_weekly_report, write_weekly_review
+from .weekly_report import (
+    write_daily_review,
+    write_daily_summary,
+    write_weekly_report,
+    write_weekly_review,
+)
 
 
 log_path = Path("kite_bot.log")
@@ -585,6 +590,12 @@ class KiteTradingBot:
                 signal_proximity_pct=float(
                     self.config.get("signal_proximity_pct", 0.003)
                 ),
+                allow_paper_shadow_sideways=(
+                    self.config.get("paper_trade_trend_shadow_signals", False)
+                    and self.config.get("paper_shadow_allow_sideways", False)
+                    and self.paper_trading_enabled
+                    and not self.live_orders_enabled
+                ),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -598,6 +609,56 @@ class KiteTradingBot:
             if news_reason:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
+
+        shadow_signal = getattr(market_score, "trend_shadow_signal", None)
+        if shadow_signal in {"BUY", "SELL"}:
+            shadow_rejection = getattr(
+                market_score, "trend_shadow_rejection_reason", None
+            )
+            if news_context and not shadow_rejection:
+                _, news_reason = apply_news_filter(shadow_signal, news_context)
+                if news_reason:
+                    shadow_rejection = f"news: {news_reason}"
+
+            now = datetime.now(IST)
+            if not shadow_rejection and session_state != "REGULAR_SESSION":
+                shadow_rejection = f"market_session: {session_state.lower()}"
+            if not shadow_rejection and self._late_window_blocked(now):
+                shadow_rejection = "late_window"
+            if not shadow_rejection:
+                previous_bar = (
+                    signal_bars[-2].to_dict()
+                    if len(signal_bars) > 1
+                    else signal_bars[-1].to_dict()
+                )
+                allowed, rejection_reason = (
+                    self.accuracy_filters.validate_entry_with_reason(
+                        symbol=symbol,
+                        signal=shadow_signal,
+                        score=market_score.score,
+                        history=history,
+                        current_bar=signal_bars[-1].to_dict(),
+                        previous_bar=previous_bar,
+                        current_time=time.time(),
+                        hour=now.hour,
+                        minute=now.minute,
+                        record_entry=False,
+                        min_score=self._paper_shadow_min_entry_score(),
+                    )
+                )
+                if not allowed:
+                    shadow_rejection = rejection_reason
+
+            market_score.trend_shadow_rejection_reason = shadow_rejection
+            paper_shadow_promoted = self._promote_paper_shadow_signal(market_score)
+            logger.info(
+                "[%s] TREND_SHADOW signal=%s status=%s",
+                symbol,
+                shadow_signal,
+                "paper_only_entry_enabled"
+                if paper_shadow_promoted
+                else shadow_rejection or "signal_gates_passed_no_order",
+            )
         logger.info(
             "[%s] Score=%s Signal=%s Reasons=%s",
             symbol,
@@ -718,6 +779,12 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
+                min_score=(
+                    self._paper_shadow_min_entry_score()
+                    if getattr(market_score, "strategy_variant", None)
+                    == "trend_shadow_paper"
+                    else None
+                ),
             )
             if not allowed:
                 logger.info(
@@ -740,9 +807,19 @@ class KiteTradingBot:
 
         trade_action = self._option_trade_action(symbol, market_score.signal)
         if trade_action == "BUY":
-            outcome = self._handle_buy_signal(symbol, bar.close, market_score.score)
+            outcome = self._handle_buy_signal(
+                symbol,
+                bar.close,
+                market_score.score,
+                strategy_variant=market_score.strategy_variant,
+            )
         elif trade_action == "SELL":
-            outcome = self._handle_sell_signal(symbol, bar.close, market_score.score)
+            outcome = self._handle_sell_signal(
+                symbol,
+                bar.close,
+                market_score.score,
+                strategy_variant=market_score.strategy_variant,
+            )
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
             outcome = "hold"
@@ -978,6 +1055,37 @@ class KiteTradingBot:
         logger.info(self.telegram_notifier.build_message(close_alert))
         self.telegram_notifier.send_trade_alert(close_alert)
 
+    def _promote_paper_shadow_signal(self, market_score) -> bool:
+        """Promote a validated shadow candidate only for opted-in paper trading."""
+        if (
+            not self.config.get("paper_trade_trend_shadow_signals", False)
+            or not self.paper_trading_enabled
+            or self.live_orders_enabled
+            or market_score.signal != "HOLD"
+            or market_score.trend_shadow_signal not in {"BUY", "SELL"}
+            or market_score.trend_shadow_rejection_reason
+        ):
+            return False
+
+        market_score.signal = market_score.trend_shadow_signal
+        market_score.strategy_variant = "trend_shadow_paper"
+        market_score.reasons.append("Paper-only trend shadow experiment entry")
+        return True
+
+    def _paper_shadow_min_entry_score(self) -> Optional[int]:
+        if (
+            self.config.get("paper_trade_trend_shadow_signals", False)
+            and self.paper_trading_enabled
+            and not self.live_orders_enabled
+        ):
+            return int(
+                self.config.get(
+                    "paper_shadow_min_entry_score",
+                    self.accuracy_filters.min_score_floor,
+                )
+            )
+        return None
+
     def _record_decision(
         self,
         symbol: str,
@@ -1002,13 +1110,28 @@ class KiteTradingBot:
                 "history": [item.to_dict() for item in bars],
                 "score": market_score.score if market_score else None,
                 "reasons": reasons,
+                "strategy_variant": (
+                    getattr(market_score, "strategy_variant", None) or "primary"
+                ),
+                "trend_shadow_signal": getattr(
+                    market_score, "trend_shadow_signal", None
+                ),
+                "trend_shadow_rejection_reason": getattr(
+                    market_score, "trend_shadow_rejection_reason", None
+                ),
                 "news_risk": news_context.risk_level if news_context else "DISABLED",
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
                 "news_headlines": news_context.headlines[:5] if news_context else [],
             }
         )
 
-    def _handle_buy_signal(self, symbol: str, price: float, score: int) -> str:
+    def _handle_buy_signal(
+        self,
+        symbol: str,
+        price: float,
+        score: int,
+        strategy_variant: Optional[str] = None,
+    ) -> str:
         """Handle a BUY signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
         opposite_trade = self.trade_journal.get_open_trade(symbol, "SELL")
@@ -1031,8 +1154,7 @@ class KiteTradingBot:
                 return f"trade_blocked:{reason}"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
-                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
-                premium = float(self.latest_prices.get(symbol, price))
+                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.20))
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
                 take_profit = price * (1.0 + premium_target_pct)
                 quantity = self.intraday_manager.calculate_option_size(
@@ -1139,6 +1261,7 @@ class KiteTradingBot:
             alert["stop_loss"] = stop_loss
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
+            alert["strategy_variant"] = strategy_variant or "primary"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(
@@ -1160,7 +1283,13 @@ class KiteTradingBot:
             logger.info(f"[{symbol}] BUY OPEN -> current={price:.2f}")
             return "position_updated"
 
-    def _handle_sell_signal(self, symbol: str, price: float, score: int) -> str:
+    def _handle_sell_signal(
+        self,
+        symbol: str,
+        price: float,
+        score: int,
+        strategy_variant: Optional[str] = None,
+    ) -> str:
         """Handle a SELL signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "SELL")
         opposite_trade = self.trade_journal.get_open_trade(symbol, "BUY")
@@ -1183,7 +1312,7 @@ class KiteTradingBot:
                 return f"trade_blocked:{reason}"
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
-                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.40))
+                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.20))
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
                 take_profit = max(price * (1.0 - premium_target_pct), 0.01)
@@ -1291,6 +1420,7 @@ class KiteTradingBot:
             alert["stop_loss"] = stop_loss
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
+            alert["strategy_variant"] = strategy_variant or "primary"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(
@@ -1371,8 +1501,15 @@ class KiteTradingBot:
             summary_path = write_daily_summary(
                 data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
             )
+            review_path = write_daily_review(
+                data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
+            )
             self.last_daily_summary_date = today
-            logger.info("Daily paper-trading summary written to %s", summary_path)
+            logger.info(
+                "Daily paper-trading summary written to %s; review written to %s",
+                summary_path,
+                review_path,
+            )
             self.telegram_notifier.send_daily_summary(
                 summary_date=today.isoformat(),
                 closed_trades=len(today_trades),

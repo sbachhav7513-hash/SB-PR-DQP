@@ -64,7 +64,9 @@ def load_paper_records(parquet_name, days, columns):
 def load_trades(days=7):
     """Load trades from the past N days"""
     paper_trades = load_paper_records(
-        'trades.parquet', days, ['timestamp', 'ticker', 'action', 'status', 'pnl']
+        'trades.parquet', days, [
+            'timestamp', 'ticker', 'action', 'status', 'pnl', 'strategy_variant'
+        ]
     )
     if paper_trades is not None:
         return [trade for trade in paper_trades if trade.get('status') == 'closed']
@@ -330,17 +332,28 @@ def analyze_trades(trades):
     
     # By symbol
     symbol_stats = defaultdict(lambda: {'wins': 0, 'losses': 0, 'profit': 0, 'count': 0})
+    strategy_variant_stats = defaultdict(
+        lambda: {'wins': 0, 'losses': 0, 'profit': 0, 'count': 0}
+    )
     
     for trade in trades:
         symbol = trade.get('ticker', trade.get('symbol', 'UNKNOWN'))
         trade_profit = profit(trade)
+        strategy_variant = trade.get('strategy_variant') or 'primary'
         symbol_stats[symbol]['count'] += 1
         symbol_stats[symbol]['profit'] += trade_profit
+        strategy_variant_stats[strategy_variant]['count'] += 1
+        strategy_variant_stats[strategy_variant]['profit'] += trade_profit
         
         if trade_profit > 0:
             symbol_stats[symbol]['wins'] += 1
+            strategy_variant_stats[strategy_variant]['wins'] += 1
         else:
             symbol_stats[symbol]['losses'] += 1
+            strategy_variant_stats[strategy_variant]['losses'] += 1
+
+    for stats in strategy_variant_stats.values():
+        stats['win_rate'] = stats['wins'] / stats['count'] * 100
     
     # By hour
     hour_stats = defaultdict(lambda: {'wins': 0, 'losses': 0, 'profit': 0, 'count': 0})
@@ -375,6 +388,7 @@ def analyze_trades(trades):
         'largest_win': max((profit(t) for t in trades), default=0),
         'largest_loss': min((profit(t) for t in trades), default=0),
         'symbol_stats': dict(symbol_stats),
+        'strategy_variant_stats': dict(strategy_variant_stats),
         'hour_stats': dict(hour_stats),
         'trades': trades
     }
@@ -457,6 +471,11 @@ def print_report(analysis, filter_stats, decision_analysis):
     ])
     print(f"Total Rejected:           {total_rejected:>6}")
     print(f"Approved Entries:         {filter_stats['approved_entries']:>6}")
+
+    print("\n📊 PERFORMANCE BY STRATEGY VARIANT")
+    print("-" * 70)
+    for variant, stats in sorted(analysis['strategy_variant_stats'].items()):
+        print(f"{variant}: {stats['count']} trades, {stats['win_rate']:.1f}% wins, ₹{stats['profit']:,.2f} P&L")
     
     # Recommendations
     print("\n💡 RECOMMENDATIONS FOR NEXT WEEK")
@@ -518,6 +537,7 @@ def save_report_json(analysis, filter_stats, decision_analysis):
             'profit_factor': analysis['profit_factor']
         },
         'symbol_stats': analysis['symbol_stats'],
+        'strategy_variant_stats': analysis['strategy_variant_stats'],
         'hour_stats': analysis['hour_stats'],
         'filter_stats': filter_stats,
         'decision_analysis': decision_analysis,

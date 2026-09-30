@@ -97,3 +97,30 @@ def test_weekly_report_prefers_parquet_and_counts_decision_rejections(tmp_path):
         ZoneInfo("Asia/Kolkata")
     ).hour
     assert report["performance_by_hour"][str(local_hour)]["trades"] == 1
+
+
+def test_weekly_report_separates_trend_shadow_paper_performance(tmp_path):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    paper_root = tmp_path / "paper"
+    recorder = PaperTradingRecorder(str(paper_root))
+    recorder.record_trade({
+        "timestamp": timestamp,
+        "ticker": "NIFTY",
+        "action": "BUY",
+        "status": "closed",
+        "pnl": 20.0,
+        "strategy_variant": "primary",
+    })
+    recorder.record_trade({
+        "timestamp": timestamp,
+        "ticker": "NIFTY",
+        "action": "SELL",
+        "status": "closed",
+        "pnl": -5.0,
+        "strategy_variant": "trend_shadow_paper",
+    })
+
+    report = build_weekly_report(str(tmp_path), paper_data_dir=str(paper_root))
+
+    assert report["performance_by_strategy_variant"]["primary"]["total_pnl"] == 20.0
+    assert report["performance_by_strategy_variant"]["trend_shadow_paper"]["total_pnl"] == -5.0

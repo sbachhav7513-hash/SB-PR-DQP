@@ -148,7 +148,8 @@ def _performance_by_key(
             except (TypeError, ValueError):
                 continue
         else:
-            key = str(trade.get(key_name, "UNKNOWN"))
+            value = trade.get(key_name)
+            key = str(value or ("primary" if key_name == "strategy_variant" else "UNKNOWN"))
         grouped[key].append(_number(trade.get("pnl", trade.get("profit", 0))))
 
     performance: Dict[str, Dict[str, Any]] = {}
@@ -233,7 +234,7 @@ def build_weekly_report(
             "trades.jsonl",
             "trades.parquet",
             days,
-            ["timestamp", "ticker", "action", "status", "pnl"],
+            ["timestamp", "ticker", "action", "status", "pnl", "strategy_variant"],
         )
         if trade.get("status") == "closed"
     ]
@@ -246,7 +247,7 @@ def build_weekly_report(
         [
             "timestamp", "ticker", "signal", "outcome", "score", "reasons",
             "outcome_detail", "rejection_reason", "market_session", "market_hours",
-            "session_timezone",
+            "session_timezone", "strategy_variant",
         ],
     )
 
@@ -339,6 +340,9 @@ def build_weekly_report(
         },
         "performance_by_symbol": _performance_by_key(trades, "ticker"),
         "performance_by_hour": _performance_by_key(trades, "hour"),
+        "performance_by_strategy_variant": _performance_by_key(
+            trades, "strategy_variant"
+        ),
         "filter_stats": _load_filter_stats(root, days, decisions),
         "news_summary": {
             "risk_counts": news_risk_counts,
@@ -445,9 +449,16 @@ def _date_records(
         parquet_name,
         days=3660,
         columns=(
-            ["timestamp", "status", "pnl", "reason"]
+            [
+                "timestamp", "status", "pnl", "reason", "ticker", "action",
+                "score", "strategy_variant",
+            ]
             if parquet_name == "trades.parquet"
-            else ["timestamp", "signal", "outcome"]
+            else [
+                "timestamp", "signal", "outcome", "score", "reasons",
+                "outcome_detail", "rejection_reason", "trend_shadow_signal",
+                "trend_shadow_rejection_reason", "strategy_variant",
+            ]
         ),
     )
     if not records:
@@ -503,6 +514,148 @@ def write_daily_summary(
         [{"metric": key, "value": value} for key, value in values.items()],
         ["metric", "value"],
     )
+    return destination
+
+
+def write_daily_review(
+    data_dir: str = ".", paper_data_dir: str = "paper_trading_data", target_date=None
+) -> Path:
+    """Write a human-readable, date-scoped review of trades and entry decisions."""
+    target_date = target_date or datetime.now(IST).date()
+    trades = [
+        trade
+        for trade in _date_records(
+            Path(data_dir) / "trades.jsonl",
+            Path(paper_data_dir),
+            "trades.parquet",
+            target_date,
+        )
+        if trade.get("status") == "closed"
+    ]
+    decisions = _date_records(
+        Path(data_dir) / "decision_log.jsonl",
+        Path(paper_data_dir),
+        "decisions.parquet",
+        target_date,
+    )
+
+    pnls = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    wins = sum(1 for pnl in pnls if pnl > 0)
+    signal_counts: Dict[str, int] = defaultdict(int)
+    outcome_counts: Dict[str, int] = defaultdict(int)
+    rejection_counts: Dict[str, int] = defaultdict(int)
+    hold_reasons: Dict[str, int] = defaultdict(int)
+    shadow_rejections: Dict[str, int] = defaultdict(int)
+    shadow_candidates = 0
+    has_shadow_telemetry = any(
+        "trend_shadow_signal" in item or "trend_shadow_rejection_reason" in item
+        for item in decisions
+    )
+
+    for decision in decisions:
+        signal = str(decision.get("signal") or "UNKNOWN")
+        signal_counts[signal] += 1
+        outcome = normalize_decision_outcome(decision.get("outcome"))
+        outcome_counts[outcome] += 1
+        detail = str(decision.get("outcome_detail") or decision.get("outcome") or "")
+        if outcome in {"accuracy_filter", "option_filter", "risk_blocked", "execution_failed"}:
+            rejection_counts[detail or outcome] += 1
+
+        if signal == "HOLD":
+            reasons = decision.get("reasons") or []
+            if isinstance(reasons, str):
+                try:
+                    reasons = json.loads(reasons)
+                except json.JSONDecodeError:
+                    reasons = [reasons]
+            if isinstance(reasons, list):
+                for reason in reasons:
+                    if reason:
+                        hold_reasons[str(reason)] += 1
+
+        shadow_signal = decision.get("trend_shadow_signal")
+        if shadow_signal in {"BUY", "SELL"}:
+            shadow_candidates += 1
+        shadow_rejection = decision.get("trend_shadow_rejection_reason")
+        if shadow_rejection:
+            shadow_rejections[str(shadow_rejection)] += 1
+
+    def format_counts(counts: Dict[str, int]) -> List[str]:
+        return (
+            [f"- {name}: {count}" for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+            if counts
+            else ["- None recorded"]
+        )
+
+    win_rate = wins / len(trades) * 100 if trades else 0.0
+    recorder = PaperTradingRecorder(paper_data_dir)
+    destination = recorder._day_path(
+        datetime.combine(target_date, datetime.min.time()).isoformat(),
+        "daily_review.md",
+    )
+    lines = [
+        f"# Daily Paper-Trading Review - {target_date:%Y-%m-%d}",
+        "",
+        "## Results",
+        f"- Closed trades: {len(trades)}",
+        f"- Wins / losses: {wins} / {len(trades) - wins}",
+        f"- Net P&L: {sum(pnls):.2f}",
+        f"- Win rate: {win_rate:.1f}%",
+        f"- Decisions: {len(decisions)}",
+        "",
+        "## Signals",
+        *format_counts(signal_counts),
+        "",
+        "## Outcomes",
+        *format_counts(outcome_counts),
+        "",
+        "## Closed Trades",
+        "| Symbol | Direction | Variant | Score | P&L | Exit reason |",
+        "| --- | --- | --- | ---: | ---: | --- |",
+    ]
+    if trades:
+        lines.extend(
+            "| {ticker} | {action} | {variant} | {score} | {pnl:.2f} | {reason} |".format(
+                ticker=str(trade.get("ticker") or "UNKNOWN").replace("|", "/"),
+                action=str(trade.get("action") or "UNKNOWN").replace("|", "/"),
+                variant=str(trade.get("strategy_variant") or "primary").replace("|", "/"),
+                score=trade.get("score") or "N/A",
+                pnl=_number(trade.get("pnl", trade.get("profit", 0))),
+                reason=str(trade.get("reason") or "UNKNOWN").replace("|", "/"),
+            )
+            for trade in trades
+        )
+    else:
+        lines.append("| No closed trades | - | - | - | 0.00 | - |")
+    lines.extend(
+        [
+            "",
+            "### Entry Rejections",
+            *format_counts(rejection_counts),
+            "",
+            "## HOLD Reasons",
+            *format_counts(hold_reasons),
+            "",
+            "## Paper Shadow",
+        ]
+    )
+    if has_shadow_telemetry:
+        lines.extend(
+            [f"- Directional candidates: {shadow_candidates}", "- Rejection reasons:", *format_counts(shadow_rejections)]
+        )
+    else:
+        lines.append("- Shadow fields are absent from this archive; verify the running bot version and configuration.")
+    lines.extend(
+        [
+            "",
+            "## Review Notes",
+            "- Reason counts are mentions; one decision may contain multiple reasons.",
+            "- With no closed trades, assess candidate and rejection flow only; do not infer strategy accuracy.",
+            "- Change one paper-only strategy/filter variable at a time and compare the next session.",
+            "",
+        ]
+    )
+    destination.write_text("\n".join(lines), encoding="utf-8")
     return destination
 
 

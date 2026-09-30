@@ -1,5 +1,7 @@
 # Daily & Weekly Operations Guide
 
+> **Before any workspace edit:** check [DAILY_CHANGELOG.md](DAILY_CHANGELOG.md) for repeated work and record every file added, changed, or removed, then add the validation result. For strategy or accuracy changes, also follow [STRATEGY_CHANGELOG.md](STRATEGY_CHANGELOG.md), establish a measured baseline, and test one variable at a time. Do not treat a target as a result.
+
 ## 📊 DAILY USAGE (What to Do Every Trading Day)
 
 ### Paper-Trading Data Archive
@@ -13,11 +15,15 @@ paper_trading_data/
         ├── day_DD/
         │   ├── trades.parquet
         │   ├── decisions.parquet
-        │   └── daily_summary.parquet
+        │   ├── daily_summary.parquet
+        │   └── daily_review.md
         └── weekly_review_YYYY_MM_DD.md
 ```
 
-The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. The daily summary is written after the market-close exit. On Friday, the bot creates the Markdown review in that week's folder with observed problems and suggested areas for bot or strategy improvement.
+The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. After market close, the bot writes `daily_summary.parquet` and `daily_review.md`; the review reports closed-trade results, signal/outcome counts, HOLD reason mentions, filter rejections, and shadow-candidate rejections. On Friday, the bot creates the broader Markdown review in that week's folder.
+
+
+Decision rows also record `trend_shadow_signal` and `trend_shadow_rejection_reason`. Set `paper_trade_trend_shadow_signals` to `true` only for paper trading to allow a candidate that passes the existing context, news, session, volatility, confirmation, and risk filters into the normal paper-order path. `paper_shadow_min_entry_score` changes only the score floor for this paper variant; `paper_shadow_allow_sideways` lets only this paper variant evaluate sideways bars, while the primary signal remains HOLD. The live-order guard remains in force. These trades are labeled `trend_shadow_paper` and reported separately; an empty rejection reason alone does not mean the candidate would be profitable, and no daily trade is guaranteed.
 
 The archive location can be changed in `kite_config.json` with:
 
@@ -291,20 +297,16 @@ Create `weekly_input_template.json`:
 | **Filter Effectiveness** | Add logging to accuracy_filters.py (see below) | Print rejection reasons |
 | **Biggest Issue** | Review manual notes from the week | Ask: What hurt most? |
 
-### Step 4: Update Code Based on Weekly Input
+### Step 4: Evaluate Before Changing Code
 
-Example adjustments for `kite_config.json`:
+Weekly suggestions are hypotheses, not instructions to bundle several edits. Before changing strategy or accuracy behavior:
 
-```json
-{
-  "MONDAY CHANGES": {
-    "stop_loss_pct": 0.85,     // Increased from 0.75 (was too tight)
-    "take_profit_pct": 2.0,     // Increased from 1.5 (needs more room)
-    "excluded_symbols": ["INFY", "WIPRO"],  // Add to skip list
-    "skip_hours": [[9, 15, 9, 30], [15, 0, 15, 30]]  // Skip risky hours
-  }
-}
-```
+1. Check [STRATEGY_CHANGELOG.md](STRATEGY_CHANGELOG.md) for the same issue or proposed change. Do not repeat a reverted or inconclusive experiment without new evidence and a documented reason.
+2. Record the current code/config version, measured baseline, hypothesis, and one variable to change.
+3. Make one change, then compare it against the same replay period or comparable paper-trading conditions. Record the outcome, including an inconclusive result, in the change log.
+4. Keep or revert based on measured evidence, not an expected win rate or profit target. Do not move a strategy experiment to live trading based only on this review.
+
+The existing weekly implementation guidance calls for at least 10 closed paper trades before a strategy change. Treat that as a minimum screening sample, not proof that a change improves performance; gather more data when results are mixed or uncertain.
 
 ---
 
@@ -335,13 +337,13 @@ Example adjustments for `kite_config.json`:
 
 ☐ Improvement Requests
   - Biggest issue that week
-  - 3 specific fixes to try
-  - Expected improvement target
+  - Candidate hypothesis and evidence (not a promised outcome)
+  - Check STRATEGY_CHANGELOG.md for repeated or previously rejected changes
 
 ☐ Configuration Changes
-  - What parameters to adjust
-  - Why each change needed
-  - Expected impact
+  - Record current values and baseline before changing anything
+  - Select at most one strategy/accuracy variable for the experiment
+  - Record measured outcome and keep/revert/inconclusive decision in STRATEGY_CHANGELOG.md
 ```
 
 ---
