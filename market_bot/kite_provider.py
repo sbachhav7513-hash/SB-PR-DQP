@@ -767,6 +767,37 @@ class KiteMarketStream:
             )
             return False
 
+    @staticmethod
+    def _normalize_exchange_timestamp(raw_timestamp: Any) -> datetime:
+        timestamp: Optional[datetime] = None
+        if isinstance(raw_timestamp, datetime):
+            timestamp = raw_timestamp
+        elif isinstance(raw_timestamp, str):
+            try:
+                timestamp = datetime.fromisoformat(
+                    raw_timestamp.replace("Z", "+00:00")
+                )
+            except ValueError:
+                pass
+
+        if timestamp is None:
+            epoch_seconds = float(raw_timestamp)
+            if not math.isfinite(epoch_seconds):
+                raise ValueError("timestamp is not finite")
+            if epoch_seconds >= 1_000_000_000_000:
+                epoch_seconds /= 1000
+            if epoch_seconds < 946684800:
+                raise ValueError("timestamp predates plausible live market data")
+            timestamp = datetime.fromtimestamp(epoch_seconds, tz=IST)
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=IST)
+        else:
+            timestamp = timestamp.astimezone(IST)
+        if timestamp.year < 2000:
+            raise ValueError("timestamp predates plausible live market data")
+        return timestamp
+
     def on_ticks(self, ws: any, ticks: List[Dict]) -> None:
         """Callback when ticks arrive from Kite WebSocket."""
         for tick in ticks:
@@ -790,14 +821,15 @@ class KiteMarketStream:
                 if raw_timestamp is None:
                     logger.warning("Dropping Kite tick without timestamp: %s", tick)
                     continue
-                if isinstance(raw_timestamp, datetime):
-                    timestamp = (
-                        raw_timestamp.replace(tzinfo=IST)
-                        if raw_timestamp.tzinfo is None
-                        else raw_timestamp.astimezone(IST)
+                try:
+                    timestamp = self._normalize_exchange_timestamp(raw_timestamp)
+                except (OverflowError, OSError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Dropping Kite tick with invalid exchange_timestamp=%r: %s",
+                        raw_timestamp,
+                        exc,
                     )
-                else:
-                    timestamp = datetime.fromtimestamp(float(raw_timestamp), tz=IST)
+                    continue
 
                 tick_obj = Tick(
                     instrument_token=instrument_token,

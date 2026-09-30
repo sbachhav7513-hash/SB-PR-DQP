@@ -116,20 +116,20 @@ class BarBuilder:
             bar["close"] = price
             bar["volume"] += volume_delta
 
-    def _session_bars(self, bars: List[Bar]) -> List[Bar]:
-        """Keep the current market session and fall back to the latest bars if needed."""
+    def _session_bars(self, bars: List[Bar], allow_stale: bool = False) -> List[Bar]:
+        """Keep current-session bars, optionally retaining bars for seed storage."""
         if not bars:
             return []
 
         today = datetime.now(IST).date()
         same_session = [bar for bar in bars if bar.timestamp.astimezone(IST).date() == today]
-        return same_session if same_session else list(bars)
+        return same_session if same_session else (list(bars) if allow_stale else [])
 
     def seed_bars(self, token: int, bars: List[Bar]) -> None:
         """Seed completed bars so a live stream can evaluate signals immediately."""
         if not bars:
             return
-        filtered = self._session_bars(list(bars))
+        filtered = self._session_bars(list(bars), allow_stale=True)
         self.bars[token] = list(filtered[-self.max_bars_per_symbol:])
 
     def get_bars(self, token: int, limit: int = 50) -> List[Bar]:

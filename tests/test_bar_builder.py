@@ -12,6 +12,15 @@ def test_session_bars_keeps_current_ist_session() -> None:
     assert BarBuilder()._session_bars([stale, current]) == [current]
 
 
+def test_get_bars_does_not_fall_back_to_stale_session_data() -> None:
+    now = datetime.now(IST)
+    stale = Bar(now - timedelta(days=1), 99, 100, 98, 99, 10)
+    builder = BarBuilder()
+    builder.seed_bars(1, [stale])
+
+    assert builder.get_bars(1) == []
+
+
 def test_process_tick_converts_cumulative_volume_to_bar_delta() -> None:
     start = datetime.now(IST)
     builder = BarBuilder(interval_seconds=60)
