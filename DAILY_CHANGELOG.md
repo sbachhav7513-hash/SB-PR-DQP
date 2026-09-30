@@ -116,3 +116,14 @@ Outcome / follow-up / rollback:
   - `STRATEGY_CHANGELOG.md` (modified): Record the proposed exit-target experiment.
 - Validation and result: Focused intraday suite passed (`36 passed`); `kite_main.py` compiled; both Kite configs parsed.
 - Outcome / follow-up / rollback: Performance is unmeasured. Roll back by restoring `option_premium_target_pct` to `0.40` and the code fallback to `0.40`.
+
+#### DLY-2026-09-30-07
+
+- Reason: Deployment review found the paper/live option BUY path referenced an undefined `premium`, causing every option BUY entry to fail before position sizing.
+- Related prior entries checked: `DLY-2026-09-30-06`; this is a correctness fix for the existing option path, not a strategy experiment.
+- Files:
+  - `market_bot/kite_main.py` (modified): Use the latest option quote, falling back to the signal price, for BUY-side option sizing.
+  - `tests/test_intraday_manager.py` (modified): Add a regression test covering the option BUY sizing path.
+  - `DAILY_CHANGELOG.md` (modified): Record the deployment blocker and validation.
+- Validation and result: Focused regression passed; full suite passed (`123 passed`); Python compilation, JSON parsing, and `git diff --check` passed. `pip check` reports an unrelated environment conflict: `aiobotocore 2.4.0` requires `botocore<1.27.60,>=1.27.59`, while `botocore 1.27.70` is installed.
+- Outcome / follow-up / rollback: Code fix is validated. Recreate or repair the VPS virtualenv from `requirements.txt` before deployment; no performance claim.

@@ -37,6 +37,41 @@ def test_position_size_skips_when_one_lot_exceeds_risk_budget():
     assert manager.calculate_position_size("NIFTY", 100.0, 70.0) == 0
 
 
+def test_option_buy_uses_latest_premium_for_position_sizing():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "option_premium_stop_pct": 0.20,
+        "option_premium_target_pct": 0.20,
+    }
+    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = True
+    bot.intraday_manager = IntradayManager()
+    bot.intraday_manager.calculate_option_size = Mock(return_value=1)
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.return_value = None
+    bot.telegram_notifier = Mock()
+    bot.telegram_notifier.format_trade.return_value = {
+        "ticker": "NIFTY_CE",
+        "entry": 120.0,
+        "stop_loss": 96.0,
+        "take_profit": 144.0,
+    }
+    bot.kite_stream = SimpleNamespace(contract_symbols={})
+    bot.latest_prices = {"NIFTY_CE": 123.0}
+
+    result = bot._handle_buy_signal("NIFTY_CE", 120.0, 80)
+
+    assert result == "trade_opened"
+    bot.intraday_manager.calculate_option_size.assert_called_once_with(
+        "NIFTY_CE",
+        premium=123.0,
+        max_risk_per_trade=bot.intraday_manager.max_risk_per_trade,
+        premium_stop_pct=0.20,
+        allow_paper_lot=True,
+    )
+
+
 def test_daily_loss_limit_caps_per_trade_risk_budget():
     manager = IntradayManager(
         account_size=100_000,
