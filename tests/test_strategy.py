@@ -183,6 +183,105 @@ def test_compression_breakout_can_pass_sideways_regime_gate():
     assert "Sideways regime" not in result.reasons
 
 
+def test_paper_shadow_can_evaluate_sideways_without_changing_primary_hold():
+    history = []
+    for index in range(60):
+        close = 100.0 + index * 0.2
+        history.append(
+            {
+                "open": close - 0.05,
+                "high": close + 0.05,
+                "low": close - 0.1,
+                "close": close,
+                "volume": 100 + index,
+            }
+        )
+
+    with patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="SIDEWAYS"), \
+        patch("market_bot.engine.is_compression_breakout", return_value=False), \
+        patch("market_bot.engine.breakout_quality", return_value=False):
+        result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.3,
+            sideways_net_move_pct=0.3,
+            allow_paper_shadow_sideways=True,
+        )
+
+    assert result.signal == "HOLD"
+    assert result.trend_shadow_signal == "BUY"
+    assert result.trend_shadow_rejection_reason is None
+    assert any("Sideways regime" in reason for reason in result.reasons)
+
+
+def test_trend_shadow_records_candidate_without_changing_breakout_signal():
+    history = []
+    for index in range(60):
+        close = 100.0 + index * 0.2
+        history.append(
+            {
+                "open": close - 0.05,
+                "high": close + 0.05,
+                "low": close - 0.1,
+                "close": close,
+                "volume": 100 + index,
+            }
+        )
+
+    with patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"), \
+        patch("market_bot.engine.is_compression_breakout", return_value=False), \
+        patch("market_bot.engine.breakout_quality", return_value=False):
+        result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
+
+    assert result.signal == "HOLD"
+    assert result.trend_shadow_signal == "BUY"
+    assert result.trend_shadow_rejection_reason is None
+
+
+def test_trend_shadow_records_hard_context_veto():
+    history = []
+    for index in range(60):
+        close = 100.0 + index * 0.2
+        history.append(
+            {
+                "open": close - 0.05,
+                "high": close + 0.05,
+                "low": close - 0.1,
+                "close": close,
+                "volume": 100 + index,
+            }
+        )
+    bearish_context = [{"close": 300.0 - index} for index in range(60)]
+
+    with patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"), \
+        patch("market_bot.engine.is_compression_breakout", return_value=False), \
+        patch("market_bot.engine.breakout_quality", return_value=False):
+        result = score_market(
+            "TEST",
+            history,
+            context_histories={"NIFTY": bearish_context},
+            hard_context_filter=True,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
+
+    assert result.trend_shadow_signal == "BUY"
+    assert result.trend_shadow_rejection_reason == (
+        "NIFTY: Benchmark trend bearish; BUY blocked"
+    )
+
+
 def test_close_only_regime_classifier_rejects_single_bar_exhaustion():
     history = [100.0 + index * 0.1 for index in range(29)]
     history.append(105.0)

@@ -61,12 +61,13 @@ class PaperTradingRecorder:
         "trade_id", "timestamp", "ticker", "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
-        "protection_order_id",
+        "protection_order_id", "strategy_variant",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
+        "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
     ]
 
     def __init__(self, root: str = "paper_trading_data") -> None:

@@ -1,11 +1,15 @@
-from datetime import datetime
+from datetime import date, datetime
 from datetime import timezone
 
 import pandas as pd
 from fastparquet import ParquetFile
 
 from market_bot.trade_journal import DecisionJournal, PaperTradingRecorder, TradeJournal
-from market_bot.weekly_report import write_daily_summary, write_weekly_review
+from market_bot.weekly_report import (
+    write_daily_review,
+    write_daily_summary,
+    write_weekly_review,
+)
 
 
 def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
@@ -37,6 +41,19 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     assert decision_file.row_groups
 
 
+def test_weekly_analyzer_separates_strategy_variant_metrics():
+    from analyze_weekly import analyze_trades
+
+    analysis = analyze_trades([
+        {"ticker": "NIFTY", "pnl": 20.0, "strategy_variant": "primary"},
+        {"ticker": "NIFTY", "pnl": -5.0, "strategy_variant": "trend_shadow_paper"},
+    ])
+
+    assert analysis["strategy_variant_stats"]["primary"]["win_rate"] == 100.0
+    assert analysis["strategy_variant_stats"]["trend_shadow_paper"]["win_rate"] == 0.0
+    assert analysis["strategy_variant_stats"]["trend_shadow_paper"]["profit"] == -5.0
+
+
 def test_daily_and_weekly_documents_are_written(tmp_path):
     timestamp = datetime.now().isoformat(timespec="seconds")
     (tmp_path / "trades.jsonl").write_text(
@@ -54,6 +71,59 @@ def test_daily_and_weekly_documents_are_written(tmp_path):
     assert summary.name == "daily_summary.parquet"
     assert review.name.startswith("weekly_review_")
     assert "negative" in review.read_text(encoding="utf-8")
+
+
+def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path):
+    timestamp = "2026-09-30T10:00:00+05:30"
+    paper_dir = tmp_path / "paper"
+    recorder = PaperTradingRecorder(str(paper_dir))
+    recorder.record_trade(
+        {
+            "timestamp": timestamp,
+            "ticker": "NIFTY",
+            "action": "BUY",
+            "status": "closed",
+            "score": 60,
+            "pnl": -10,
+            "reason": "STOP_LOSS",
+            "strategy_variant": "trend_shadow_paper",
+        }
+    )
+    recorder.record_decision(
+        {
+            "timestamp": timestamp,
+            "signal": "HOLD",
+            "outcome": "hold",
+            "score": 60,
+            "reasons": ["Sideways regime"],
+            "trend_shadow_signal": "BUY",
+            "trend_shadow_rejection_reason": "confirmation",
+        }
+    )
+    recorder.record_decision(
+        {
+            "timestamp": timestamp,
+            "signal": "HOLD",
+            "outcome": "accuracy_filter_rejected:volatility",
+            "rejection_reason": "volatility",
+            "reasons": ["confirmation"],
+        }
+    )
+
+    review = write_daily_review(
+        str(tmp_path), str(paper_dir), target_date=date(2026, 9, 30)
+    )
+    content = review.read_text(encoding="utf-8")
+
+    assert review.name == "daily_review.md"
+    assert "Closed trades: 1" in content
+    assert "Net P&L: -10.00" in content
+    assert "| NIFTY | BUY | trend_shadow_paper | 60 | -10.00 | STOP_LOSS |" in content
+    assert "accuracy_filter: 1" in content
+    assert "accuracy_filter_rejected:volatility: 1" in content
+    assert "Sideways regime: 1" in content
+    assert "Directional candidates: 1" in content
+    assert "confirmation: 1" in content
 
 
 def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatch):
@@ -113,9 +183,15 @@ def test_decision_parquet_schema_migrates_when_new_session_fields_are_added(tmp_
         "outcome_detail": "accuracy_filter_rejected:volatility",
         "market_session": "regular_session",
         "session_timezone": "Asia/Kolkata",
+        "trend_shadow_signal": "SELL",
+        "trend_shadow_rejection_reason": "confirmation",
+        "strategy_variant": "trend_shadow_paper",
     })
 
     rows = PaperTradingRecorder._read_parquet(path)
     assert len(rows) == 2
     assert rows[1]["outcome_detail"] == "accuracy_filter_rejected:volatility"
     assert rows[1]["market_session"] == "regular_session"
+    assert rows[1]["trend_shadow_signal"] == "SELL"
+    assert rows[1]["trend_shadow_rejection_reason"] == "confirmation"
+    assert rows[1]["strategy_variant"] == "trend_shadow_paper"

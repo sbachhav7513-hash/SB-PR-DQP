@@ -301,6 +301,8 @@ class AccuracyFilters:
         current_time: float,
         hour: int,
         minute: int,
+        record_entry: bool = True,
+        min_score: Optional[int] = None,
     ) -> tuple[bool, str]:
         """
         All filters combined for final entry decision.
@@ -322,18 +324,23 @@ class AccuracyFilters:
             return False, "confirmation"
         
         # Filter 3: Score threshold & signal
+        score_floor = (
+            self.min_score_floor
+            if min_score is None
+            else max(0, min(int(min_score), 85))
+        )
         should_enter = self.should_enter_trade(
             signal,
             score,
             volatility_ok,
             confirmation,
-            min_score=self.min_score_floor,
+            min_score=score_floor,
         )
         if not should_enter:
             if signal == "HOLD":
                 return False, "signal"
-            if score < self.min_score_floor:
-                return False, f"score<{self.min_score_floor}"
+            if score < score_floor:
+                return False, f"score<{score_floor}"
             return False, "signal_quality"
         
         # Filter 4: Cooldown period
@@ -347,5 +354,6 @@ class AccuracyFilters:
             return False, "trading_hours"
         
         # ALL FILTERS PASSED ✅
-        self.record_entry(symbol, current_time)
+        if record_entry:
+            self.record_entry(symbol, current_time)
         return True, "OK"
