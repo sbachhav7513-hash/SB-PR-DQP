@@ -1155,6 +1155,7 @@ class KiteTradingBot:
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
                 premium_target_pct = float(self.config.get("option_premium_target_pct", 0.20))
+                premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
                 take_profit = price * (1.0 + premium_target_pct)
                 quantity = self.intraday_manager.calculate_option_size(
