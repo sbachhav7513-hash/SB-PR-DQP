@@ -577,8 +577,10 @@ class KiteTradingBot:
                 min_trend_strength=float(
                     self.config.get("min_trend_strength", 0.02)
                 ),
-                trend_momentum_bonus_threshold=float(
-                    self.config.get("trend_momentum_bonus_threshold", 0.02)
+                trend_momentum_bonus_threshold=(
+                    float(self.config["trend_momentum_bonus_threshold"])
+                    if self.config.get("trend_momentum_bonus_threshold") is not None
+                    else None
                 ),
                 signal_proximity_pct=float(
                     self.config.get("signal_proximity_pct", 0.003)

@@ -1,7 +1,7 @@
 {
   "source": "NSE official F&O daily bhavcopy archive",
   "start_date_inclusive": "2026-03-30",
-  "end_date_inclusive": "2026-09-28",
+  "end_date_inclusive": "2026-09-29",
   "underlyings": [
     "BANKNIFTY",
     "HDFCBANK",
@@ -14,9 +14,9 @@
     "TATAMOTORS",
     "TCS"
   ],
-  "weekday_dates_checked": 131,
-  "successful_days": 124,
-  "total_filtered_rows": 543540,
+  "weekday_dates_checked": 132,
+  "successful_days": 125,
+  "total_filtered_rows": 547814,
   "data_granularity": "daily EOD only",
   "fields_present": [
     "contract symbol",

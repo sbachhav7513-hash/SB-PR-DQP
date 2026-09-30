@@ -339,10 +339,12 @@ def score_market(
     sideways_range_pct: float = 1.0,
     sideways_net_move_pct: float = 1.0,
     min_trend_strength: float = 0.02,
-    trend_momentum_bonus_threshold: float = 0.02,
+    trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.003,
 ) -> TradingScore:
     history = _current_session_history(history)
+    if trend_momentum_bonus_threshold is None:
+        trend_momentum_bonus_threshold = min_trend_strength
     closes = [item["close"] for item in history if "close" in item]
     if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
@@ -399,6 +401,15 @@ def score_market(
         sideways_range_pct=sideways_range_pct,
         sideways_net_move_pct=sideways_net_move_pct,
     )
+    regime_recent_window = closes[-10:-1]
+    regime_range_pct = (
+        (max(regime_recent_window) - min(regime_recent_window))
+        / max(price, 1e-9)
+        * 100.0
+    )
+    regime_net_move_pct = (
+        abs(price - closes[-20]) / max(closes[-20], 1e-9) * 100.0
+    )
     complete_ohlcv = len(history) == len(closes) and all(
         all(key in bar for key in ("open", "high", "low", "close", "volume"))
         for bar in history
@@ -418,7 +429,13 @@ def score_market(
             ticker=ticker,
             score=0,
             signal="HOLD",
-            reasons=["Sideways regime: range too narrow for a directional entry"],
+            reasons=[
+                "Sideways regime: "
+                f"recent range {regime_range_pct:.3f}% < {sideways_range_pct:.3f}% "
+                "and "
+                f"20-bar move {regime_net_move_pct:.3f}% "
+                f"< {sideways_net_move_pct:.3f}%"
+            ],
         )
 
     if regime == "EXTENDED":
@@ -465,10 +482,10 @@ def score_market(
     elif bearish_market and rsi_now < 30:
         reasons.append("RSI oversold against SELL")
 
-    if price > recent_high * 0.995:
+    if bullish_market and price > recent_high * 0.995:
         score += 10
         reasons.append("Price near recent high")
-    elif price < recent_low * 1.005:
+    elif bearish_market and price < recent_low * 1.005:
         score += 10
         reasons.append("Price near recent low")
 

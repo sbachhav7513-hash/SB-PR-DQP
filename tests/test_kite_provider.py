@@ -626,6 +626,26 @@ def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
     assert tick.volume == 42
 
 
+def test_on_ticks_drops_implausible_epoch_exchange_timestamp():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token")
+        )
+
+    callback = Mock()
+    stream.on_tick_callback = callback
+    stream.on_ticks(
+        None,
+        [{"instrument_token": 123, "exchange_timestamp": 0, "last_price": 100.0}],
+    )
+
+    callback.assert_not_called()
+
+
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
     kite = Mock()
     today = date.today()

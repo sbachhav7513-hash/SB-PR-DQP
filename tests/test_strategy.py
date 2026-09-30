@@ -113,9 +113,31 @@ def test_close_only_regime_classifier_identifies_sideways_market():
 
     assert result.signal == "HOLD"
     assert "Sideways regime" in result.reasons[0]
+    assert "recent range" in result.reasons[0]
+    assert "20-bar move" in result.reasons[0]
 
 
-def test_trend_momentum_bonus_threshold_can_align_with_min_trend_strength():
+def test_bearish_setup_near_recent_high_does_not_get_proximity_bonus():
+    closes = [102.0 - index * 0.05 for index in range(30)]
+    closes.extend(
+        [100.0, 99.9, 99.8, 100.0, 100.2, 100.3, 100.2, 100.4, 100.49, 100.49]
+    )
+    history = [{"close": close} for close in closes]
+    fast = [100.0] * (len(closes) - 1) + [99.0]
+    slow = [100.0] * len(closes)
+
+    with patch("market_bot.engine.ema", side_effect=[fast, slow]), \
+        patch("market_bot.engine.rsi", return_value=[40.0] * len(closes)), \
+        patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        result = score_market("TEST", history, min_trend_strength=0.005)
+
+    assert result.score == 75
+    assert result.signal == "HOLD"
+    assert "Price near recent high" not in result.reasons
+
+
+def test_trend_momentum_bonus_defaults_to_min_trend_strength():
     history = [{"close": 100.0 + index * 0.04} for index in range(40)]
 
     default_result = score_market(
@@ -125,18 +147,18 @@ def test_trend_momentum_bonus_threshold_can_align_with_min_trend_strength():
         sideways_range_pct=0.1,
         sideways_net_move_pct=0.1,
     )
-    aligned_result = score_market(
+    explicit_default_result = score_market(
         "TEST",
         history,
         min_trend_strength=0.005,
-        trend_momentum_bonus_threshold=0.005,
+        trend_momentum_bonus_threshold=0.02,
         sideways_range_pct=0.1,
         sideways_net_move_pct=0.1,
     )
 
-    assert default_result.signal == "HOLD"
-    assert aligned_result.score == default_result.score + 12
-    assert aligned_result.signal == "BUY"
+    assert default_result.score == explicit_default_result.score + 12
+    assert default_result.signal == "BUY"
+    assert explicit_default_result.signal == "HOLD"
 
 
 def test_compression_breakout_can_pass_sideways_regime_gate():
