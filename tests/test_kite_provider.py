@@ -3,7 +3,7 @@ from unittest.mock import Mock, call, patch
 
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
-from market_bot.kite_provider import KiteConfig, KiteMarketStream
+from market_bot.kite_provider import KiteConfig, KiteMarketStream, Tick
 
 
 def test_refresh_instrument_tokens_remaps_stale_symbols_and_validates_all_tokens():
@@ -73,11 +73,16 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
                 option_strike_step={"NIFTY": 50},
             )
         )
+        stream._select_current_futures = Mock(
+            side_effect=AssertionError("futures must stay disabled in options mode")
+        )
 
     assert stream.refresh_instrument_tokens() == {
+        "NIFTY": 100,
         "NIFTY_CE": 200,
         "NIFTY_PE": 201,
     }
+    stream._select_current_futures.assert_not_called()
     assert stream.contract_symbols == {
         "NIFTY_CE": "NIFTY26SEP25000CE",
         "NIFTY_PE": "NIFTY26SEP25000PE",
@@ -165,6 +170,17 @@ def test_bearish_option_signal_buys_pe_instead_of_shorting_it():
 
     assert bot._option_trade_action("NIFTY_CE", "BUY") == "BUY"
     assert bot._option_trade_action("NIFTY_PE", "SELL") == "BUY"
+
+
+def test_option_selection_does_not_fallback_to_the_opposite_leg():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {"NIFTY_CE": 200},
+    }
+
+    assert bot._preferred_option_symbol("NIFTY", "SELL") is None
+    assert bot._option_leg_is_active("NIFTY_CE", "SELL") is False
 
 
 def test_near_atm_option_selection_prefers_closest_strike_within_allowed_distance():
@@ -304,6 +320,7 @@ def test_next_week_option_mode_skips_nearest_expiry():
         )
 
     assert stream.refresh_instrument_tokens() == {
+        "NIFTY": 100,
         "NIFTY_CE": 300,
         "NIFTY_PE": 301,
     }
@@ -321,7 +338,13 @@ def test_option_quality_gate_rejects_low_premium_volume_and_iv():
         "option_iv_max": 0.80,
     }
     bot.option_quote_cache = {
-        "NIFTY_CE": {"last_price": 20.0, "volume": 200, "oi": 500, "iv": 0.12}
+        "NIFTY_CE": {
+            "last_price": 20.0,
+            "volume": 200,
+            "oi": 500,
+            "iv": 0.12,
+            "timestamp": datetime.now().astimezone(),
+        }
     }
 
     allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
@@ -342,7 +365,11 @@ def test_option_quality_gate_allows_quotes_without_unavailable_iv_or_oi():
         "option_iv_max": 0.80,
     }
     bot.option_quote_cache = {
-        "NIFTY_CE": {"last_price": 80.0, "volume": 1000}
+        "NIFTY_CE": {
+            "last_price": 80.0,
+            "volume": 1000,
+            "timestamp": datetime.now().astimezone(),
+        }
     }
 
     allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
@@ -358,7 +385,11 @@ def test_option_quality_gate_rejects_expiry_day_risk():
         "avoid_option_expiry_day": True,
     }
     bot.option_quote_cache = {
-        "NIFTY_CE": {"last_price": 80.0, "volume": 1000}
+        "NIFTY_CE": {
+            "last_price": 80.0,
+            "volume": 1000,
+            "timestamp": datetime.now().astimezone(),
+        }
     }
     bot.kite_stream = Mock()
     bot.kite_stream.contract_expiries = {"NIFTY_CE": date.today()}
@@ -367,6 +398,93 @@ def test_option_quality_gate_rejects_expiry_day_risk():
 
     assert allowed is False
     assert reason == "option expiry-day risk"
+
+
+def test_option_quality_gate_requires_fresh_timestamped_quotes_for_ce_and_pe():
+    for symbol, signal in (("NIFTY_CE", "BUY"), ("NIFTY_PE", "SELL")):
+        bot = object.__new__(KiteTradingBot)
+        bot.config = {"trading_mode": "intraday_options"}
+        bot.option_quote_cache = {
+            symbol: {
+                "last_price": 80.0,
+                "volume": 1000,
+                "timestamp": datetime.now().astimezone() - timedelta(seconds=61),
+            }
+        }
+
+        allowed, reason = bot._option_quality_gate(symbol, signal)
+        assert allowed is False
+        assert "stale" in reason
+
+        bot.option_quote_cache[symbol].pop("timestamp")
+        allowed, reason = bot._option_quality_gate(symbol, signal)
+        assert allowed is False
+        assert "timestamp unavailable" in reason
+
+
+def test_option_quality_gate_uses_softer_strong_signal_floors_for_ce_and_pe():
+    for symbol, signal in (("NIFTY_CE", "BUY"), ("NIFTY_PE", "SELL")):
+        bot = object.__new__(KiteTradingBot)
+        bot.config = {
+            "trading_mode": "intraday_options",
+            "option_min_premium": 10.0,
+            "option_min_volume": 1000,
+            "option_min_oi": 1000,
+        }
+        bot.option_quote_cache = {
+            symbol: {
+                "last_price": 6.0,
+                "volume": 650,
+                "oi": 650,
+                "timestamp": datetime.now().astimezone(),
+            }
+        }
+
+        allowed, reason = bot._option_quality_gate(symbol, signal, score=81)
+        assert allowed is False
+        assert "premium" in reason
+
+        allowed, reason = bot._option_quality_gate(symbol, signal, score=82)
+        assert allowed is True
+        assert reason == "OK"
+
+
+def test_option_quality_gate_rejects_invalid_or_unavailable_quotes():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_options"}
+    bot.option_quote_cache = {}
+    bot.latest_prices = {"NIFTY_CE": 100.0}
+
+    allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
+    assert allowed is False
+    assert reason == "option quote unavailable"
+
+    bot.option_quote_cache["NIFTY_CE"] = {
+        "last_price": float("nan"),
+        "volume": 1000,
+        "timestamp": datetime.now().astimezone(),
+    }
+    allowed, reason = bot._option_quality_gate("NIFTY_CE", "BUY")
+    assert allowed is False
+    assert reason == "invalid option quote"
+
+
+def test_on_tick_stores_timestamp_required_by_option_quality_gate():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_options"}
+    bot.symbol_map = {101: "NIFTY_CE"}
+    bot.latest_prices = {}
+    bot.option_quote_cache = {}
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.should_exit_all_positions.return_value = False
+    bot._check_position_exit = Mock()
+    bot.bar_builder = Mock()
+    timestamp = datetime.now().astimezone()
+
+    bot._on_tick(Tick(101, timestamp, 80.0, volume=1000))
+
+    assert bot.option_quote_cache["NIFTY_CE"]["timestamp"] == timestamp
+    assert bot._option_quality_gate("NIFTY_CE", "BUY") == (True, "OK")
 
 
 def test_intraday_manager_allows_multiple_trades_but_blocks_symbol_repeats():

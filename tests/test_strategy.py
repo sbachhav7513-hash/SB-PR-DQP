@@ -137,6 +137,71 @@ def test_bearish_setup_near_recent_high_does_not_get_proximity_bonus():
     assert "Price near recent high" not in result.reasons
 
 
+def test_bearish_recent_low_bonus_and_entry_use_same_proximity():
+    closes = [100.0] * 21 + [90.0] + [90.5 + index * 0.1 for index in range(9)]
+    closes.append(90.36)
+    fast = [99.5] * (len(closes) - 1) + [99.0]
+    slow = [100.0] * len(closes)
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda values, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[40.0] * len(closes)), \
+        patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        strict_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            signal_proximity_pct=0.003,
+            session_state="REGULAR_SESSION",
+        )
+        default_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            session_state="REGULAR_SESSION",
+        )
+
+    assert strict_result.score == 75
+    assert strict_result.signal == "HOLD"
+    assert default_result.score == 85
+    assert default_result.signal == "SELL"
+
+
+def test_bullish_recent_high_bonus_and_entry_use_same_proximity():
+    closes = [90.0] * 21 + [100.0]
+    closes.extend([99.8 - index * 0.1 for index in range(9)])
+    closes.append(99.6)
+    fast = [90.5] * (len(closes) - 1) + [91.0]
+    slow = [90.0] * len(closes)
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda values, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[60.0] * len(closes)), \
+        patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        strict_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            signal_proximity_pct=0.003,
+            session_state="REGULAR_SESSION",
+        )
+        default_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            session_state="REGULAR_SESSION",
+        )
+
+    assert strict_result.score == 75
+    assert strict_result.signal == "HOLD"
+    assert default_result.score == 85
+    assert default_result.signal == "BUY"
+
+
 def test_trend_momentum_bonus_defaults_to_min_trend_strength():
     history = [{"close": 100.0 + index * 0.04} for index in range(40)]
 

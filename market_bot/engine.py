@@ -343,7 +343,7 @@ def score_market(
     sideways_net_move_pct: float = 1.0,
     min_trend_strength: float = 0.02,
     trend_momentum_bonus_threshold: Optional[float] = None,
-    signal_proximity_pct: float = 0.003,
+    signal_proximity_pct: float = 0.005,
     allow_paper_shadow_sideways: bool = False,
 ) -> TradingScore:
     history = _current_session_history(history)
@@ -488,10 +488,10 @@ def score_market(
     elif bearish_market and rsi_now < 30:
         reasons.append("RSI oversold against SELL")
 
-    if bullish_market and price > recent_high * 0.995:
+    if bullish_market and price > recent_high * (1.0 - signal_proximity_pct):
         score += 10
         reasons.append("Price near recent high")
-    elif bearish_market and price < recent_low * 1.005:
+    elif bearish_market and price < recent_low * (1.0 + signal_proximity_pct):
         score += 10
         reasons.append("Price near recent low")
 

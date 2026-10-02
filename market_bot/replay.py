@@ -226,7 +226,7 @@ def run_replay(
     contexts = context_histories or {}
     use_context = bool(config.get("use_market_context", True))
     accuracy_filters = AccuracyFilters(
-        min_entry_score=int(config.get("min_entry_score", 75)),
+        min_entry_score=int(config.get("min_entry_score", 70)),
         min_volatility_pct=float(config.get("min_volatility_pct", 0.05)),
         max_volatility_pct=float(config.get("max_volatility_pct", 5.0)),
     )
@@ -257,7 +257,7 @@ def run_replay(
             trend_momentum_bonus_threshold=float(
                 config.get("trend_momentum_bonus_threshold", 0.02)
             ),
-            signal_proximity_pct=float(config.get("signal_proximity_pct", 0.003)),
+            signal_proximity_pct=float(config.get("signal_proximity_pct", 0.005)),
         )
 
     def entry_filter(
