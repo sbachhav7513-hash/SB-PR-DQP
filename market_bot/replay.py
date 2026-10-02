@@ -213,6 +213,28 @@ def _context_before(
     return available
 
 
+def _aligned_volume_history(
+    signal_history: List[Dict], volume_candles: List[Dict]
+) -> List[Dict]:
+    """Align a separate volume series by exact bar timestamp; never forward-fill."""
+    volume_by_timestamp = {}
+    for candle in volume_candles:
+        bar_time = _as_ist(candle.get("time", candle.get("date")))
+        if bar_time is not None:
+            volume_by_timestamp[bar_time.timestamp()] = candle.get("volume")
+
+    aligned = []
+    for candle in signal_history:
+        bar_time = _as_ist(candle.get("time", candle.get("date")))
+        volume = (
+            volume_by_timestamp.get(bar_time.timestamp())
+            if bar_time is not None
+            else None
+        )
+        aligned.append({"volume": volume})
+    return aligned
+
+
 def run_replay(
     ticker: str,
     candles: List[Dict],
@@ -221,8 +243,11 @@ def run_replay(
     fee_bps_per_side: float = 0.0,
     slippage_bps_per_side: float = 0.0,
     signal_fn: Optional[Callable[[str, List[Dict]], TradingScore]] = None,
+    volume_confirmation_candles: Optional[List[Dict]] = None,
 ) -> BacktestResult:
     """Replay the strategy and shared accuracy filters without broker access."""
+    if volume_confirmation_candles is not None and not volume_confirmation_candles:
+        raise ValueError("volume confirmation data must contain at least one candle")
     contexts = context_histories or {}
     use_context = bool(config.get("use_market_context", True))
     accuracy_filters = AccuracyFilters(
@@ -258,6 +283,11 @@ def run_replay(
                 config.get("trend_momentum_bonus_threshold", 0.02)
             ),
             signal_proximity_pct=float(config.get("signal_proximity_pct", 0.005)),
+            volume_confirmation_history=(
+                _aligned_volume_history(history, volume_confirmation_candles)
+                if volume_confirmation_candles is not None
+                else None
+            ),
         )
 
     def entry_filter(
@@ -365,6 +395,10 @@ def main() -> None:
     parser.add_argument("--ticker", required=True, help="Instrument name used in the replay")
     parser.add_argument("--config", default="kite_config.json", help="Strategy config JSON; secrets are not used or printed")
     parser.add_argument("--context", action="append", type=_parse_context_arg, default=[], metavar="SYMBOL=FILE")
+    parser.add_argument(
+        "--volume-confirmation-data",
+        help="Optional option-contract OHLCV file aligned to underlying signal timestamps",
+    )
     parser.add_argument("--fee-bps-per-side", type=float, default=0.0)
     parser.add_argument("--slippage-bps-per-side", type=float, default=0.0)
     parser.add_argument(
@@ -389,6 +423,11 @@ def main() -> None:
                 sustained_zero_volume_bars=args.sustained_zero_volume_bars,
             )
         contexts = {symbol: load_candles(path) for symbol, path in args.context}
+        volume_confirmation_candles = (
+            load_candles(args.volume_confirmation_data)
+            if args.volume_confirmation_data
+            else None
+        )
         if len(candles) < 2:
             raise ValueError("at least two valid OHLCV candles are required")
         result = run_replay(
@@ -398,6 +437,7 @@ def main() -> None:
             context_histories=contexts,
             fee_bps_per_side=args.fee_bps_per_side,
             slippage_bps_per_side=args.slippage_bps_per_side,
+            volume_confirmation_candles=volume_confirmation_candles,
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         parser.error(str(error))
@@ -405,6 +445,11 @@ def main() -> None:
     report = {
         "ticker": args.ticker,
         "data_file": str(Path(args.data)),
+        "volume_confirmation_data_file": (
+            str(Path(args.volume_confirmation_data))
+            if args.volume_confirmation_data
+            else None
+        ),
         "bars": len(candles),
         "first_bar": candles[0]["time"].isoformat(),
         "last_bar": candles[-1]["time"].isoformat(),
@@ -412,7 +457,7 @@ def main() -> None:
             "fee": args.fee_bps_per_side,
             "slippage": args.slippage_bps_per_side,
         },
-        "scope": "strategy, AccuracyFilters, one-entry-per-session rule, and simulated exits; excludes broker fills, option contract handling, news, and portfolio risk sizing",
+        "scope": "strategy, AccuracyFilters, one-entry-per-session rule, and simulated exits; optional separate option volume confirms underlying breakouts by exact timestamp; excludes broker fills, option contract selection, news, and portfolio risk sizing",
         "warnings": [],
         "results": _summary(result),
     }

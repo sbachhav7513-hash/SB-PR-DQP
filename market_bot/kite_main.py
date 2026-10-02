@@ -45,6 +45,34 @@ IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 
 
+def _aligned_option_volume_history(
+    signal_bars: list[Bar],
+    option_bars: list[Bar],
+    interval_seconds: int,
+) -> list[Dict]:
+    """Align each underlying bar with at most one nearby option-volume bar."""
+    option_times = [bar.timestamp.timestamp() for bar in option_bars]
+    unused_indices = set(range(len(option_bars)))
+    tolerance_seconds = max(float(interval_seconds) / 2.0, 0.0)
+    aligned = []
+
+    for signal_bar in signal_bars:
+        signal_time = signal_bar.timestamp.timestamp()
+        best_index = None
+        best_delta = tolerance_seconds
+        for index in unused_indices:
+            delta = abs(option_times[index] - signal_time)
+            if delta < best_delta:
+                best_index = index
+                best_delta = delta
+        if best_index is None:
+            aligned.append({"volume": None})
+        else:
+            unused_indices.remove(best_index)
+            aligned.append({"volume": option_bars[best_index].volume})
+    return aligned
+
+
 class KiteTradingBot:
     def _late_window_blocked(self, now: Optional[datetime] = None) -> bool:
         if not self.config.get("late_window_enabled", True):
@@ -572,6 +600,13 @@ class KiteTradingBot:
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in signal_bars]
+        volume_confirmation_history = None
+        if self._options_enabled() and "_" in symbol:
+            volume_confirmation_history = _aligned_option_volume_history(
+                signal_bars,
+                bars,
+                self.config.get("bar_interval_seconds", 60),
+            )
         session_state = market_session_state(history, now=datetime.now(IST))
         session_label = {
             "BEFORE_OPEN": "before open",
@@ -634,6 +669,17 @@ class KiteTradingBot:
                     and self.paper_trading_enabled
                     and not self.live_orders_enabled
                 ),
+                paper_shadow_min_adx=(
+                    float(self.config["paper_shadow_min_adx"])
+                    if (
+                        self.config.get("paper_trade_trend_shadow_signals", False)
+                        and self.paper_trading_enabled
+                        and not self.live_orders_enabled
+                        and "paper_shadow_min_adx" in self.config
+                    )
+                    else None
+                ),
+                volume_confirmation_history=volume_confirmation_history,
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -681,7 +727,9 @@ class KiteTradingBot:
                         hour=now.hour,
                         minute=now.minute,
                         record_entry=False,
-                        min_score=self._paper_shadow_min_entry_score(),
+                        min_score=self._adaptive_paper_min_entry_score(
+                            "trend_shadow_paper"
+                        ),
                     )
                 )
                 if not allowed:
@@ -833,11 +881,8 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
-                min_score=(
-                    self._paper_shadow_min_entry_score()
-                    if getattr(market_score, "strategy_variant", None)
-                    == "trend_shadow_paper"
-                    else None
+                min_score=self._adaptive_paper_min_entry_score(
+                    getattr(market_score, "strategy_variant", None)
                 ),
             )
             if not allowed:
@@ -1140,6 +1185,68 @@ class KiteTradingBot:
                 )
             )
         return None
+
+    def _adaptive_paper_min_entry_score(
+        self, strategy_variant: Optional[str] = None
+    ) -> Optional[int]:
+        """Adapt only paper score floors, isolated to the current strategy variant."""
+        if not getattr(self, "paper_trading_enabled", False) or getattr(
+            self, "live_orders_enabled", False
+        ):
+            return None
+
+        variant = strategy_variant or "primary"
+        base_floor = (
+            int(
+                self.config.get(
+                    "paper_shadow_min_entry_score",
+                    self.accuracy_filters.min_score_floor,
+                )
+            )
+            if variant == "trend_shadow_paper"
+            else self.accuracy_filters.min_score_floor
+        )
+        closed_pnls = []
+        for trade in self.trade_journal.read_trades():
+            if trade.get("status") != "closed":
+                continue
+            if str(trade.get("strategy_variant") or "primary") != variant:
+                continue
+            try:
+                pnl = float(trade.get("pnl"))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring closed trade with invalid P&L for adaptive score: %s",
+                    trade.get("ticker", "unknown"),
+                )
+                continue
+            if not math.isfinite(pnl):
+                logger.warning(
+                    "Ignoring closed trade with non-finite P&L for adaptive score: %s",
+                    trade.get("ticker", "unknown"),
+                )
+                continue
+            closed_pnls.append(pnl)
+
+        recent_pnls = closed_pnls[-10:]
+        recent_win_rate = (
+            sum(pnl > 0 for pnl in recent_pnls) / len(recent_pnls) * 100.0
+            if recent_pnls
+            else 0.0
+        )
+        min_score = self.accuracy_filters.get_min_score(
+            recent_trades=len(recent_pnls),
+            recent_win_rate=recent_win_rate,
+            configured_min_score=base_floor,
+        )
+        logger.debug(
+            "Adaptive paper score floor: variant=%s trades=%d win_rate=%.1f%% floor=%d",
+            variant,
+            len(recent_pnls),
+            recent_win_rate,
+            min_score,
+        )
+        return min_score
 
     def _record_decision(
         self,

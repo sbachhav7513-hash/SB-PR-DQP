@@ -2,6 +2,8 @@ import random
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
     calculate_adx,
@@ -281,6 +283,61 @@ def test_paper_shadow_can_evaluate_sideways_without_changing_primary_hold():
     assert any("Sideways regime" in reason for reason in result.reasons)
 
 
+def test_paper_shadow_can_evaluate_weak_adx_without_changing_primary_hold():
+    history = []
+    for index in range(60):
+        close = 100.0 + index * 0.2
+        history.append(
+            {
+                "open": close - 0.05,
+                "high": close + 0.05,
+                "low": close - 0.1,
+                "close": close,
+                "volume": 100 + index,
+            }
+        )
+
+    with patch("market_bot.engine.calculate_adx", side_effect=[11.0, 10.0]), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"), \
+        patch("market_bot.engine.is_compression_breakout", return_value=True), \
+        patch("market_bot.engine.breakout_quality", return_value=True), \
+        patch("market_bot.engine.calculate_vwap", return_value=None), \
+        patch("market_bot.engine.higher_timeframe_signal", return_value="UNKNOWN"):
+        result = score_market(
+            "TEST",
+            history,
+            min_adx=12.0,
+            paper_shadow_min_adx=10.0,
+        )
+
+    assert result.signal == "HOLD"
+    assert result.trend_shadow_signal == "BUY"
+    assert result.trend_shadow_rejection_reason is None
+    assert "ADX too weak (11.0 < 12.0)" in result.reasons
+
+
+def test_paper_shadow_adx_floor_still_rejects_weaker_adx():
+    history = [{"close": 100.0 + index * 0.2} for index in range(60)]
+
+    with patch("market_bot.engine.calculate_adx", return_value=9.9):
+        result = score_market(
+            "TEST",
+            history,
+            min_adx=12.0,
+            paper_shadow_min_adx=10.0,
+        )
+
+    assert result.signal == "HOLD"
+    assert result.score == 0
+    assert result.trend_shadow_signal is None
+    assert "ADX too weak (9.9 < 12.0)" in result.reasons[0]
+
+
+def test_paper_shadow_adx_floor_must_be_below_primary_floor():
+    with pytest.raises(ValueError, match="below min_adx"):
+        score_market("TEST", [], min_adx=12.0, paper_shadow_min_adx=12.0)
+
+
 def test_trend_shadow_records_candidate_without_changing_breakout_signal():
     history = []
     for index in range(60):
@@ -384,6 +441,37 @@ def test_breakout_quality_requires_close_volume_and_atr_sized_candle():
 
     history[-1]["close"] = 100.2
     assert breakout_quality(history, "BUY") is False
+
+
+def test_zero_index_volume_can_use_separate_option_relative_volume():
+    history = [
+        {
+            "open": 100.0,
+            "high": 100.4,
+            "low": 99.6,
+            "close": 100.0,
+            "volume": 0,
+        }
+        for _ in range(35)
+    ]
+    history.append(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 100.0,
+            "close": 100.8,
+            "volume": 0,
+        }
+    )
+    option_volume_history = [{"volume": 100}] * 35 + [{"volume": 250}]
+
+    assert breakout_quality(history, "BUY") is False
+    assert breakout_quality(
+        history, "BUY", volume_history=option_volume_history
+    ) is True
+    assert breakout_quality(
+        history, "BUY", volume_history=option_volume_history[:-1]
+    ) is False
 
 
 def test_vwap_is_available_for_volume_weighted_direction_check():

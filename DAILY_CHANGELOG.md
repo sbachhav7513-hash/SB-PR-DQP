@@ -203,3 +203,44 @@ Outcome / follow-up / rollback:
   - `STRATEGY_CHANGELOG.md` (modified): Record the one-variable experiment and pending outcome.
 - Validation and result: Both focused boundary tests passed (`2 passed`); strategy suite passed (`24 passed`); full suite passed (`128 passed`); both Kite configs parsed at 0.005; Pylance found no diagnostics in changed Python files; `git diff --check` passed.
 - Outcome / follow-up / rollback: Downside momentum, ADX, breakout, EMA-spread, VWAP, higher-timeframe, context, and risk checks remain unchanged. Performance is unmeasured; rollback by restoring a 0.003 entry proximity and the prior hard-coded 0.005 score bonus.
+
+#### DLY-2026-10-02-02
+
+- Reason: Reduce zero-trade risk from the primary ADX floor without weakening the primary/live entry gate; the user approved an unbacktested paper-only trial after historical-data limitations were identified.
+- Related prior entries checked: `DLY-2026-09-30-02`, `DLY-2026-09-30-03`, `DLY-2026-09-30-05`, `DLY-2026-10-01-02`, `DLY-2026-10-01-03`, and `DLY-2026-10-01-04`; this trial changes only the paper-shadow ADX floor.
+- Files:
+  - `market_bot/engine.py` (modified): Let eligible paper-shadow evaluation continue from ADX 10 while keeping the primary signal HOLD below `min_adx`.
+  - `market_bot/kite_main.py` (modified): Pass the shadow floor only when paper mode is enabled and live orders are off.
+  - `kite_config.json` (modified): Set `paper_shadow_min_adx=10.0`; primary `min_adx` remains 12, shadow is enabled for paper, live orders remain disabled.
+  - `kite_config.example.json` (modified): Document the threshold while keeping shadow promotion disabled by default.
+  - `tests/test_strategy.py` (modified): Cover paper-shadow candidate eligibility, primary HOLD preservation, stricter sub-10 rejection, and threshold validation.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document paper-only scope and unbacktested status.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record rationale, limits, and follow-up.
+- Validation and result: Focused strategy/runtime tests passed (`66 passed`); full suite passed (`135 passed`). Both configs parsed with active primary/shadow ADX floors `12/10`, and live orders disabled. Pylance found no diagnostics, all 27 `score_market` call sites remain signature-compatible, and `git diff --check` passed. No performance backtest was possible with the available data.
+- Outcome / follow-up / rollback: Trial is unbacktested, paper-only, and not a promise of daily trades or profitability. Disable by removing `paper_shadow_min_adx` from `kite_config.json` or by disabling `paper_trade_trend_shadow_signals`; live orders stay off.
+
+#### DLY-2026-10-02-03
+
+- Reason: `AccuracyFilters.get_min_score` had no runtime call sites and returned thresholds as high as 92 although the strategy score is capped at 85; directly wiring it would reject every trade after its sample threshold.
+- Related prior entries checked: `DLY-2026-09-30-02`, `DLY-2026-09-30-03`, and `DLY-2026-10-02-02`; this keeps the existing primary/live score floor and shadow score-floor experiment otherwise unchanged.
+- Files:
+  - `market_bot/accuracy_filters.py` (modified): Bound adaptive floors to the producer's 0-85 score range, preserve configured floors, and wait for ten observations.
+  - `market_bot/kite_main.py` (modified): Apply adaptive floors only to paper entries, using the latest ten closed trades from the same strategy variant; keep live validation fixed.
+  - `tests/test_intraday_manager.py` (modified): Cover adaptation boundaries, per-variant samples, and live-mode exclusion.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the paper-only adaptive score behavior and sample requirement.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record implementation and experiment outcome.
+- Validation and result: Focused `test_intraday_manager.py`, `test_strategy.py`, and `test_backtest.py` passed (`83 passed`); full suite passed (`136 passed`). Pylance found no diagnostics in `accuracy_filters.py`; `kite_main.py` retains two unrelated warnings. All 7 `get_min_score` call sites are signature-compatible and `git diff --check` passed.
+- Outcome / follow-up / rollback: No historical options-only replay with fills or a closed paper sample is available; this does not establish improved accuracy. Review after at least 10 closed trades per variant and keep live floors unchanged.
+
+#### DLY-2026-10-02-04
+
+- Reason: Kite index candles have zero volume, and the primary breakout-quality gate requires nonzero relative volume; in options mode the bot scores the underlying index while it has the selected option's actual volume bars available.
+- Related prior entries checked: `DLY-2026-10-02-01` through `DLY-2026-10-02-03`; the user selected the selected option contract's own relative volume, not a disabled volume gate.
+- Files:
+  - `market_bot/engine.py` (modified): Support a separate aligned volume series for breakout-volume confirmation while retaining underlying OHLC/ATR checks.
+  - `market_bot/kite_main.py` (modified): Align option volume bars to underlying signal bars and pass the series for options signals.
+  - `market_bot/replay.py` (modified): Accept an optional separate volume-confirmation data file for production-like offline evaluation.
+  - `tests/test_strategy.py`, `tests/test_intraday_manager.py`, and `tests/test_backtest.py` (modified): Cover zero-index-volume handling, timestamp alignment, and replay input alignment.
+  - `DAILY_WEEKLY_OPERATIONS.md`, `DAILY_CHANGELOG.md`, and `STRATEGY_CHANGELOG.md` (modified): Document the selected volume source, experiment, and validation.
+- Validation and result: Focused `test_intraday_manager.py`, `test_strategy.py`, and `test_backtest.py` passed (`85 passed`); full suite passed (`138 passed`). Pylance confirmed compatibility at 27 `score_market`, 8 `breakout_quality`, and 4 `run_replay` call sites; no diagnostics in `engine.py`, with only pre-existing warnings elsewhere. `git diff --check` passed.
+- Outcome / follow-up / rollback: This may allow some index-option candidates through the volume gate, but does not establish better accuracy or profitability. Replay paired underlying/option data before changing live rollout decisions.

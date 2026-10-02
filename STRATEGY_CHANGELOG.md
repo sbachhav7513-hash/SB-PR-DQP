@@ -184,3 +184,52 @@ No completed experiments recorded yet.
 - Decision: Running as a controlled paper evaluation; no profitability claim.
 - Rollback: Restore strong fallback factors to 75% premium and 80% volume/OI in `market_bot/kite_main.py`.
 - Follow-up: Track CE/PE quote-age rejections, low premium/volume/OI reasons, opened trades, and closed outcomes separately; reassess only with a comparable options-paper sample.
+
+### EXP-2026-10-02-02
+
+- Status: running; historical performance is unbacktested.
+- Problem and evidence: Recent archived sessions showed many weak-ADX HOLD decisions and zero opened trades on multiple days. A controlled count found 3,285 mentions of the exact `ADX too weak (0.0 < 12.0)` reason in the available decision archives. These were not all generated under the current options-only setup. No matched current-strategy option sample is available.
+- Prior related log entries checked: `EXP-2026-09-30-01` through `EXP-2026-09-30-04`, `EXP-2026-10-01-01` through `EXP-2026-10-01-04`, and `EXP-2026-10-02-01`. Other paper experiments remain active; this trial is isolated to the paper-shadow ADX floor.
+- Hypothesis: Evaluating otherwise-qualified paper-shadow candidates at ADX 10-12 may increase paper observations while preserving the primary/live ADX floor at 12 and retaining the other confirmation, context, option-quality, sizing, and loss controls.
+- Single variable being changed: Paper-shadow minimum ADX from no override (effectively 12) to 10.0. Primary `min_adx` remains 12.0.
+- Code/config before: Local options config had `min_adx=12.0`, `paper_trade_trend_shadow_signals=true`, `paper_shadow_allow_sideways=true`, and `live_orders_enabled=false`; no paper-shadow ADX override existed.
+- Baseline period and metrics: Available recent paper summaries contain three zero-trade days and one five-trade day from an earlier, non-comparable futures/shadow setup. No valid matched options-only intraday replay exists; performance metrics for this trial are unavailable.
+- Data limitation: The local NSE archive contains daily EOD candles only, not the bot's 1-minute underlying OHLCV; archived minute decision bars from Sept 28-29 have 1970 timestamps. Therefore a credible historical backtest cannot be run from current workspace data.
+- Test method and fixed evaluation period/sample: Keep the primary ADX floor and all other strategy/risk settings fixed. Record shadow candidate counts, ADX rejection reasons, entries, and closed option outcomes; assess performance only after at least 10 closed paper option trades. Do not treat more candidates as evidence of profitability.
+- Change made: Added an optional `paper_shadow_min_adx` engine/runtime setting; set it to 10.0 only in the active paper config, with live orders disabled; dated 2026-10-02.
+- Results: Focused strategy/runtime tests passed (`66 passed`); full suite passed (`135 passed`); both configs parsed, Pylance diagnostics were clean, and all 27 `score_market` call sites are compatible. Historical performance remains unbacktested and paper-market observations are pending.
+- Decision: User-approved unbacktested paper-only trial; do not enable for live orders based on this experiment.
+- Rollback: Remove `paper_shadow_min_adx` from `kite_config.json` or disable `paper_trade_trend_shadow_signals`.
+- Follow-up: Inspect the daily review for ADX/shadow candidate and rejection reasons, then compare closed options-only outcomes after the minimum sample.
+
+### EXP-2026-10-02-03
+
+- Status: running; strategy performance remains unmeasured.
+- Problem and evidence: `get_min_score` was not called by the application and could return 88-92, while `score_market` produces scores no higher than 85. The current replay reports zero trades; no matched production option-minute data with historical quotes is available.
+- Prior related log entries checked: `EXP-2026-09-30-01`, `EXP-2026-09-30-02`, and `EXP-2026-10-02-02`; this changes only how the existing score floor adapts to recent outcomes.
+- Hypothesis: A modest score-floor adjustment derived from the latest ten closed trades of the same strategy variant can make paper scoring responsive to observed outcomes without changing live entries or mixing primary and shadow performance.
+- Single variable being changed: The paper-only score floor after at least ten same-variant closed trades: +2 below 35% wins, +1 below 45%, unchanged below 55%, and -1 at or above 55%, always clamped to 0-85.
+- Code/config before: Current primary paper floor is 75, paper-shadow floor is 55, the scorer maximum is 85, the adaptive helper is unused, and live orders are disabled in the active local config.
+- Baseline period and metrics: No valid matched option replay or adequate closed-trade sample exists. Prior underlying/index proxy replays had zero trades; they cannot establish win rate or option P&L.
+- Test method and fixed evaluation period/sample: Verify score bounds, sample threshold, same-variant isolation, and live-mode fixed-floor behavior. Track candidate counts and closed paper outcomes; assess performance only after at least ten closed trades for a variant.
+- Change made: Corrected `get_min_score` so its thresholds stay within the configured floor and 0-85 score range, then wired it to paper primary/shadow entry validation using the latest 10 closed trades of the same variant. Paper floors remain fixed below 10 valid trades; live validation continues to use the configured fixed floor. Dated 2026-10-02.
+- Results: Focused strategy/runtime/replay tests passed (`83 passed`) and the full suite passed (`136 passed`). Pylance found no diagnostics in `accuracy_filters.py`, and all call sites are signature-compatible. No historical options-only backtest or performance sample is available, so accuracy impact remains unmeasured.
+- Decision: Experimental paper-only behavior; no performance improvement is claimed, and live thresholds remain fixed.
+- Rollback: Remove the runtime adaptive-floor calls while retaining the configured fixed floors.
+- Follow-up: Compare against a comparable paper baseline after the minimum sample; do not treat a higher trade count alone as evidence of better accuracy.
+
+### EXP-2026-10-02-04
+
+- Status: running; performance outcome is unmeasured.
+- Problem and evidence: All 375 NIFTY and BANKNIFTY index candles in the available single-day Kite extract had zero volume; the same-day selected option CE/PE candles had nonzero volume. In the live options path, signal OHLC is sourced from the underlying while breakout volume confirmation previously read that zero index volume.
+- Prior related log entries checked: `EXP-2026-10-02-02` and `EXP-2026-10-02-03`; this changes only the data source for the existing relative-volume check.
+- Hypothesis: Using the selected option contract's volume, matched to the underlying signal bars by timestamp, will preserve the volume-confirmation requirement while avoiding an unusable zero-volume index series. This confirms traded-contract activity, not underlying-market breadth.
+- Single variable being changed: Volume input to breakout confirmation for option signals; underlying OHLC, ATR, all other strategy gates, and entry-risk controls remain unchanged.
+- Code/config before: Option-mode `score_market` received underlying bars only; `breakout_quality` returned false when average volume was zero. No same-symbol index futures volume series was configured.
+- Baseline period and metrics: The 2026-09-29 report contains 375 zero-volume bars for each index and nonzero volume for both option contracts. The index proxy recorded zero trades, but that replay does not isolate this gate from sideways/ADX gates and cannot establish a missed-trade or accuracy baseline.
+- Test method and fixed evaluation period/sample: Verify that the same underlying breakout passes the volume sub-check only when aligned option volume exceeds its trailing average; verify unmatched/missing volume remains rejected. Replay needs timestamp-matched underlying OHLC and selected-option volume data. Assess accuracy only after at least 10 closed option trades.
+- Change made: `score_market` and `breakout_quality` now accept a separate aligned volume series. In options mode the bot passes volume from the selected option contract matched to underlying bars within half an interval; offline replay accepts `--volume-confirmation-data` and matches exact timestamps without forward filling. Underlying price/ATR confirmation remains unchanged. Dated 2026-10-02.
+- Results: Focused `test_intraday_manager.py`, `test_strategy.py`, and `test_backtest.py` passed (`85 passed`); full suite passed (`138 passed`). Pylance confirmed compatibility for 27 `score_market`, 8 `breakout_quality`, and 4 `run_replay` call sites. The historical option dataset shows nonzero option volume, but no paired multi-session run or filled-trade sample was available; performance remains unmeasured.
+- Decision: Keep the existing volume requirement; change only its source for options-mode confirmation. No profitability claim.
+- Rollback: Stop passing the option volume series and restore the underlying history as the volume source.
+- Follow-up: Compare paired-data replay rejection reasons and paper outcomes, while remembering option relative volume is not a substitute for futures/index-wide participation.

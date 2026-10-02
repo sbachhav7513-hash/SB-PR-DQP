@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -245,7 +246,12 @@ def is_compression_breakout(history: List[Dict], lookback: int = 20) -> bool:
     return contraction and narrower_than_average and range_contracted and range_expanded
 
 
-def breakout_quality(history: List[Dict], direction: str, lookback: int = 20) -> bool:
+def breakout_quality(
+    history: List[Dict],
+    direction: str,
+    lookback: int = 20,
+    volume_history: Optional[List[Dict]] = None,
+) -> bool:
     """Validate close, volume, and ATR quality for a completed breakout candle."""
     if len(history) < lookback + 15:
         return False
@@ -255,18 +261,30 @@ def breakout_quality(history: List[Dict], direction: str, lookback: int = 20) ->
     ):
         return False
 
+    volume_bars = history if volume_history is None else volume_history
+    if len(volume_bars) != len(history) or not all(
+        "volume" in bar for bar in volume_bars
+    ):
+        return False
+    try:
+        volumes = [float(bar["volume"]) for bar in volume_bars[-lookback - 1:]]
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(volume) and volume >= 0 for volume in volumes):
+        return False
+
     current = history[-1]
     previous = history[-lookback - 1:-1]
     prior_high = max(bar["high"] for bar in previous)
     prior_low = min(bar["low"] for bar in previous)
-    average_volume = sum(float(bar["volume"]) for bar in previous) / lookback
+    average_volume = sum(volumes[:-1]) / lookback
     atr = calculate_atr(history[:-1])
     if atr is None or atr <= 0 or average_volume <= 0:
         return False
 
     candle_range = current["high"] - current["low"]
     size_ok = 0.5 * atr <= candle_range <= 2.0 * atr
-    volume_ok = float(current["volume"]) > average_volume
+    volume_ok = volumes[-1] > average_volume
     if direction == "BUY":
         close_outside = current["close"] > prior_high and current["close"] >= current["open"]
     elif direction == "SELL":
@@ -345,10 +363,14 @@ def score_market(
     trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.005,
     allow_paper_shadow_sideways: bool = False,
+    paper_shadow_min_adx: Optional[float] = None,
+    volume_confirmation_history: Optional[List[Dict]] = None,
 ) -> TradingScore:
     history = _current_session_history(history)
     if trend_momentum_bonus_threshold is None:
         trend_momentum_bonus_threshold = min_trend_strength
+    if paper_shadow_min_adx is not None and not 0.0 <= paper_shadow_min_adx < min_adx:
+        raise ValueError("paper_shadow_min_adx must be non-negative and below min_adx")
     closes = [item["close"] for item in history if "close" in item]
     if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
@@ -382,7 +404,13 @@ def score_market(
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Indicators unavailable"])
 
     adx = calculate_adx(history)
-    if adx is not None and adx < min_adx:
+    adx_rejected = adx is not None and adx < min_adx
+    shadow_adx_eligible = (
+        paper_shadow_min_adx is not None
+        and adx is not None
+        and adx >= paper_shadow_min_adx
+    )
+    if adx_rejected and not shadow_adx_eligible:
         return TradingScore(
             ticker=ticker,
             score=0,
@@ -537,7 +565,9 @@ def score_market(
 
         if not is_compression_breakout(history):
             quality_reasons.append("No volatility compression before breakout")
-        if not breakout_quality(history, signal):
+        if not breakout_quality(
+            history, signal, volume_history=volume_confirmation_history
+        ):
             quality_reasons.append("Breakout lacks close, volume, or ATR confirmation")
         if current_adx is not None and previous_adx is not None and current_adx <= previous_adx:
             quality_reasons.append("ADX is not rising")
@@ -572,6 +602,9 @@ def score_market(
     if sideways_rejected:
         signal = "HOLD"
         reasons.append(sideways_reason)
+    if adx_rejected:
+        signal = "HOLD"
+        reasons.append(f"ADX too weak ({adx:.1f} < {min_adx:.1f})")
 
     contexts = dict(context_histories or {})
     if context_history:
