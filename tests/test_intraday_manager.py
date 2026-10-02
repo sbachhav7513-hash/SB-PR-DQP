@@ -568,11 +568,53 @@ def test_disabling_trailing_keeps_fixed_target_exit():
     assert bot._check_position_exit("NIFTY", 85.0) == "TAKE_PROFIT"
 
 
-def test_adaptive_score_threshold_rises_for_weak_symbol_performance():
+def test_adaptive_score_threshold_stays_inside_strategy_score_range():
     filters = AccuracyFilters()
 
-    assert filters.get_min_score(recent_trades=7, recent_win_rate=20.0) >= 92
-    assert filters.get_min_score(recent_trades=7, recent_win_rate=72.0) <= 90
+    assert filters.get_min_score(recent_trades=9, recent_win_rate=20.0) == 70
+    assert filters.get_min_score(recent_trades=10, recent_win_rate=20.0) == 72
+    assert filters.get_min_score(recent_trades=10, recent_win_rate=40.0) == 71
+    assert filters.get_min_score(recent_trades=10, recent_win_rate=50.0) == 70
+    assert filters.get_min_score(recent_trades=10, recent_win_rate=72.0) == 69
+    assert (
+        AccuracyFilters(min_entry_score=100).get_min_score(10, 0.0)
+        == 85
+    )
+
+
+def test_adaptive_paper_score_floors_use_recent_closed_trades_by_variant():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_shadow_min_entry_score": 55}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.accuracy_filters = AccuracyFilters(min_entry_score=75)
+    bot.trade_journal = Mock()
+    bot.trade_journal.read_trades.return_value = [
+        {
+            "status": "closed",
+            "pnl": -1.0,
+            "strategy_variant": "primary",
+        }
+        for _ in range(10)
+    ] + [
+        {
+            "status": "closed",
+            "pnl": 1.0,
+            "strategy_variant": "trend_shadow_paper",
+        }
+        for _ in range(10)
+    ]
+
+    assert bot._adaptive_paper_min_entry_score("primary") == 77
+    assert bot._adaptive_paper_min_entry_score("trend_shadow_paper") == 54
+
+    bot.trade_journal.read_trades.return_value = bot.trade_journal.read_trades.return_value[:9]
+    assert bot._adaptive_paper_min_entry_score("primary") == 75
+
+    bot.live_orders_enabled = True
+    bot.trade_journal.read_trades.reset_mock()
+    assert bot._adaptive_paper_min_entry_score("primary") is None
+    bot.trade_journal.read_trades.assert_not_called()
 
 
 def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
@@ -627,9 +669,12 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
         patch(
             "market_bot.kite_main.score_market",
             return_value=SimpleNamespace(signal="BUY", score=80, reasons=[]),
-        ):
+        ) as score_market_mock:
         bot.on_bar_complete("100", option_bars[-1])
 
+    assert score_market_mock.call_args.kwargs[
+        "volume_confirmation_history"
+    ] == [{"volume": 10}] * len(underlying_bars)
     validated_history = bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "history"
     ]

@@ -5,6 +5,7 @@ Quick fixes to improve win rate from 50% to 60%
 
 from typing import List, Dict, Optional
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +22,36 @@ class AccuracyFilters:
         self.last_entry_time: Dict[str, float] = {}
         self.COOLDOWN_SECONDS = 300  # 5 minutes between entries
         self.min_score_floor = max(0, min(int(min_entry_score), 85))
-        self.min_score_ceiling = 98
+        self.min_score_ceiling = 85
         self.min_volatility_pct = max(float(min_volatility_pct), 0.0)
         self.max_volatility_pct = max(float(max_volatility_pct), self.min_volatility_pct)
 
-    def get_min_score(self, recent_trades: int, recent_win_rate: float) -> int:
-        """Increase the entry threshold when recent performance is weak."""
-        if recent_trades < 5:
-            return self.min_score_floor
+    def get_min_score(
+        self,
+        recent_trades: int,
+        recent_win_rate: float,
+        configured_min_score: Optional[int] = None,
+    ) -> int:
+        """Adjust a configured entry floor using a sufficiently large sample."""
+        if recent_trades < 0:
+            raise ValueError("recent_trades must be non-negative")
+        if not math.isfinite(recent_win_rate) or not 0.0 <= recent_win_rate <= 100.0:
+            raise ValueError("recent_win_rate must be between 0 and 100")
+
+        base_floor = (
+            self.min_score_floor
+            if configured_min_score is None
+            else max(0, min(int(configured_min_score), self.min_score_ceiling))
+        )
+        if recent_trades < 10:
+            return base_floor
         if recent_win_rate < 35.0:
-            return max(self.min_score_floor + 2, 92)
+            return min(base_floor + 2, self.min_score_ceiling)
         if recent_win_rate < 45.0:
-            return max(self.min_score_floor + 1, 91)
+            return min(base_floor + 1, self.min_score_ceiling)
         if recent_win_rate < 55.0:
-            return self.min_score_floor
-        return max(self.min_score_floor - 1, 88)
+            return base_floor
+        return max(base_floor - 1, 0)
     
     # ========== FILTER 1: Volatility Check ==========
     @staticmethod

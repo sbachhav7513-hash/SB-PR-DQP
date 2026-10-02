@@ -5,6 +5,7 @@
   "paper_trading_enabled": true,
   "paper_trade_trend_shadow_signals": false,
   "paper_shadow_min_entry_score": 55,
+  "paper_shadow_min_adx": 10.0,
   "paper_shadow_allow_sideways": false,
   "live_orders_enabled": false,
   "live_orders_confirmed": false,

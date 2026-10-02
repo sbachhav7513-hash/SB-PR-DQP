@@ -1,5 +1,6 @@
 import pytest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from market_bot.backtest import run_backtest
 from market_bot.engine import TradingScore
@@ -268,6 +269,51 @@ def test_strategy_replay_records_accuracy_score_rejection():
 
     assert result.trades == []
     assert result.rejection_counts == {"score<75": 1}
+
+
+def test_replay_aligns_external_volume_data_by_exact_timestamp():
+    start = datetime(2026, 9, 28, 10, 0)
+    candles = [
+        {
+            "time": start + timedelta(minutes=index),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100 + index,
+            "volume": 0,
+        }
+        for index in range(3)
+    ]
+    option_candles = [
+        {
+            "time": candle_row["time"],
+            "open": 10,
+            "high": 11,
+            "low": 9,
+            "close": 10,
+            "volume": 200 + index,
+        }
+        for index, candle_row in reversed(list(enumerate(candles)))
+    ]
+    aligned_histories = []
+
+    def hold_signal(ticker, history, **kwargs):
+        aligned_histories.append(kwargs["volume_confirmation_history"])
+        return TradingScore(ticker, 0, "HOLD")
+
+    with patch("market_bot.replay.score_market", side_effect=hold_signal):
+        result = run_replay(
+            "NIFTY",
+            candles,
+            {"use_market_context": False, "late_window_enabled": False},
+            volume_confirmation_candles=option_candles,
+        )
+
+    assert result.trades == []
+    assert aligned_histories[-1] == [
+        {"volume": 200},
+        {"volume": 201},
+    ]
 
 
 def test_production_data_validation_reports_gaps_and_zero_volume_rows():
