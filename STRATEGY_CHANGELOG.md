@@ -233,3 +233,19 @@ No completed experiments recorded yet.
 - Decision: Keep the existing volume requirement; change only its source for options-mode confirmation. No profitability claim.
 - Rollback: Stop passing the option volume series and restore the underlying history as the volume source.
 - Follow-up: Compare paired-data replay rejection reasons and paper outcomes, while remembering option relative volume is not a substitute for futures/index-wide participation.
+
+### EXP-2026-10-02-05
+
+- Status: running; strategy performance is unmeasured.
+- Problem and evidence: The option exit begins at a 20% premium target and uses a distance-based trailing stop. There is no valid options-only matched replay or measured baseline for changing that exit.
+- Prior related log entries checked: `DLY-2026-09-30-06` and `EXP-2026-10-02-01` through `EXP-2026-10-02-04`; this replaces the current option exit progression and adds a directional candle-momentum entry gate without changing the score floor.
+- Hypothesis: Tiered 10% premium milestones, signal-score-scaled stop locks, a score-based per-milestone time box, explicit signal-weakening exits, and a 60% directional candle-body gate will produce reviewable option trades and may improve average P&L per trade.
+- Strategy package being changed: Option exits move from the fixed 20% initial target with distance-based trail to tiered milestones, while option entries additionally require the underlying signal candle body to cover at least 60% of its high-low range in the signal direction. Position size is constrained to 2-3 lots by the existing risk budget; the score floor and other confirmation gates remain unchanged. Cohort results will measure the combined package, not isolate the exit policy's effect.
+- Code/config before: Active paper config used `option_premium_target_pct=0.20`, staged targets enabled, `strong_signal_score=82`, `paper_trading_enabled=true`, and `live_orders_enabled=false`. No tagged option-exit frequency or expectancy baseline was recorded.
+- Baseline period and metrics: No comparable option-only trade sample or matched option-premium replay is available; baseline trade frequency and average P&L are unknown.
+- Test method and fixed evaluation period/sample: Validate CE/PE milestone math, time-box resets and score thresholds, stop exits, signal weakening, lot-risk behavior, journal fields, and weekly cohort metrics. Review closed paper trades and compare frequency and average P&L with the historical fixed-20% cohort; require at least 10 closed paper option trades before judging performance.
+- Change made: Added the directional 60% option-entry candle-body gate, 10% milestone progression, the agreed strong/weak score lock rules, 5/10-minute windows that restart per milestone, signal-weakening exits, 2-3-lot risk-capped sizing, broker stop ratchets, per-trade exit telemetry, and weekly fixed-20% cohort comparison. Dated 2026-10-02.
+- Results: Focused `test_intraday_manager.py` passed (`47 passed`), followed by the full suite (`147 passed`). Changed Python files have no Pylance errors; changed entry and position APIs have compatible call sites; both Kite configs parse and `git diff --check` passes. Paper-market performance remains unmeasured.
+- Decision: Run only under the existing paper-trading configuration; do not infer profitability or enable live orders from the change alone.
+- Rollback: Restore the previous option target/trailing logic and the corresponding option sizing and journal/report changes as a single change.
+- Follow-up: Inspect Friday's tagged trade frequency, average realized P&L, milestone, hold duration, and exit reason against the fixed-20% cohort; classify results as inconclusive if the sample is small or not comparable.

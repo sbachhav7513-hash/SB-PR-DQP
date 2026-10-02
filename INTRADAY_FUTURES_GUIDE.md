@@ -133,6 +133,27 @@ premium. `paper_trading_enabled` should remain `true` until this flow has been
 validated with your account and broker settings. A signal can still be HOLD,
 so this mode does not guarantee a trade every day.
 
+With `staged_option_targets_enabled`, option entries retain the existing
+direction, score, context, and contract-quality gates, and add a momentum gate:
+the latest underlying signal candle must close in the signal direction with
+its body covering at least 60% of its high-low range. The bot targets
+successive 10% premium milestones: at +10% the stop moves to
+breakeven for strong scores (82+), at +20% it locks +10%, and each later
+milestone advances the lock by another 10%. Valid but weaker scores tighten
+each lock by an additional 5 percentage points. The per-milestone decision
+window is 10 minutes for a strong entry score and 5 minutes otherwise; it
+restarts after each milestone. A weak score below the entry floor or an
+opposite directional signal closes the trade. The independent 15:15 forced
+exit remains in effect.
+
+Option sizing targets two lots and allows up to three only within the existing
+per-trade risk budget; if two lots exceed that budget, the entry is skipped.
+Friday's weekly report separates tagged tiered exits from historical option
+trades without an exit-strategy tag (treated as the fixed-20% baseline), and
+shows entry frequency plus average realized P&L per closed trade. These
+historical cohorts are observational, not a matched replay or evidence of an
+edge.
+
 ### 3. Key Parameters
 
 | Parameter | Default | Range | Notes |

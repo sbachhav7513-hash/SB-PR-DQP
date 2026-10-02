@@ -652,6 +652,40 @@ class KiteMarketStream:
         )
         return str(order_id)
 
+    def modify_protective_stop_order(
+        self,
+        symbol: str,
+        position_side: str,
+        order_id: str,
+        trigger_price: float,
+    ) -> None:
+        """Move an existing broker-side stop to a newly ratcheted trigger."""
+        if position_side not in {"BUY", "SELL"}:
+            raise ValueError(f"Unsupported position side: {position_side}")
+        if trigger_price <= 0:
+            raise ValueError("Protective stop trigger price must be positive")
+
+        tick_size = self.contract_tick_sizes.get(symbol, 0.05)
+        if position_side == "BUY":
+            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
+        else:
+            trigger_price = math.ceil(trigger_price / tick_size - 1e-9) * tick_size
+        trigger_price = round(trigger_price, 10)
+        if trigger_price <= 0:
+            raise ValueError("Rounded protective stop trigger price must be positive")
+
+        self.kite.modify_order(
+            variety=self.kite.VARIETY_REGULAR,
+            order_id=str(order_id),
+            trigger_price=float(trigger_price),
+        )
+        logger.info(
+            "Kite protective stop modified: id=%s symbol=%s trigger=%.2f",
+            order_id,
+            symbol,
+            trigger_price,
+        )
+
     def get_positions(self) -> List[Dict[str, Any]]:
         """Return broker net positions, raising when the broker cannot be queried."""
         response = self.kite.positions()

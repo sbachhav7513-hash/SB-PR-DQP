@@ -129,6 +129,21 @@ Outcome / follow-up / rollback:
 - Validation and result: Focused intraday suite passed (`36 passed`); `kite_main.py` compiled; both Kite configs parsed.
 - Outcome / follow-up / rollback: Performance is unmeasured. Roll back by restoring `option_premium_target_pct` to `0.40` and the code fallback to `0.40`.
 
+#### DLY-2026-10-02-01
+
+- Reason: Replace the option premium's flat 20% initial target and distance-based trailing behavior with milestone profit-booking, explicit short-window exits, and Friday-review telemetry.
+- Decisions fixed before coding: M1 +10% moves the strong-signal stop to breakeven; M2 +20% locks +10%; later locks advance by +10%. Existing 0-100 score is used; scores below 82 tighten locks by another 5 percentage points. Strong entries (score >=82) use 10-minute per-milestone windows; otherwise 5 minutes, restarting at each milestone. Retain entry direction and score/confirmation filters, and additionally require the latest underlying signal candle to match the signal direction with body/range >=60%. Target two lots and allow up to three only within the configured risk budget; skip if two lots exceed risk.
+- Files:
+  - `market_bot/intraday_manager.py` (modified): Add score-scaled milestone stops and per-milestone time-box state.
+  - `market_bot/kite_main.py` (modified): Gate option entries on directional candle momentum, and wire signal weakening, risk-capped lot sizing, immediate time-box exits, journal telemetry, and live protective-stop ratchets; retain the 15:15 forced exit.
+  - `market_bot/kite_provider.py` (modified): Modify existing broker protective-stop orders at milestone advances.
+  - `market_bot/trade_journal.py` and `market_bot/weekly_report.py` (modified): Persist per-trade milestone/exit/holding fields and report frequency and average P&L by option exit cohort.
+  - `kite_config.json` and `kite_config.example.json` (modified): Record agreed milestone, window, score, and lot settings.
+  - `tests/test_intraday_manager.py`, `tests/test_kite_provider.py`, and `tests/test_paper_reporting.py` (modified): Cover candle momentum, milestone, timer, signal, sizing, broker-stop, and comparison behavior.
+  - `INTRADAY_FUTURES_GUIDE.md` and `STRATEGY_CHANGELOG.md` (modified): Document operation and the unmeasured paper experiment.
+- Baseline and outcome: No comparable options-only fixed-20% baseline exists in the workspace. The report groups historical option trades without an exit-strategy tag as the fixed-20% cohort; this is observational, not a matched replay. Focused `test_intraday_manager.py` passed (`47 passed`), the full suite passed (`147 passed`), Pylance found no errors in changed Python files, both Kite configs parsed, and `git diff --check` passed. Performance remains unmeasured pending paper trades.
+- Rollback: Restore the prior option exit implementation and revert the associated sizing, journal, report, configuration, tests, and documentation changes together.
+
 #### DLY-2026-09-30-07
 
 - Reason: Deployment review found the paper/live option BUY path referenced an undefined `premium`, causing every option BUY entry to fail before position sizing.

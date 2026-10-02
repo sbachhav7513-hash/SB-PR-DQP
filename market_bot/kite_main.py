@@ -43,6 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
+OPTION_MIN_CANDLE_BODY_RATIO = 0.60
 
 
 def _aligned_option_volume_history(
@@ -96,12 +97,97 @@ class KiteTradingBot:
     def _options_enabled(self) -> bool:
         return self.config.get("trading_mode") in {"intraday_options", "intraday_both"}
 
-    def _option_target_increment(self, score: int) -> float:
-        """Return the next profit extension as a fraction of entry price."""
-        strong_score = int(self.config.get("strong_signal_score", 82))
-        if score >= strong_score:
-            return float(self.config.get("strong_option_next_target_pct", 0.20))
-        return float(self.config.get("normal_option_next_target_pct", 0.10))
+    def _option_target_increment(self) -> float:
+        """Return the fixed option-premium milestone size as a fraction."""
+        return float(self.config.get("option_milestone_pct", 0.10))
+
+    def _staged_option_targets_enabled(self, symbol: str) -> bool:
+        return (
+            self._options_enabled()
+            and "_" in symbol
+            and self.config.get("staged_option_targets_enabled", True)
+        )
+
+    def _option_entry_target_pct(self, staged_targets_enabled: bool) -> float:
+        if staged_targets_enabled:
+            return float(self.config.get("option_milestone_pct", 0.10))
+        return float(self.config.get("option_premium_target_pct", 0.20))
+
+    @staticmethod
+    def _has_option_candle_momentum(signal: str, candle: Dict) -> bool:
+        """Require a directional candle body covering at least 60% of its range."""
+        try:
+            candle_open = float(candle["open"])
+            candle_high = float(candle["high"])
+            candle_low = float(candle["low"])
+            candle_close = float(candle["close"])
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        values = (candle_open, candle_high, candle_low, candle_close)
+        if not all(math.isfinite(value) for value in values):
+            return False
+
+        candle_range = candle_high - candle_low
+        if (
+            candle_range <= 0
+            or candle_high < max(candle_open, candle_close)
+            or candle_low > min(candle_open, candle_close)
+        ):
+            return False
+
+        direction_matches = (
+            candle_close > candle_open
+            if signal == "BUY"
+            else candle_close < candle_open
+            if signal == "SELL"
+            else False
+        )
+        body_ratio = abs(candle_close - candle_open) / candle_range
+        return direction_matches and body_ratio >= OPTION_MIN_CANDLE_BODY_RATIO
+
+    def _calculate_option_quantity(
+        self, symbol: str, premium: float, premium_stop_pct: float
+    ) -> int:
+        risk_sized_quantity = self.intraday_manager.calculate_option_size(
+            symbol,
+            premium=max(premium, 0.01),
+            max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
+            premium_stop_pct=premium_stop_pct,
+            allow_paper_lot=False,
+        )
+        lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
+        minimum_lots = int(self.config.get("option_min_lots", 2))
+        maximum_lots = int(self.config.get("option_max_lots", 3))
+        if lot_size <= 0 or minimum_lots < 1 or maximum_lots < minimum_lots:
+            raise ValueError("Option lot sizing requires valid lot bounds and contract specs")
+
+        risk_sized_lots = risk_sized_quantity // lot_size
+        if risk_sized_lots < minimum_lots:
+            return 0
+        return min(risk_sized_lots, maximum_lots) * lot_size
+
+    def _option_quantity_within_lot_bounds(self, symbol: str, quantity: int) -> bool:
+        lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
+        minimum_lots = int(self.config.get("option_min_lots", 2))
+        maximum_lots = int(self.config.get("option_max_lots", 3))
+        return (
+            lot_size > 0
+            and quantity > 0
+            and quantity % lot_size == 0
+            and minimum_lots <= quantity // lot_size <= maximum_lots
+        )
+
+    @staticmethod
+    def _journal_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning("Ignoring invalid journal timestamp %r", value)
+            return None
+        return timestamp.replace(tzinfo=IST) if timestamp.tzinfo is None else timestamp.astimezone(IST)
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
@@ -259,13 +345,17 @@ class KiteTradingBot:
             trading_symbol: symbol
             for symbol, trading_symbol in self.kite_stream.contract_symbols.items()
         }
-        broker_positions = {
-            broker_symbol_map.get(
-                row.get("tradingsymbol", ""), row.get("tradingsymbol", "")
-            ): row
-            for row in positions
-            if int(row.get("quantity", 0) or 0) != 0
-        }
+        broker_positions = {}
+        for row in positions:
+            if int(row.get("quantity", 0) or 0) == 0:
+                continue
+            broker_symbol = row.get("tradingsymbol")
+            if not isinstance(broker_symbol, str) or not broker_symbol:
+                raise RuntimeError(
+                    "Broker returned an open position without a trading symbol"
+                )
+            symbol = broker_symbol_map.get(broker_symbol, broker_symbol)
+            broker_positions[symbol] = row
         open_trades = {
             trade.get("ticker"): trade
             for trade in self.trade_journal.read_trades()
@@ -297,10 +387,78 @@ class KiteTradingBot:
                     f"Open trade {symbol} exceeds the per-trade risk cap: "
                     f"{estimated_risk:.2f} > {self.intraday_manager.max_risk_per_trade:.2f}"
                 )
+            entry_score = (
+                int(trade["score"]) if trade.get("score") is not None else None
+            )
             self.intraday_manager.register_position(
                 symbol, direction, quantity, entry_price, stop_loss, take_profit,
-                signal_score=trade.get("score"),
+                signal_score=entry_score,
             )
+            position = self.intraday_manager.active_positions[symbol]
+            current_score_value = trade.get("current_signal_score")
+            if current_score_value is None:
+                current_score_value = entry_score
+            decision_window = trade.get("decision_window_minutes")
+            if decision_window is None:
+                strong_threshold = int(self.config.get("strong_signal_score", 82))
+                decision_window = (
+                    self.config.get("strong_option_milestone_window_minutes", 10)
+                    if entry_score is not None and entry_score >= strong_threshold
+                    else self.config.get("option_milestone_window_minutes", 5)
+                )
+            position.update(
+                {
+                    "current_signal_score": (
+                        int(current_score_value)
+                        if current_score_value is not None
+                        else None
+                    ),
+                    "staged_targets_enabled": (
+                        trade.get("exit_strategy") == "tiered_milestone"
+                    ),
+                    "target_increment_pct": float(
+                        trade.get(
+                            "option_milestone_pct",
+                            self.config.get("option_milestone_pct", 0.10),
+                        )
+                    ),
+                    "minimum_signal_score": (
+                        int(trade["minimum_signal_score"])
+                        if trade.get("minimum_signal_score") is not None
+                        else None
+                    ),
+                    "strong_signal_score": int(
+                        self.config.get("strong_signal_score", 82)
+                    ),
+                    "weak_signal_lockin_pct": float(
+                        self.config.get("option_weak_signal_lockin_pct", 0.05)
+                    ),
+                    "milestone_window_minutes": int(
+                        self.config.get("option_milestone_window_minutes", 5)
+                    ),
+                    "strong_milestone_window_minutes": int(
+                        self.config.get("strong_option_milestone_window_minutes", 10)
+                    ),
+                    "decision_window_minutes": int(decision_window),
+                    "target_stage": int(trade.get("target_stage", 0) or 0),
+                    "milestone_reached_pct": float(
+                        trade.get("milestone_reached_pct", 0.0) or 0.0
+                    ),
+                    "trailing_stop": (
+                        float(trade["trailing_stop"])
+                        if trade.get("trailing_stop") is not None
+                        else None
+                    ),
+                }
+            )
+            journal_entry_time = self._journal_datetime(trade.get("entry_time"))
+            if journal_entry_time:
+                position["entry_time"] = journal_entry_time
+            journal_milestone_time = self._journal_datetime(
+                trade.get("milestone_started_at")
+            )
+            if journal_milestone_time:
+                position["milestone_started_at"] = journal_milestone_time
             if trade.get("protection_order_id"):
                 self.intraday_manager.active_positions[symbol]["protection_order_id"] = (
                     trade["protection_order_id"]
@@ -753,6 +911,28 @@ class KiteTradingBot:
             "; ".join(market_score.reasons) or "none",
         )
 
+        active_positions = getattr(self.intraday_manager, "active_positions", None)
+        if (
+            self._options_enabled()
+            and symbol.endswith(("_CE", "_PE"))
+            and isinstance(active_positions, dict)
+            and symbol in active_positions
+        ):
+            position = active_positions[symbol]
+            minimum_signal_score = int(
+                position.get(
+                    "minimum_signal_score",
+                    self.accuracy_filters.min_score_floor,
+                )
+            )
+            self._check_option_signal_health(
+                symbol,
+                market_score.signal,
+                market_score.score,
+                minimum_signal_score,
+                price=self.latest_prices.get(symbol, bar.close),
+            )
+
         if session_state == "BEFORE_OPEN":
             logger.info(
                 "[%s] pre-market analysis: score=%s signal=%s (no orders until regular session)",
@@ -842,6 +1022,24 @@ class KiteTradingBot:
                 )
                 return
 
+            if not self._has_option_candle_momentum(
+                market_score.signal, signal_bars[-1].to_dict()
+            ):
+                logger.info(
+                    "[%s] Option entry rejected: signal candle lacks directional momentum",
+                    symbol,
+                )
+                self._record_decision(
+                    symbol,
+                    bar,
+                    bars,
+                    market_score,
+                    market_score.signal,
+                    "OPTION_FILTER_WEAK_CANDLE_MOMENTUM",
+                    news_context,
+                )
+                return
+
             allowed, option_reason = self._option_quality_gate(
                 symbol,
                 market_score.signal,
@@ -871,6 +1069,14 @@ class KiteTradingBot:
             )
             current_time = time.time()
             now = datetime.now(IST)
+            entry_min_score = self._adaptive_paper_min_entry_score(
+                getattr(market_score, "strategy_variant", None)
+            )
+            position_minimum_score = (
+                entry_min_score
+                if entry_min_score is not None
+                else self.accuracy_filters.min_score_floor
+            )
             allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
                 symbol=symbol,
                 signal=market_score.signal,
@@ -881,9 +1087,7 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
-                min_score=self._adaptive_paper_min_entry_score(
-                    getattr(market_score, "strategy_variant", None)
-                ),
+                min_score=entry_min_score,
             )
             if not allowed:
                 logger.info(
@@ -911,6 +1115,7 @@ class KiteTradingBot:
                 bar.close,
                 market_score.score,
                 strategy_variant=market_score.strategy_variant,
+                minimum_signal_score=position_minimum_score,
             )
         elif trade_action == "SELL":
             outcome = self._handle_sell_signal(
@@ -918,6 +1123,7 @@ class KiteTradingBot:
                 bar.close,
                 market_score.score,
                 strategy_variant=market_score.strategy_variant,
+                minimum_signal_score=position_minimum_score,
             )
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
@@ -959,15 +1165,23 @@ class KiteTradingBot:
 
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
         if position.get("target_advanced"):
-            self._publish_target_update(symbol, position, trailing_stop)
+            if not self._publish_target_update(symbol, position, trailing_stop):
+                self._close_position(symbol, price, "TRAILING_STOP_UPDATE_FAILED")
+                return "TRAILING_STOP_UPDATE_FAILED"
 
         if position["direction"] == "BUY":
             if price <= position["stop_loss"]:
                 reason = "STOP_LOSS"
             elif trailing_stop is not None and price <= trailing_stop:
                 reason = "TRAILING_STOP"
-            elif not self.intraday_manager.trailing_enabled and price >= position["take_profit"]:
+            elif (
+                not self.intraday_manager.trailing_enabled
+                and not position.get("staged_targets_enabled")
+                and price >= position["take_profit"]
+            ):
                 reason = "TAKE_PROFIT"
+            elif self.intraday_manager.milestone_timebox_expired(symbol):
+                reason = "TIME_BOX"
             else:
                 return None
         else:
@@ -975,12 +1189,42 @@ class KiteTradingBot:
                 reason = "STOP_LOSS"
             elif trailing_stop is not None and price >= trailing_stop:
                 reason = "TRAILING_STOP"
-            elif not self.intraday_manager.trailing_enabled and price <= position["take_profit"]:
+            elif (
+                not self.intraday_manager.trailing_enabled
+                and not position.get("staged_targets_enabled")
+                and price <= position["take_profit"]
+            ):
                 reason = "TAKE_PROFIT"
+            elif self.intraday_manager.milestone_timebox_expired(symbol):
+                reason = "TIME_BOX"
             else:
                 return None
 
         self._close_position(symbol, price, reason)
+        return reason
+
+    def _check_option_signal_health(
+        self,
+        symbol: str,
+        signal: str,
+        score: int,
+        minimum_signal_score: int,
+        price: float,
+    ) -> Optional[str]:
+        position = self.intraday_manager.active_positions.get(symbol)
+        if not position or not position.get("staged_targets_enabled"):
+            return None
+
+        position["current_signal_score"] = int(score)
+        expected_signal = "BUY" if symbol.endswith("_CE") else "SELL"
+        reason = None
+        if int(score) < minimum_signal_score:
+            reason = "SIGNAL_WEAKEN"
+        elif signal in {"BUY", "SELL"} and signal != expected_signal:
+            reason = "SIGNAL_WEAKEN"
+
+        if reason:
+            self._close_position(symbol, price, reason)
         return reason
 
     def _live_entry_allowed(self, symbol: str) -> bool:
@@ -1042,13 +1286,40 @@ class KiteTradingBot:
 
     def _publish_target_update(
         self, symbol: str, position: dict, trailing_stop: Optional[float]
-    ) -> None:
+    ) -> bool:
         """Persist and announce each staged target advance once."""
         action = position["direction"]
+        if getattr(self, "live_orders_enabled", False):
+            protection_order_id = position.get("protection_order_id")
+            if not protection_order_id or trailing_stop is None:
+                logger.error("[%s] Cannot ratchet a missing protective stop", symbol)
+                self.telegram_notifier.send_message(
+                    f"URGENT: {symbol} reached a profit milestone but has no modifiable protective stop."
+                )
+                return False
+            try:
+                self.kite_stream.modify_protective_stop_order(
+                    symbol,
+                    action,
+                    str(protection_order_id),
+                    float(trailing_stop),
+                )
+            except Exception:
+                logger.exception("[%s] Could not move broker protective stop", symbol)
+                self.telegram_notifier.send_message(
+                    f"URGENT: failed to move {symbol} protective stop after a milestone; "
+                    "attempting an immediate market exit."
+                )
+                return False
+
         fields = {
             "take_profit": position["take_profit"],
             "target_stage": position["target_stage"],
+            "milestone_reached_pct": position["milestone_reached_pct"],
+            "milestone_started_at": position["milestone_started_at"].isoformat(),
             "trailing_stop": trailing_stop,
+            "current_signal_score": position.get("current_signal_score"),
+            "decision_window_minutes": position["decision_window_minutes"],
             "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
         }
         self.trade_journal.update_open_trade(symbol, fields, action)
@@ -1059,6 +1330,7 @@ class KiteTradingBot:
             f"Next target: {position['take_profit']:.2f}\n"
             f"Trailing stop: {trailing_text}"
         )
+        return True
 
     def _close_position(self, symbol: str, price: float, reason: str) -> None:
         position = self.intraday_manager.active_positions.get(symbol)
@@ -1134,7 +1406,29 @@ class KiteTradingBot:
                     "pnl_points": exit_info["pnl_points"],
                     "pnl_rupees": exit_info["pnl_rupees"],
                     "duration_seconds": exit_info["duration"],
+                    "holding_time_seconds": exit_info["duration"],
                     "quantity": exit_info["quantity"],
+                    "target_stage": position.get("target_stage", 0) if position else 0,
+                    "milestone_reached_pct": (
+                        position.get("milestone_reached_pct", 0.0) if position else 0.0
+                    ),
+                    "exit_reason_category": self._exit_reason_category(reason),
+                    "exit_strategy": (
+                        "tiered_milestone"
+                        if position and position.get("staged_targets_enabled")
+                        else (
+                            (trade or {}).get("exit_strategy")
+                            or (
+                                "fixed_20pct"
+                                if self._options_enabled() and "_" in symbol
+                                else None
+                            )
+                        )
+                    ),
+                    "score": position.get("signal_score") if position else None,
+                    "current_signal_score": (
+                        position.get("current_signal_score") if position else None
+                    ),
                 },
                 action,
             )
@@ -1154,6 +1448,16 @@ class KiteTradingBot:
         )
         logger.info(self.telegram_notifier.build_message(close_alert))
         self.telegram_notifier.send_trade_alert(close_alert)
+
+    @staticmethod
+    def _exit_reason_category(reason: str) -> str:
+        if reason in {"STOP_LOSS", "TRAILING_STOP"}:
+            return "SL"
+        if reason == "MARKET_CLOSE_FORCED_EXIT":
+            return "EOD"
+        if reason in {"TIME_BOX", "SIGNAL_WEAKEN"}:
+            return reason
+        return reason
 
     def _promote_paper_shadow_signal(self, market_score) -> bool:
         """Promote a validated shadow candidate only for opted-in paper trading."""
@@ -1293,6 +1597,7 @@ class KiteTradingBot:
         price: float,
         score: int,
         strategy_variant: Optional[str] = None,
+        minimum_signal_score: Optional[int] = None,
     ) -> str:
         """Handle a BUY signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
@@ -1314,18 +1619,17 @@ class KiteTradingBot:
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
+            staged_option_targets = self._staged_option_targets_enabled(symbol)
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
-                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.20))
+                premium_target_pct = self._option_entry_target_pct(
+                    staged_option_targets
+                )
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
                 take_profit = price * (1.0 + premium_target_pct)
-                quantity = self.intraday_manager.calculate_option_size(
-                    symbol,
-                    premium=max(premium, 0.01),
-                    max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
-                    premium_stop_pct=premium_stop_pct,
-                    allow_paper_lot=False,
+                quantity = self._calculate_option_quantity(
+                    symbol, premium, premium_stop_pct
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -1382,12 +1686,23 @@ class KiteTradingBot:
                 stop_loss,
                 take_profit,
                 signal_score=score,
-                staged_targets_enabled=(
-                    self._options_enabled()
-                    and "_" in symbol
-                    and self.config.get("staged_option_targets_enabled", True)
+                staged_targets_enabled=staged_option_targets,
+                target_increment_pct=self._option_target_increment(),
+                minimum_signal_score=(
+                    minimum_signal_score
+                    if minimum_signal_score is not None
+                    else int(self.config.get("min_entry_score", 70))
                 ),
-                target_increment_pct=self._option_target_increment(score),
+                strong_signal_score=int(self.config.get("strong_signal_score", 82)),
+                weak_signal_lockin_pct=float(
+                    self.config.get("option_weak_signal_lockin_pct", 0.05)
+                ),
+                milestone_window_minutes=int(
+                    self.config.get("option_milestone_window_minutes", 5)
+                ),
+                strong_milestone_window_minutes=int(
+                    self.config.get("strong_option_milestone_window_minutes", 10)
+                ),
             )
             self.intraday_manager.record_trade_open(symbol, "BUY")
             if self.live_orders_enabled and not self._place_protective_stop(
@@ -1395,6 +1710,14 @@ class KiteTradingBot:
             ):
                 self._abort_live_entry(symbol, price, "PROTECTION_FAILED")
                 return "protective_stop_failed"
+            if (
+                self.live_orders_enabled
+                and self._options_enabled()
+                and "_" in symbol
+                and not self._option_quantity_within_lot_bounds(symbol, quantity)
+            ):
+                self._abort_live_entry(symbol, price, "OPTION_FILL_OUTSIDE_LOT_BOUNDS")
+                return "option_fill_outside_lot_bounds"
             if (
                 self.live_orders_enabled
                 and self.intraday_manager.estimate_trade_risk(
@@ -1425,6 +1748,23 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            if staged_option_targets:
+                position = self.intraday_manager.active_positions[symbol]
+                alert.update(
+                    {
+                        "exit_strategy": "tiered_milestone",
+                        "option_milestone_pct": position["target_increment_pct"],
+                        "target_stage": position["target_stage"],
+                        "milestone_reached_pct": position["milestone_reached_pct"],
+                        "milestone_started_at": position["milestone_started_at"].isoformat(),
+                        "entry_time": position["entry_time"].isoformat(),
+                        "minimum_signal_score": position["minimum_signal_score"],
+                        "decision_window_minutes": position["decision_window_minutes"],
+                        "current_signal_score": position["current_signal_score"],
+                    }
+                )
+            elif self._options_enabled() and "_" in symbol:
+                alert["exit_strategy"] = "fixed_20pct"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(
@@ -1452,6 +1792,7 @@ class KiteTradingBot:
         price: float,
         score: int,
         strategy_variant: Optional[str] = None,
+        minimum_signal_score: Optional[int] = None,
     ) -> str:
         """Handle a SELL signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "SELL")
@@ -1473,18 +1814,17 @@ class KiteTradingBot:
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
+            staged_option_targets = self._staged_option_targets_enabled(symbol)
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
-                premium_target_pct = float(self.config.get("option_premium_target_pct", 0.20))
+                premium_target_pct = self._option_entry_target_pct(
+                    staged_option_targets
+                )
                 premium = float(self.latest_prices.get(symbol, price))
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
                 take_profit = max(price * (1.0 - premium_target_pct), 0.01)
-                quantity = self.intraday_manager.calculate_option_size(
-                    symbol,
-                    premium=max(premium, 0.01),
-                    max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
-                    premium_stop_pct=premium_stop_pct,
-                    allow_paper_lot=False,
+                quantity = self._calculate_option_quantity(
+                    symbol, premium, premium_stop_pct
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -1541,12 +1881,23 @@ class KiteTradingBot:
                 stop_loss,
                 take_profit,
                 signal_score=score,
-                staged_targets_enabled=(
-                    self._options_enabled()
-                    and "_" in symbol
-                    and self.config.get("staged_option_targets_enabled", True)
+                staged_targets_enabled=staged_option_targets,
+                target_increment_pct=self._option_target_increment(),
+                minimum_signal_score=(
+                    minimum_signal_score
+                    if minimum_signal_score is not None
+                    else int(self.config.get("min_entry_score", 70))
                 ),
-                target_increment_pct=self._option_target_increment(score),
+                strong_signal_score=int(self.config.get("strong_signal_score", 82)),
+                weak_signal_lockin_pct=float(
+                    self.config.get("option_weak_signal_lockin_pct", 0.05)
+                ),
+                milestone_window_minutes=int(
+                    self.config.get("option_milestone_window_minutes", 5)
+                ),
+                strong_milestone_window_minutes=int(
+                    self.config.get("strong_option_milestone_window_minutes", 10)
+                ),
             )
             self.intraday_manager.record_trade_open(symbol, "SELL")
             if self.live_orders_enabled and not self._place_protective_stop(
@@ -1554,6 +1905,14 @@ class KiteTradingBot:
             ):
                 self._abort_live_entry(symbol, price, "PROTECTION_FAILED")
                 return "protective_stop_failed"
+            if (
+                self.live_orders_enabled
+                and self._options_enabled()
+                and "_" in symbol
+                and not self._option_quantity_within_lot_bounds(symbol, quantity)
+            ):
+                self._abort_live_entry(symbol, price, "OPTION_FILL_OUTSIDE_LOT_BOUNDS")
+                return "option_fill_outside_lot_bounds"
             if (
                 self.live_orders_enabled
                 and self.intraday_manager.estimate_trade_risk(
@@ -1584,6 +1943,23 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            if staged_option_targets:
+                position = self.intraday_manager.active_positions[symbol]
+                alert.update(
+                    {
+                        "exit_strategy": "tiered_milestone",
+                        "option_milestone_pct": position["target_increment_pct"],
+                        "target_stage": position["target_stage"],
+                        "milestone_reached_pct": position["milestone_reached_pct"],
+                        "milestone_started_at": position["milestone_started_at"].isoformat(),
+                        "entry_time": position["entry_time"].isoformat(),
+                        "minimum_signal_score": position["minimum_signal_score"],
+                        "decision_window_minutes": position["decision_window_minutes"],
+                        "current_signal_score": position["current_signal_score"],
+                    }
+                )
+            elif self._options_enabled() and "_" in symbol:
+                alert["exit_strategy"] = "fixed_20pct"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(

@@ -1,11 +1,13 @@
 from datetime import date, datetime
 from datetime import timezone
+import json
 
 import pandas as pd
 from fastparquet import ParquetFile
 
 from market_bot.trade_journal import DecisionJournal, PaperTradingRecorder, TradeJournal
 from market_bot.weekly_report import (
+    build_weekly_report,
     write_daily_review,
     write_daily_summary,
     write_weekly_review,
@@ -118,12 +120,71 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert review.name == "daily_review.md"
     assert "Closed trades: 1" in content
     assert "Net P&L: -10.00" in content
-    assert "| NIFTY | BUY | trend_shadow_paper | 60 | -10.00 | STOP_LOSS |" in content
+    assert (
+        "| NIFTY | BUY | trend_shadow_paper | 60 | N/A | N/A | -10.00 | STOP_LOSS |"
+        in content
+    )
     assert "accuracy_filter: 1" in content
     assert "accuracy_filter_rejected:volatility: 1" in content
     assert "Sideways regime: 1" in content
     assert "Directional candidates: 1" in content
     assert "confirmation: 1" in content
+
+
+def test_weekly_report_compares_tiered_option_exits_to_legacy_fixed_target(tmp_path):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    trades_path = tmp_path / "trades.jsonl"
+    trades_path.write_text(
+        "\n".join(
+            json.dumps(trade)
+            for trade in (
+                {
+                    "timestamp": timestamp,
+                    "ticker": "NIFTY_CE",
+                    "action": "BUY",
+                    "status": "closed",
+                    "pnl": 10.0,
+                },
+                {
+                    "timestamp": timestamp,
+                    "ticker": "NIFTY_PE",
+                    "action": "BUY",
+                    "status": "closed",
+                    "pnl_rupees": 30.0,
+                    "pnl": 20.0,
+                    "exit_strategy": "tiered_milestone",
+                },
+                {
+                    "timestamp": timestamp,
+                    "ticker": "BANKNIFTY_CE",
+                    "action": "BUY",
+                    "status": "open",
+                    "pnl": 0.0,
+                    "exit_strategy": "tiered_milestone",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_weekly_report(str(tmp_path), days=7)
+
+    assert report["option_exit_comparison"]["fixed_20pct_baseline"][
+        "closed_trades"
+    ] == 1
+    assert report["option_exit_comparison"]["fixed_20pct_baseline"][
+        "trade_entries"
+    ] == 1
+    assert report["option_exit_comparison"]["fixed_20pct_baseline"][
+        "average_pnl_per_trade"
+    ] == 10.0
+    assert report["option_exit_comparison"]["tiered_milestone"][
+        "average_pnl_per_trade"
+    ] == 30.0
+    assert report["option_exit_comparison"]["tiered_milestone"][
+        "trade_entries"
+    ] == 2
 
 
 def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatch):

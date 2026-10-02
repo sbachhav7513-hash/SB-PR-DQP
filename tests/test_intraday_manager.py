@@ -47,7 +47,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     bot.live_orders_enabled = False
     bot.paper_trading_enabled = True
     bot.intraday_manager = IntradayManager()
-    bot.intraday_manager.calculate_option_size = Mock(return_value=1)
+    bot.intraday_manager.calculate_option_size = Mock(return_value=2)
     bot.trade_journal = Mock()
     bot.trade_journal.get_open_trade.return_value = None
     bot.telegram_notifier = Mock()
@@ -460,19 +460,19 @@ def test_staged_buy_target_advances_by_configured_increment():
         1,
         100.0,
         80.0,
-        140.0,
-        signal_score=78,
+        110.0,
+        signal_score=85,
         staged_targets_enabled=True,
         target_increment_pct=0.10,
     )
 
-    manager.update_trailing_stop("NIFTY_CE", 140.0)
+    manager.update_trailing_stop("NIFTY_CE", 110.0)
     position = manager.active_positions["NIFTY_CE"]
 
     assert position["target_stage"] == 1
-    assert position["take_profit"] == 150.0
-    assert position["trailing_stop"] == 130.0
-    assert position["signal_score"] == 78
+    assert position["take_profit"] == 120.0
+    assert position["trailing_stop"] == 100.0
+    assert position["signal_score"] == 85
 
 
 def test_staged_sell_target_advances_by_configured_increment():
@@ -483,18 +483,163 @@ def test_staged_sell_target_advances_by_configured_increment():
         1,
         100.0,
         120.0,
-        60.0,
+        90.0,
         signal_score=85,
         staged_targets_enabled=True,
-        target_increment_pct=0.20,
+        target_increment_pct=0.10,
     )
 
-    manager.update_trailing_stop("NIFTY_PE", 60.0)
+    manager.update_trailing_stop("NIFTY_PE", 90.0)
     position = manager.active_positions["NIFTY_PE"]
 
     assert position["target_stage"] == 1
-    assert position["take_profit"] == 40.0
-    assert position["trailing_stop"] == 70.0
+    assert position["take_profit"] == 80.0
+    assert position["trailing_stop"] == 100.0
+
+
+def test_milestone_stop_locks_more_when_entry_signal_is_weaker():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=78,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+        strong_signal_score=82,
+    )
+
+    assert manager.update_trailing_stop("NIFTY_CE", 110.0) == 105.0
+    assert manager.update_trailing_stop("NIFTY_CE", 120.0) == 115.0
+
+
+def test_milestone_timebox_uses_entry_score_and_restarts_after_milestone():
+    manager = IntradayManager()
+    entered_at = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=85,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+        entry_time=entered_at,
+        milestone_started_at=entered_at,
+    )
+
+    manager.active_positions["NIFTY_CE"]["current_signal_score"] = 70
+    assert not manager.milestone_timebox_expired(
+        "NIFTY_CE", entered_at.replace(minute=9, second=59)
+    )
+    assert manager.milestone_timebox_expired(
+        "NIFTY_CE", entered_at.replace(minute=10)
+    )
+    manager.update_trailing_stop(
+        "NIFTY_CE", 110.0, now=entered_at.replace(minute=10)
+    )
+    assert not manager.milestone_timebox_expired(
+        "NIFTY_CE", entered_at.replace(minute=19, second=59)
+    )
+    assert manager.milestone_timebox_expired(
+        "NIFTY_CE", entered_at.replace(minute=20)
+    )
+
+
+def test_tick_exit_closes_when_milestone_window_expires():
+    manager = IntradayManager()
+    entered_at = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=78,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+        entry_time=entered_at,
+        milestone_started_at=entered_at,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    with patch("market_bot.intraday_manager.datetime") as clock:
+        clock.now.return_value = entered_at.replace(minute=5)
+        assert bot._check_position_exit("NIFTY_CE", 104.0) == "TIME_BOX"
+
+    bot._close_position.assert_called_once_with("NIFTY_CE", 104.0, "TIME_BOX")
+
+
+def test_option_signal_weakening_closes_at_option_quote():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=80,
+        minimum_signal_score=70,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 108.0) == "SIGNAL_WEAKEN"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 108.0, "SIGNAL_WEAKEN")
+
+
+def test_live_milestone_moves_existing_broker_protective_stop():
+    position = {
+        "direction": "BUY",
+        "take_profit": 120.0,
+        "target_stage": 1,
+        "milestone_reached_pct": 10.0,
+        "milestone_started_at": datetime.now(ZoneInfo("Asia/Kolkata")),
+        "trailing_stop": 100.0,
+        "signal_score": 85,
+        "current_signal_score": 85,
+        "decision_window_minutes": 10,
+        "protection_order_id": "protect-123",
+    }
+    bot = object.__new__(KiteTradingBot)
+    bot.live_orders_enabled = True
+    bot.kite_stream = Mock()
+    bot.trade_journal = Mock()
+    bot.telegram_notifier = Mock()
+
+    assert bot._publish_target_update("NIFTY_CE", position, 100.0) is True
+
+    bot.kite_stream.modify_protective_stop_order.assert_called_once_with(
+        "NIFTY_CE", "BUY", "protect-123", 100.0
+    )
+
+
+def test_option_sizing_requires_two_risk_qualified_lots_and_caps_at_three():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_min_lots": 2, "option_max_lots": 3}
+    bot.intraday_manager = IntradayManager()
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+    bot.intraday_manager.calculate_option_size = Mock(return_value=65)
+
+    assert bot._calculate_option_quantity("NIFTY_CE", 50.0, 0.20) == 0
+    assert not bot._option_quantity_within_lot_bounds("NIFTY_CE", 65)
+    bot.intraday_manager.calculate_option_size.return_value = 5 * 65
+    assert bot._calculate_option_quantity("NIFTY_CE", 50.0, 0.20) == 3 * 65
+    assert bot._option_quantity_within_lot_bounds("NIFTY_CE", 3 * 65)
 
 
 def test_staged_target_does_not_move_back_when_price_retraces():
@@ -505,18 +650,20 @@ def test_staged_target_does_not_move_back_when_price_retraces():
         1,
         100.0,
         80.0,
-        140.0,
+        110.0,
+        signal_score=85,
         staged_targets_enabled=True,
         target_increment_pct=0.10,
     )
 
-    manager.update_trailing_stop("NIFTY_CE", 140.0)
-    manager.update_trailing_stop("NIFTY_CE", 145.0)
-    manager.update_trailing_stop("NIFTY_CE", 135.0)
+    manager.update_trailing_stop("NIFTY_CE", 110.0)
+    manager.update_trailing_stop("NIFTY_CE", 120.0)
+    manager.update_trailing_stop("NIFTY_CE", 115.0)
 
     position = manager.active_positions["NIFTY_CE"]
-    assert position["take_profit"] == 150.0
-    assert position["trailing_stop"] == 135.0
+    assert position["target_stage"] == 2
+    assert position["take_profit"] == 130.0
+    assert position["trailing_stop"] == 110.0
 
 
 def test_target_advance_updates_open_journal_and_telegram(tmp_path):
@@ -527,10 +674,10 @@ def test_target_advance_updates_open_journal_and_telegram(tmp_path):
         1,
         100.0,
         80.0,
-        140.0,
+        110.0,
         signal_score=85,
         staged_targets_enabled=True,
-        target_increment_pct=0.20,
+        target_increment_pct=0.10,
     )
     journal = TradeJournal(str(tmp_path / "trades.jsonl"))
     journal.log_trade(
@@ -549,13 +696,13 @@ def test_target_advance_updates_open_journal_and_telegram(tmp_path):
     bot.telegram_notifier = notifier
     bot._close_position = Mock()
 
-    assert bot._check_position_exit("NIFTY_CE", 140.0) is None
+    assert bot._check_position_exit("NIFTY_CE", 110.0) is None
 
     open_trade = journal.get_open_trade("NIFTY_CE", "BUY")
-    assert open_trade["take_profit"] == 160.0
+    assert open_trade["take_profit"] == 120.0
     assert open_trade["target_stage"] == 1
     notifier.send_message.assert_called_once()
-    assert "Next target: 160.00" in notifier.send_message.call_args.args[0]
+    assert "Next target: 120.00" in notifier.send_message.call_args.args[0]
 
 
 def test_disabling_trailing_keeps_fixed_target_exit():
@@ -646,6 +793,9 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
         Bar(datetime(2026, 9, 24, 10, index), 25000, 25010, 24990, 25000, 100)
         for index in range(30)
     ]
+    underlying_bars[-1] = Bar(
+        datetime(2026, 9, 24, 10, 29), 25000, 25020, 24990, 25020, 100
+    )
     bot.bar_builder = Mock()
     bot.bar_builder.get_bars.side_effect = lambda token, limit: (
         underlying_bars if token == 1 else option_bars
@@ -679,6 +829,42 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
         "history"
     ]
     assert validated_history == [item.to_dict() for item in underlying_bars]
+
+    underlying_bars[-1] = Bar(
+        datetime(2026, 9, 24, 10, 29), 25000, 25010, 24990, 25005, 100
+    )
+    bot._record_decision.reset_mock()
+    bot._option_quality_gate.reset_mock()
+
+    with patch("market_bot.kite_main.market_session_state", return_value="REGULAR_SESSION"), \
+        patch(
+            "market_bot.kite_main.score_market",
+            return_value=SimpleNamespace(signal="BUY", score=80, reasons=[]),
+        ):
+        bot.on_bar_complete("100", option_bars[-1])
+
+    bot._option_quality_gate.assert_not_called()
+    assert bot._record_decision.call_args.args[5] == (
+        "OPTION_FILTER_WEAK_CANDLE_MOMENTUM"
+    )
+
+
+def test_option_candle_momentum_requires_directional_body_to_cover_sixty_percent():
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY", {"open": 100, "high": 110, "low": 90, "close": 105}
+    ) is False
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY", {"open": 100, "high": 110, "low": 90, "close": 95}
+    ) is False
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY", {"open": 100, "high": 120, "low": 90, "close": 120}
+    ) is True
+    assert KiteTradingBot._has_option_candle_momentum(
+        "SELL", {"open": 120, "high": 120, "low": 90, "close": 90}
+    ) is True
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY", {"open": 100, "high": 100, "low": 100, "close": 100}
+    ) is False
 
 
 def test_options_only_underlying_bars_are_context_not_trade_entries():
