@@ -549,12 +549,17 @@ class KiteMarketStream:
             symbol: row["tradingsymbol"]
             for symbol, row in eligible.items()
         }
-        resolved = {
+        resolved_options = {
             symbol: int(row["instrument_token"])
             for symbol, row in eligible.items()
         }
+        resolved = {**underlying_tokens, **resolved_options}
         self.config.instrument_tokens = resolved
-        logger.info("Selected %d ATM NFO option contracts: %s", len(resolved), ", ".join(resolved))
+        logger.info(
+            "Selected %d ATM NFO option contracts: %s",
+            len(resolved_options),
+            ", ".join(resolved_options),
+        )
         return resolved
 
     def place_market_order(self, symbol: str, side: str, quantity: int) -> str:

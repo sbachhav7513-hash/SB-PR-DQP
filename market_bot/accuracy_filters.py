@@ -14,7 +14,7 @@ class AccuracyFilters:
     
     def __init__(
         self,
-        min_entry_score: int = 75,
+        min_entry_score: int = 70,
         min_volatility_pct: float = 0.05,
         max_volatility_pct: float = 5.0,
     ):
@@ -156,14 +156,14 @@ class AccuracyFilters:
         score: int,
         volatility_acceptable: bool,
         confirmation: bool,
-        min_score: int = 75,
+        min_score: int = 70,
     ) -> bool:
         """
         Final gate to decide if we should actually enter trade.
         
         Combines all filters:
         1. Signal type (not HOLD)
-        2. Score threshold (raised from 85 to 90)
+        2. Score threshold (default 70)
         3. Volatility acceptable
         4. Confirmation candle
         

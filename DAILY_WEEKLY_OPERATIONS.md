@@ -62,14 +62,21 @@ Open `kite_config.json` and check:
 
 #### 3. **Start the Bot**
 ```bash
-# Terminal 1: Start Kite bot (intraday futures)
+# Terminal 1: Start Kite bot (intraday options; active config)
 python run_kite_bot.py
 
 # Expected output:
 # 2026-08-12 09:15:00 - Connecting to Zerodha Kite...
-# 2026-08-12 09:15:15 - Connected! Monitoring 16 futures...
+# 2026-08-12 09:15:15 - Connected! Monitoring configured option contracts...
 # 2026-08-12 09:16:00 - Bar complete: NIFTY 1-min
 ```
+
+The active `kite_config.json` is options-only: `trading_mode` is
+`intraday_options`, `futures_underlyings` is empty, and futures discovery is
+disabled. The futures implementation remains available behind the existing
+mode gate for a deliberate future migration back to `intraday_futures`.
+Option paper positions must pass the configured premium stop-risk budget;
+paper mode does not force an oversized minimum lot.
 
 ### VPS systemd setup
 

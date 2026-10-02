@@ -68,7 +68,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
         premium=123.0,
         max_risk_per_trade=bot.intraday_manager.max_risk_per_trade,
         premium_stop_pct=0.20,
-        allow_paper_lot=True,
+        allow_paper_lot=False,
     )
 
 
@@ -133,7 +133,7 @@ def test_shadow_validation_does_not_start_entry_cooldown():
     assert filters.last_entry_time == {}
 
 
-def test_lower_score_floor_is_available_for_paper_shadow_only():
+def test_primary_score_floor_is_70_and_shadow_override_remains_available():
     history = [
         {"high": 101.0, "low": 99.0, "close": 100.0}
         for _ in range(14)
@@ -141,7 +141,7 @@ def test_lower_score_floor_is_available_for_paper_shadow_only():
     validation = {
         "symbol": "NIFTY",
         "signal": "BUY",
-        "score": 60,
+        "score": 70,
         "history": history,
         "current_bar": {"close": 101.0},
         "previous_bar": {"close": 100.0},
@@ -154,12 +154,21 @@ def test_lower_score_floor_is_available_for_paper_shadow_only():
     primary_allowed, primary_reason = AccuracyFilters().validate_entry_with_reason(
         **validation
     )
+    below_floor = {**validation, "score": 69}
+    below_floor_allowed, below_floor_reason = (
+        AccuracyFilters().validate_entry_with_reason(**below_floor)
+    )
+    shadow_validation = {**validation, "score": 60}
     shadow_allowed, shadow_reason = AccuracyFilters().validate_entry_with_reason(
-        **validation, min_score=55
+        **shadow_validation, min_score=55
     )
 
-    assert primary_allowed is False
-    assert primary_reason == "score<75"
+    assert primary_allowed is True
+    assert primary_reason == "OK"
+    assert below_floor_allowed is False
+    assert below_floor_reason == "score<70"
+    assert AccuracyFilters.should_enter_trade("BUY", 70, True, True)
+    assert not AccuracyFilters.should_enter_trade("BUY", 69, True, True)
     assert shadow_allowed is True
     assert shadow_reason == "OK"
 
@@ -580,8 +589,9 @@ def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
 def test_option_volatility_filter_uses_underlying_signal_bars():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "trading_mode": "intraday_both",
+        "trading_mode": "intraday_options",
         "instrument_tokens": {"NIFTY": 1},
+        "options_underlyings": ["NIFTY"],
         "benchmark_symbols": [],
         "late_window_enabled": False,
     }
@@ -626,6 +636,69 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     assert validated_history == [item.to_dict() for item in underlying_bars]
 
 
+def test_options_only_underlying_bars_are_context_not_trade_entries():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "options_underlyings": ["NIFTY"],
+    }
+    bot.symbol_map = {1: "NIFTY"}
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.should_exit_all_positions.return_value = False
+    bot._record_decision = Mock()
+    bar = Bar(datetime(2026, 9, 24, 10, 0), 25000, 25010, 24990, 25000, 100)
+
+    bot.on_bar_complete("1", bar)
+
+    assert bot._record_decision.call_args.args[0] == "NIFTY"
+    assert bot._record_decision.call_args.args[4:] == (
+        "HOLD",
+        "underlying_context_only",
+    )
+
+
+def test_options_only_skips_entry_when_directional_option_leg_is_unavailable():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {"NIFTY": 1, "NIFTY_CE": 100},
+        "benchmark_symbols": [],
+        "late_window_enabled": False,
+    }
+    bot.symbol_map = {100: "NIFTY_CE"}
+    option_bars = [
+        Bar(datetime(2026, 9, 24, 10, index), 100, 101, 99, 100, 10)
+        for index in range(30)
+    ]
+    underlying_bars = [
+        Bar(datetime(2026, 9, 24, 10, index), 25000, 25010, 24990, 25000, 100)
+        for index in range(30)
+    ]
+    bot.bar_builder = Mock()
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
+    )
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.should_exit_all_positions.return_value = False
+    bot.use_market_context = False
+    bot.benchmark_symbol = "NIFTY"
+    bot.news_monitor = None
+    bot.premarkarket_candidates = []
+    bot._record_decision = Mock()
+    bot._handle_sell_signal = Mock()
+    bot.kite_stream = SimpleNamespace(contract_expiries={})
+
+    with patch("market_bot.kite_main.market_session_state", return_value="REGULAR_SESSION"), \
+        patch(
+            "market_bot.kite_main.score_market",
+            return_value=SimpleNamespace(signal="SELL", score=80, reasons=[]),
+        ):
+        bot.on_bar_complete("100", option_bars[-1])
+
+    bot._handle_sell_signal.assert_not_called()
+    assert bot._record_decision.call_args.args[5] == "OPTION_FILTER_LEG_UNAVAILABLE"
+
+
 def test_option_quality_gate_allows_reasonable_low_premium_when_volume_and_oi_are_healthy():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
@@ -643,6 +716,7 @@ def test_option_quality_gate_allows_reasonable_low_premium_when_volume_and_oi_ar
             "volume": 900,
             "oi": 2200,
             "iv": 0.42,
+            "timestamp": datetime.now().astimezone(),
         }
     }
 

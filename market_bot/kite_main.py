@@ -5,6 +5,7 @@ Uses real-time ticks aggregated into bars, with intraday futures optimization.
 
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -153,7 +154,7 @@ class KiteTradingBot:
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
         self.accuracy_filters = AccuracyFilters(
-            min_entry_score=int(self.config.get("min_entry_score", 75)),
+            min_entry_score=int(self.config.get("min_entry_score", 70)),
             min_volatility_pct=float(self.config.get("min_volatility_pct", 0.05)),
             max_volatility_pct=float(self.config.get("max_volatility_pct", 5.0)),
         )
@@ -322,12 +323,7 @@ class KiteTradingBot:
         option_key = f"{underlying.upper()}_{required_type}"
         if option_key in self.config.get("instrument_tokens", {}):
             return option_key
-        fallback = (
-            f"{underlying.upper()}_PE"
-            if required_type == "CE"
-            else f"{underlying.upper()}_CE"
-        )
-        return fallback if fallback in self.config.get("instrument_tokens", {}) else None
+        return None
 
     def _option_leg_is_active(self, symbol: str, signal: str) -> bool:
         """Only allow the preferred option leg to trade for a given underlying."""
@@ -337,9 +333,7 @@ class KiteTradingBot:
             return True
         underlying = symbol.rsplit("_", 1)[0].upper()
         preferred = self._preferred_option_symbol(underlying, signal)
-        if preferred is None:
-            return True
-        return symbol == preferred
+        return preferred is not None and symbol == preferred
 
     def _option_trade_action(self, symbol: str, signal: str) -> str:
         """Buy the selected option leg instead of shorting the bearish leg."""
@@ -353,20 +347,30 @@ class KiteTradingBot:
         signal: str,
         score: Optional[int] = None,
     ) -> tuple[bool, str]:
-        """Reject options that fail sanity checks, with a softer fallback for healthy setups."""
+        """Require a fresh option quote and enforce contract-quality limits."""
         if not self._options_enabled():
             return True, "OK"
 
-        quote_data = self.option_quote_cache.get(symbol, {})
-        if not quote_data and symbol in self.latest_prices:
-            price_candidate = self.latest_prices[symbol]
-            if isinstance(price_candidate, dict):
-                quote_data = price_candidate
-            else:
-                quote_data = {"last_price": float(price_candidate)}
-
+        quote_data = getattr(self, "option_quote_cache", {}).get(symbol, {})
         if not quote_data:
             return False, "option quote unavailable"
+
+        quote_timestamp = quote_data.get("timestamp")
+        if not isinstance(quote_timestamp, datetime):
+            return False, "option quote timestamp unavailable"
+        if quote_timestamp.tzinfo is None:
+            quote_timestamp = quote_timestamp.replace(tzinfo=IST)
+        else:
+            quote_timestamp = quote_timestamp.astimezone(IST)
+        try:
+            max_quote_age = float(self.config.get("option_quote_max_age_seconds", 60))
+        except (TypeError, ValueError, OverflowError):
+            return False, "invalid option quote age setting"
+        if not math.isfinite(max_quote_age) or max_quote_age <= 0:
+            return False, "invalid option quote age setting"
+        quote_age = (datetime.now(IST) - quote_timestamp).total_seconds()
+        if quote_age < 0 or quote_age > max_quote_age:
+            return False, f"option quote stale: {quote_age:.1f}s"
 
         stream = getattr(self, "kite_stream", None)
         expiry = getattr(stream, "contract_expiries", {}).get(symbol)
@@ -377,10 +381,27 @@ class KiteTradingBot:
         ):
             return False, "option expiry-day risk"
 
-        premium = float(quote_data.get("last_price", quote_data.get("premium", 0.0)) or 0.0)
-        volume = int(quote_data.get("volume", 0) or 0)
-        oi = int(quote_data.get("oi", 0) or 0)
-        iv = float(quote_data.get("iv", 0.0) or 0.0)
+        has_oi = quote_data.get("oi") is not None
+        has_iv = quote_data.get("iv") is not None
+        try:
+            premium_value = quote_data.get("last_price", quote_data.get("premium"))
+            if premium_value is None:
+                return False, "invalid option quote"
+            premium = float(premium_value)
+            volume = int(quote_data.get("volume", 0) or 0)
+            oi = int(quote_data["oi"]) if has_oi else 0
+            iv = float(quote_data["iv"]) if has_iv else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return False, "invalid option quote"
+        if (
+            not math.isfinite(premium)
+            or premium <= 0
+            or volume < 0
+            or oi < 0
+            or (has_iv and (not math.isfinite(iv) or iv < 0))
+        ):
+            return False, "invalid option quote"
+
         min_premium = float(self.config.get("option_min_premium", 12.0))
         max_premium = float(self.config.get("option_max_premium", 800.0))
         min_volume = int(self.config.get("option_min_volume", 200))
@@ -389,30 +410,37 @@ class KiteTradingBot:
         iv_max = float(self.config.get("option_iv_max", 1.20))
 
         strong_signal = score is not None and score >= int(self.config.get("strong_signal_score", 82))
-        premium_floor = min_premium * (0.75 if strong_signal else 0.65)
-        volume_floor = max(int(min_volume * (0.8 if strong_signal else 0.7)), 150)
-        oi_floor = max(int(min_oi * (0.8 if strong_signal else 0.7)), 300)
+        premium_floor = min_premium * (0.55 if strong_signal else 0.65)
+        volume_floor = max(int(min_volume * (0.6 if strong_signal else 0.7)), 150)
+        oi_floor = max(int(min_oi * (0.6 if strong_signal else 0.7)), 300)
 
         if premium < min_premium:
-            if premium >= premium_floor and volume >= volume_floor and oi >= oi_floor:
+            if (
+                premium >= premium_floor
+                and volume >= volume_floor
+                and (not has_oi or oi >= oi_floor)
+            ):
                 pass
             else:
                 return False, f"premium too low: {premium} < {min_premium}"
         if premium > max_premium:
             return False, f"premium too high: {premium} > {max_premium}"
         if volume < min_volume:
-            if volume >= volume_floor and premium >= premium_floor and oi >= oi_floor:
+            if (
+                volume >= volume_floor
+                and premium >= premium_floor
+                and (not has_oi or oi >= oi_floor)
+            ):
                 pass
             else:
                 return False, f"volume too low: {volume} < {min_volume}"
-        if "oi" in quote_data and int(quote_data["oi"] or 0) < min_oi:
-            oi = int(quote_data["oi"] or 0)
+        if has_oi and oi < min_oi:
             if oi >= oi_floor and premium >= premium_floor and volume >= volume_floor:
                 pass
             else:
                 return False, f"open interest too low: {oi} < {min_oi}"
-        if "iv" in quote_data:
-            iv_current = float(quote_data["iv"])
+        if has_iv:
+            iv_current = iv
             if not iv_min <= iv_current <= iv_max:
                 if strong_signal and iv_min * 0.7 <= iv_current <= iv_max * 1.25:
                     pass
@@ -492,6 +520,16 @@ class KiteTradingBot:
             f"[{symbol}] Bar: O={bar.open:.2f} H={bar.high:.2f} L={bar.low:.2f} C={bar.close:.2f} V={bar.volume}"
         )
 
+        if (
+            self.config.get("trading_mode") == "intraday_options"
+            and symbol.upper()
+            in {str(item).upper() for item in self.config.get("options_underlyings", [])}
+        ):
+            self._record_decision(
+                symbol, bar, [], None, "HOLD", "underlying_context_only"
+            )
+            return
+
         # Get last N bars for signal evaluation
         bars = self.bar_builder.get_bars(token, limit=50)
         if len(bars) < 30:
@@ -507,7 +545,7 @@ class KiteTradingBot:
             return
 
         signal_bars = bars
-        if self.config.get("trading_mode") == "intraday_both" and "_" in symbol:
+        if self._options_enabled() and "_" in symbol:
             underlying = symbol.rsplit("_", 1)[0].upper()
             underlying_token = self.config["instrument_tokens"].get(underlying)
             underlying_bars = (
@@ -588,7 +626,7 @@ class KiteTradingBot:
                     else None
                 ),
                 signal_proximity_pct=float(
-                    self.config.get("signal_proximity_pct", 0.003)
+                    self.config.get("signal_proximity_pct", 0.005)
                 ),
                 allow_paper_shadow_sideways=(
                     self.config.get("paper_trade_trend_shadow_signals", False)
@@ -721,7 +759,23 @@ class KiteTradingBot:
         ):
             underlying = symbol.rsplit("_", 1)[0].upper()
             preferred = self._preferred_option_symbol(underlying, market_score.signal)
-            if preferred and symbol != preferred:
+            if preferred is None:
+                logger.info(
+                    "[%s] No eligible option leg for %s signal; skipping entry",
+                    symbol,
+                    market_score.signal,
+                )
+                self._record_decision(
+                    symbol,
+                    bar,
+                    bars,
+                    market_score,
+                    market_score.signal,
+                    "OPTION_FILTER_LEG_UNAVAILABLE",
+                    news_context,
+                )
+                return
+            if symbol != preferred:
                 logger.info(
                     "[%s] Skipping %s because %s is the active option leg for %s signal",
                     symbol,
@@ -841,6 +895,7 @@ class KiteTradingBot:
         self.option_quote_cache[symbol] = {
             "last_price": float(tick.last_price),
             "volume": int(tick.volume),
+            "timestamp": tick.timestamp,
         }
         if tick.oi is not None:
             self.option_quote_cache[symbol]["oi"] = int(tick.oi)
@@ -1163,7 +1218,7 @@ class KiteTradingBot:
                     premium=max(premium, 0.01),
                     max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
                     premium_stop_pct=premium_stop_pct,
-                    allow_paper_lot=self.paper_trading_enabled,
+                    allow_paper_lot=False,
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -1322,7 +1377,7 @@ class KiteTradingBot:
                     premium=max(premium, 0.01),
                     max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
                     premium_stop_pct=premium_stop_pct,
-                    allow_paper_lot=self.paper_trading_enabled,
+                    allow_paper_lot=False,
                 )
             else:
                 risk_plan = build_risk_plan(
