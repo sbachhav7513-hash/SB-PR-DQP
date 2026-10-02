@@ -3,7 +3,7 @@ Intraday Futures Trading Manager
 Handles position sizing, time-based exits, and leverage management
 """
 
-from datetime import datetime, time as time_type, timezone
+from datetime import datetime, time as time_type, timedelta, timezone
 from typing import Optional, Dict
 import logging
 from zoneinfo import ZoneInfo
@@ -288,9 +288,30 @@ class IntradayManager:
         signal_score: Optional[int] = None,
         staged_targets_enabled: bool = False,
         target_increment_pct: float = 0.10,
+        minimum_signal_score: Optional[int] = None,
+        strong_signal_score: int = 82,
+        weak_signal_lockin_pct: float = 0.05,
+        milestone_window_minutes: int = 5,
+        strong_milestone_window_minutes: int = 10,
+        entry_time: Optional[datetime] = None,
+        milestone_started_at: Optional[datetime] = None,
+        target_stage: int = 0,
+        trailing_stop: Optional[float] = None,
+        current_signal_score: Optional[int] = None,
+        decision_window_minutes: Optional[int] = None,
     ) -> None:
         """Register a new position."""
         target_distance = abs(take_profit - entry_price)
+        registered_at = self._normalize_position_time(entry_time)
+        strong_threshold = int(strong_signal_score)
+        entry_score = int(signal_score) if signal_score is not None else None
+        chosen_window = decision_window_minutes
+        if chosen_window is None:
+            chosen_window = (
+                strong_milestone_window_minutes
+                if entry_score is not None and entry_score >= strong_threshold
+                else milestone_window_minutes
+            )
         self.active_positions[symbol] = {
             "direction": direction,
             "quantity": quantity,
@@ -298,28 +319,54 @@ class IntradayManager:
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "initial_target_distance": target_distance,
-            "signal_score": signal_score,
+            "signal_score": entry_score,
+            "current_signal_score": (
+                int(current_signal_score)
+                if current_signal_score is not None
+                else entry_score
+            ),
             "staged_targets_enabled": staged_targets_enabled,
             "target_increment_pct": max(float(target_increment_pct), 0.0),
-            "target_stage": 0,
+            "minimum_signal_score": minimum_signal_score,
+            "strong_signal_score": strong_threshold,
+            "weak_signal_lockin_pct": max(float(weak_signal_lockin_pct), 0.0),
+            "milestone_window_minutes": max(int(milestone_window_minutes), 1),
+            "strong_milestone_window_minutes": max(
+                int(strong_milestone_window_minutes), 1
+            ),
+            "decision_window_minutes": max(int(chosen_window), 1),
+            "target_stage": max(int(target_stage), 0),
+            "milestone_reached_pct": max(int(target_stage), 0)
+            * max(float(target_increment_pct), 0.0)
+            * 100.0,
             "highest_price": entry_price,
             "lowest_price": entry_price,
-            "trailing_stop": None,
+            "trailing_stop": trailing_stop,
             "trailing_active": False,
-            "entry_time": datetime.now(IST),
+            "entry_time": registered_at,
+            "milestone_started_at": self._normalize_position_time(
+                milestone_started_at or registered_at
+            ),
         }
         logger.info(
             f"[{symbol}] Position registered: {direction} {quantity} "
             f"@ {entry_price:.2f} | SL={stop_loss:.2f} TP={take_profit:.2f}"
         )
 
-    def update_trailing_stop(self, symbol: str, price: float) -> Optional[float]:
+    def update_trailing_stop(
+        self, symbol: str, price: float, now: Optional[datetime] = None
+    ) -> Optional[float]:
         """Update and return a ratcheting stop after a favorable move."""
         position = self.active_positions.get(symbol)
-        if not position or not self.trailing_enabled:
+        if not position or (
+            not self.trailing_enabled and not position.get("staged_targets_enabled")
+        ):
             return None
 
         position["target_advanced"] = False
+        if position.get("staged_targets_enabled"):
+            return self._update_milestone_stop(position, price, now)
+
         entry_price = float(position["entry_price"])
         take_profit = float(position["take_profit"])
         target_distance = float(position.get("initial_target_distance", 0.0))
@@ -371,6 +418,77 @@ class IntradayManager:
             )
 
         return float(position["trailing_stop"])
+
+    def _update_milestone_stop(
+        self, position: dict, price: float, now: Optional[datetime] = None
+    ) -> Optional[float]:
+        entry_price = float(position["entry_price"])
+        step_pct = float(position.get("target_increment_pct", 0.0))
+        if entry_price <= 0 or step_pct <= 0:
+            return position.get("trailing_stop")
+
+        direction = 1.0 if position["direction"] == "BUY" else -1.0
+        favorable_change_pct = direction * (price - entry_price) / entry_price
+        stage = int(position.get("target_stage", 0))
+        now = self._normalize_position_time(now)
+        advanced = False
+
+        while favorable_change_pct >= (stage + 1) * step_pct:
+            stage += 1
+            score = position.get("current_signal_score")
+            strong_threshold = int(position.get("strong_signal_score", 82))
+            lockin_pct = max((stage - 1) * step_pct, 0.0)
+            if score is None or int(score) < strong_threshold:
+                lockin_pct += float(position.get("weak_signal_lockin_pct", 0.05))
+
+            candidate = round(entry_price * (1.0 + direction * lockin_pct), 10)
+            previous = position.get("trailing_stop")
+            if previous is None:
+                position["trailing_stop"] = candidate
+            elif direction > 0:
+                position["trailing_stop"] = max(float(previous), candidate)
+            else:
+                position["trailing_stop"] = min(float(previous), candidate)
+
+            position["target_stage"] = stage
+            position["milestone_reached_pct"] = stage * step_pct * 100.0
+            position["milestone_started_at"] = now
+            position["target_advanced"] = True
+            advanced = True
+
+        if advanced:
+            next_stage = int(position["target_stage"]) + 1
+            position["take_profit"] = round(
+                entry_price * (1.0 + direction * next_stage * step_pct), 10
+            )
+
+        return (
+            float(position["trailing_stop"])
+            if position.get("trailing_stop") is not None
+            else None
+        )
+
+    def milestone_timebox_expired(
+        self, symbol: str, now: Optional[datetime] = None
+    ) -> bool:
+        """Return whether the current milestone decision window has elapsed."""
+        position = self.active_positions.get(symbol)
+        if not position or not position.get("staged_targets_enabled"):
+            return False
+
+        window_minutes = int(position.get("decision_window_minutes", 5))
+        started_at = self._normalize_position_time(
+            position.get("milestone_started_at")
+        )
+        current_time = self._normalize_position_time(now)
+        return current_time >= started_at + timedelta(minutes=window_minutes)
+
+    @staticmethod
+    def _normalize_position_time(value: Optional[datetime]) -> datetime:
+        current_time = value or datetime.now(IST)
+        if current_time.tzinfo is None:
+            return current_time.replace(tzinfo=IST)
+        return current_time.astimezone(IST)
     
     def close_position(self, symbol: str, exit_price: float, reason: str = "SIGNAL") -> Optional[dict]:
         """

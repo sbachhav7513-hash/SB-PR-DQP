@@ -865,6 +865,23 @@ def test_place_market_order_uses_selected_nfo_contract():
     )
 
 
+def test_modify_protective_stop_rounds_trigger_to_contract_tick():
+    stream = object.__new__(KiteMarketStream)
+    stream.kite = Mock()
+    stream.kite.VARIETY_REGULAR = "regular"
+    stream.contract_tick_sizes = {"NIFTY_CE": 0.05}
+
+    stream.modify_protective_stop_order(
+        "NIFTY_CE", "BUY", "stop-123", 100.03
+    )
+
+    stream.kite.modify_order.assert_called_once_with(
+        variety="regular",
+        order_id="stop-123",
+        trigger_price=100.0,
+    )
+
+
 def test_wait_for_order_fill_returns_verified_execution_details():
     kite = Mock()
     with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(

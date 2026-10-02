@@ -165,6 +165,44 @@ def _performance_by_key(
     return performance
 
 
+def _option_exit_comparison(
+    trades: List[Dict[str, Any]], days: int
+) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for trade in trades:
+        ticker = str(trade.get("ticker", "")).upper()
+        if not ticker.endswith(("_CE", "_PE")):
+            continue
+        strategy = trade.get("exit_strategy")
+        if strategy != "tiered_milestone":
+            strategy = "fixed_20pct_baseline"
+        grouped[strategy].append(trade)
+
+    return {
+        strategy: _option_exit_metrics(strategy_trades, days)
+        for strategy, strategy_trades in grouped.items()
+    }
+
+
+def _option_exit_metrics(
+    trades: List[Dict[str, Any]], days: int
+) -> Dict[str, Any]:
+    closed = [trade for trade in trades if trade.get("status") == "closed"]
+    pnls = []
+    for trade in closed:
+        pnl_value = trade.get("pnl_rupees")
+        if pnl_value in (None, ""):
+            pnl_value = trade.get("pnl", trade.get("profit", 0))
+        pnls.append(_number(pnl_value))
+    return {
+        "trade_entries": len(trades),
+        "entries_per_day": round(len(trades) / days, 2) if days > 0 else 0.0,
+        "closed_trades": len(closed),
+        "average_pnl_per_trade": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
+        "total_pnl": round(sum(pnls), 2),
+    }
+
+
 def _load_filter_stats(
     root: Path, days: int, decisions: List[Dict[str, Any]]
 ) -> Dict[str, int]:
@@ -227,17 +265,18 @@ def build_weekly_report(
 ) -> Dict[str, Any]:
     root = Path(data_dir)
     paper_root = Path(paper_data_dir) if paper_data_dir else root / "paper_trading_data"
-    trades = [
-        trade for trade in _load_report_records(
-            root,
-            paper_root,
-            "trades.jsonl",
-            "trades.parquet",
-            days,
-            ["timestamp", "ticker", "action", "status", "pnl", "strategy_variant"],
-        )
-        if trade.get("status") == "closed"
-    ]
+    trade_records = _load_report_records(
+        root,
+        paper_root,
+        "trades.jsonl",
+        "trades.parquet",
+        days,
+        [
+            "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
+            "strategy_variant", "exit_strategy",
+        ],
+    )
+    trades = [trade for trade in trade_records if trade.get("status") == "closed"]
     decisions = _load_report_records(
         root,
         paper_root,
@@ -343,6 +382,7 @@ def build_weekly_report(
         "performance_by_strategy_variant": _performance_by_key(
             trades, "strategy_variant"
         ),
+        "option_exit_comparison": _option_exit_comparison(trade_records, days),
         "filter_stats": _load_filter_stats(root, days, decisions),
         "news_summary": {
             "risk_counts": news_risk_counts,
@@ -610,23 +650,36 @@ def write_daily_review(
         *format_counts(outcome_counts),
         "",
         "## Closed Trades",
-        "| Symbol | Direction | Variant | Score | P&L | Exit reason |",
-        "| --- | --- | --- | ---: | ---: | --- |",
+        "| Symbol | Direction | Variant | Score | Milestone | Held (s) | P&L | Exit reason |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
     ]
     if trades:
         lines.extend(
-            "| {ticker} | {action} | {variant} | {score} | {pnl:.2f} | {reason} |".format(
+            "| {ticker} | {action} | {variant} | {score} | {milestone} | {held} | {pnl:.2f} | {reason} |".format(
                 ticker=str(trade.get("ticker") or "UNKNOWN").replace("|", "/"),
                 action=str(trade.get("action") or "UNKNOWN").replace("|", "/"),
                 variant=str(trade.get("strategy_variant") or "primary").replace("|", "/"),
                 score=trade.get("score") or "N/A",
+                milestone=(
+                    f"{_number(trade['milestone_reached_pct']):.1f}%"
+                    if trade.get("milestone_reached_pct") not in (None, "")
+                    else "N/A"
+                ),
+                held=(
+                    int(_number(trade.get("holding_time_seconds", trade.get("duration_seconds"))))
+                    if trade.get("holding_time_seconds", trade.get("duration_seconds"))
+                    not in (None, "")
+                    else "N/A"
+                ),
                 pnl=_number(trade.get("pnl", trade.get("profit", 0))),
-                reason=str(trade.get("reason") or "UNKNOWN").replace("|", "/"),
+                reason=str(
+                    trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
+                ).replace("|", "/"),
             )
             for trade in trades
         )
     else:
-        lines.append("| No closed trades | - | - | - | 0.00 | - |")
+        lines.append("| No closed trades | - | - | - | - | - | 0.00 | - |")
     lines.extend(
         [
             "",
@@ -696,6 +749,21 @@ def write_weekly_review(
         f"- Decisions recorded: {report['decisions_recorded']}",
         f"- High-news-risk decisions: {report['news_summary']['risk_counts'].get('HIGH', 0)}",
         f"- Entries suppressed by news filter: {report['news_summary']['suppressed_entries']}",
+        "",
+        "## Option Exit Strategy Comparison",
+        "| Strategy | Entries | Entries/day | Closed trades | Average P&L/closed trade | Total P&L |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        *(
+            [
+                "| {strategy} | {trade_entries} | {entries_per_day:.2f} | {closed_trades} | {average_pnl_per_trade:.2f} | {total_pnl:.2f} |".format(
+                    strategy=str(strategy).replace("|", "/"),
+                    **metrics,
+                )
+                for strategy, metrics in sorted(report["option_exit_comparison"].items())
+            ]
+            or ["| No option trades recorded | - | - | - | - | - |"]
+        ),
+        "Legacy option trades without an exit-strategy tag are grouped as the fixed-20% baseline; compare sample counts before drawing conclusions.",
         "",
         "## What Needs Attention",
         *[f"- {issue}" for issue in issues],

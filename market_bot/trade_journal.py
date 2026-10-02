@@ -61,7 +61,11 @@ class PaperTradingRecorder:
         "trade_id", "timestamp", "ticker", "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
-        "protection_order_id", "strategy_variant",
+        "holding_time_seconds", "protection_order_id", "strategy_variant",
+        "exit_strategy", "target_stage", "milestone_reached_pct",
+        "exit_reason_category", "entry_time", "milestone_started_at",
+        "minimum_signal_score", "option_milestone_pct", "trailing_stop",
+        "current_signal_score", "decision_window_minutes",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
