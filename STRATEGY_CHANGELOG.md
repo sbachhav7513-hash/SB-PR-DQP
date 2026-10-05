@@ -249,3 +249,19 @@ No completed experiments recorded yet.
 - Decision: Run only under the existing paper-trading configuration; do not infer profitability or enable live orders from the change alone.
 - Rollback: Restore the previous option target/trailing logic and the corresponding option sizing and journal/report changes as a single change.
 - Follow-up: Inspect Friday's tagged trade frequency, average realized P&L, milestone, hold duration, and exit reason against the fixed-20% cohort; classify results as inconclusive if the sample is small or not comparable.
+
+### EXP-2026-10-05-01
+
+- Status: running; strategy performance is unmeasured.
+- Problem and evidence: The paper-shadow path required both the general candle-confirmation check and option candle-momentum confirmation. No quantified baseline of candidates rejected specifically by these checks was recorded before this change.
+- Prior related log entries checked: `EXP-2026-10-02-05`, which added directional candle confirmation for option entries; this experiment relaxes confirmation only for the separately attributed paper-shadow variant and leaves the primary/live path unchanged.
+- Hypothesis: Allowing opted-in paper-shadow candidates to proceed without these confirmation checks may provide observations about the variant's trade flow; it does not imply improved accuracy or profitability.
+- Single variable being changed: `paper_shadow_relax_entry_confirmation`, enabled in the active paper config and disabled in the example config. When enabled for `trend_shadow_paper`, it skips the general candle-confirmation check and option candle-momentum check; the score floor and other entry/risk controls remain active.
+- Code/config before: Commit `c7f7f2f` had confirmation required; paper shadow remained enabled in the active config, live orders were disabled, and the primary score floor was 70.
+- Baseline period and metrics: No count of confirmation-specific candidate rejections or comparable trade sample was recorded; trade frequency, expectancy, and accuracy baseline are unknown.
+- Test method and fixed evaluation period/sample: Confirm through `test_intraday_manager.py` that the relaxation is opt-in and paper-only, the score floor remains enforced, and primary/live behavior is not relaxed. Track separately attributed closed paper trades and require at least 10 before evaluating performance.
+- Change made: Added the confirmation toggle and gated both confirmation bypasses to the explicitly enabled paper-shadow variant; dated 2026-10-05.
+- Results: Focused provider and intraday tests passed (`83 passed, 1 skipped`); no paper-market performance sample is available.
+- Decision: Keep this as a paper-only experiment with live orders disabled; do not claim a performance improvement.
+- Rollback: Set `paper_shadow_relax_entry_confirmation` to `false` or disable `paper_trade_trend_shadow_signals`.
+- Follow-up: Compare confirmation-rejection counts and closed-trade outcomes for the tagged variant after at least 10 closed paper trades; keep the result inconclusive if the sample is not available or comparable.

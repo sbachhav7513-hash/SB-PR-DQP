@@ -259,3 +259,23 @@ Outcome / follow-up / rollback:
   - `DAILY_WEEKLY_OPERATIONS.md`, `DAILY_CHANGELOG.md`, and `STRATEGY_CHANGELOG.md` (modified): Document the selected volume source, experiment, and validation.
 - Validation and result: Focused `test_intraday_manager.py`, `test_strategy.py`, and `test_backtest.py` passed (`85 passed`); full suite passed (`138 passed`). Pylance confirmed compatibility at 27 `score_market`, 8 `breakout_quality`, and 4 `run_replay` call sites; no diagnostics in `engine.py`, with only pre-existing warnings elsewhere. `git diff --check` passed.
 - Outcome / follow-up / rollback: This may allow some index-option candidates through the volume gate, but does not establish better accuracy or profitability. Replay paired underlying/option data before changing live rollout decisions.
+
+### 2026-10-05
+
+#### DLY-2026-10-05-01
+
+- Reason: Backfill the daily ledger for the October 5 changes already committed in `c760a8b`, `c7f7f2f`, and `60c98dc`.
+- Related prior entries checked: `DLY-2026-10-02-04` and `EXP-2026-10-02-05`; the former documents the existing option data path, and the latter records the prior option-entry confirmation requirements.
+- Files:
+  - `market_bot/kite_provider.py` (modified): Include the end of the current calendar month in the option-expiry lookahead and normalize naïve datetime objects from the host-local timezone to IST.
+  - `INTRADAY_FUTURES_GUIDE.md` (modified): Explain the month-end expiry lookahead and its limitations.
+  - `tests/test_kite_provider.py` (modified): Cover month-end expiry selection and naïve timestamp conversion.
+  - `market_bot/accuracy_filters.py` (modified): Allow callers to explicitly skip candle confirmation while retaining the default confirmation requirement.
+  - `market_bot/kite_main.py` (modified): Apply the optional confirmation relaxation, including option candle-momentum confirmation, only to the opted-in paper-shadow variant when paper trading is enabled and live orders are disabled.
+  - `kite_config.json` (modified): Enable the confirmation-relaxation experiment for the active paper-shadow config; live orders remain disabled.
+  - `kite_config.example.json` (modified): Document the experiment as disabled by default.
+  - `tests/test_intraday_manager.py` (modified): Verify the relaxation is opt-in/paper-only and that the score floor remains enforced.
+  - `DAILY_CHANGELOG.md` (modified): Record these changes and their validation.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the paper-only confirmation experiment.
+- Validation and result: `python -m pytest -q tests\test_kite_provider.py tests\test_intraday_manager.py` passed (`83 passed, 1 skipped`).
+- Outcome / follow-up / rollback: The expiry and timestamp changes are covered by focused tests. The confirmation relaxation is a paper-only experiment; no improvement in trade frequency, accuracy, or profitability is established. Disable it with `paper_shadow_relax_entry_confirmation=false` or by disabling the paper-shadow strategy.
