@@ -319,6 +319,7 @@ class AccuracyFilters:
         minute: int,
         record_entry: bool = True,
         min_score: Optional[int] = None,
+        require_confirmation: bool = True,
     ) -> tuple[bool, str]:
         """
         All filters combined for final entry decision.
@@ -335,8 +336,12 @@ class AccuracyFilters:
             return False, "volatility"
         
         # Filter 2: Confirmation candle
-        confirmation = self.has_confirmation(signal, current_bar, previous_bar)
-        if not confirmation:
+        confirmation = (
+            self.has_confirmation(signal, current_bar, previous_bar)
+            if require_confirmation
+            else True
+        )
+        if require_confirmation and not confirmation:
             return False, "confirmation"
         
         # Filter 3: Score threshold & signal
