@@ -1,6 +1,10 @@
 import calendar
-from datetime import date, datetime, timedelta
+import os
+import time
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, call, patch
+
+import pytest
 
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
@@ -782,7 +786,8 @@ def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
 
     callback = Mock()
     stream.on_tick_callback = callback
-    exchange_timestamp = datetime(2026, 9, 16, 14, 10)
+    exchange_epoch = datetime(2026, 9, 16, 8, 40, tzinfo=timezone.utc).timestamp()
+    exchange_timestamp = datetime.fromtimestamp(exchange_epoch)
 
     stream.on_ticks(
         None,
@@ -797,8 +802,34 @@ def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
     )
 
     tick = callback.call_args.args[0]
-    assert tick.timestamp.isoformat() == "2026-09-16T14:10:00+05:30"
+    assert tick.timestamp == datetime.fromtimestamp(
+        exchange_epoch, tz=timezone.utc
+    ).astimezone(tick.timestamp.tzinfo)
     assert tick.volume == 42
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX timezone control")
+def test_naive_kite_timestamp_is_converted_from_utc_host_timezone():
+    previous_timezone = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        exchange_epoch = datetime(
+            2026, 10, 5, 4, 50, tzinfo=timezone.utc
+        ).timestamp()
+        raw_timestamp = datetime.fromtimestamp(exchange_epoch)
+
+        normalized = KiteMarketStream._normalize_exchange_timestamp(raw_timestamp)
+
+        assert normalized == datetime.fromtimestamp(
+            exchange_epoch, tz=timezone.utc
+        ).astimezone(normalized.tzinfo)
+    finally:
+        if previous_timezone is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_timezone
+        time.tzset()
 
 
 def test_on_ticks_drops_implausible_epoch_exchange_timestamp():
