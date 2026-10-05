@@ -338,6 +338,48 @@ def test_paper_shadow_adx_floor_must_be_below_primary_floor():
         score_market("TEST", [], min_adx=12.0, paper_shadow_min_adx=12.0)
 
 
+@pytest.mark.parametrize(
+    ("latest_close", "fast_last", "rsi_value", "expected_signal"),
+    [
+        (100.15, 101.0, 60.0, "BUY"),
+        (99.85, 99.0, 40.0, "SELL"),
+    ],
+)
+def test_paper_shadow_lower_trend_floor_does_not_change_primary_signal(
+    latest_close, fast_last, rsi_value, expected_signal
+):
+    closes = [100.0] * 39 + [latest_close]
+    fast = [100.0] * 39 + [fast_last]
+    slow = [100.0] * 40
+    history = [{"close": close} for close in closes]
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda values, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[rsi_value] * len(closes)), \
+        patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            paper_shadow_min_trend_strength=0.001,
+        )
+
+    assert result.signal == "HOLD"
+    assert result.trend_shadow_signal == expected_signal
+
+
+def test_paper_shadow_trend_floor_must_be_below_primary_floor():
+    with pytest.raises(ValueError, match="below min_trend_strength"):
+        score_market(
+            "TEST",
+            [],
+            min_trend_strength=0.005,
+            paper_shadow_min_trend_strength=0.005,
+        )
+
+
 def test_trend_shadow_records_candidate_without_changing_breakout_signal():
     history = []
     for index in range(60):

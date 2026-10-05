@@ -835,6 +835,8 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
         "options_underlyings": ["NIFTY"],
         "benchmark_symbols": [],
         "late_window_enabled": False,
+        "paper_trade_trend_shadow_signals": True,
+        "paper_shadow_min_trend_strength": 0.001,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -855,6 +857,8 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     bot.intraday_manager = Mock()
     bot.intraday_manager.should_exit_all_positions.return_value = False
     bot.use_market_context = False
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
     bot.benchmark_symbol = "NIFTY"
     bot.news_monitor = None
     bot.premarkarket_candidates = []
@@ -865,7 +869,11 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     bot._option_quality_gate = Mock(return_value=(True, "OK"))
     bot._record_decision = Mock()
     bot.accuracy_filters = Mock()
+    bot.accuracy_filters.min_score_floor = 70
+    bot.accuracy_filters.get_min_score.return_value = 70
     bot.accuracy_filters.validate_entry_with_reason.return_value = (False, "volatility")
+    bot.trade_journal = Mock()
+    bot.trade_journal.read_trades.return_value = []
 
     with patch("market_bot.kite_main.market_session_state", return_value="REGULAR_SESSION"), \
         patch(
@@ -877,6 +885,9 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     assert score_market_mock.call_args.kwargs[
         "volume_confirmation_history"
     ] == [{"volume": 10}] * len(underlying_bars)
+    assert score_market_mock.call_args.kwargs[
+        "paper_shadow_min_trend_strength"
+    ] == 0.001
     validated_history = bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "history"
     ]
