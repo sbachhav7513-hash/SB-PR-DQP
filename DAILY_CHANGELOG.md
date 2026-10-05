@@ -279,3 +279,18 @@ Outcome / follow-up / rollback:
   - `STRATEGY_CHANGELOG.md` (modified): Record the paper-only confirmation experiment.
 - Validation and result: `python -m pytest -q tests\test_kite_provider.py tests\test_intraday_manager.py` passed (`83 passed, 1 skipped`).
 - Outcome / follow-up / rollback: The expiry and timestamp changes are covered by focused tests. The confirmation relaxation is a paper-only experiment; no improvement in trade frequency, accuracy, or profitability is established. Disable it with `paper_shadow_relax_entry_confirmation=false` or by disabling the paper-shadow strategy.
+
+#### DLY-2026-10-05-02
+
+- Reason: The October 5 logs showed score-55 HOLDs with 20-bar moves below the primary 0.5% directional threshold; the user approved a paper-only trial to evaluate more low-magnitude trend candidates.
+- Related prior entries checked: `DLY-2026-09-30-02`, `DLY-2026-09-30-03`, `DLY-2026-10-02-02`, and `EXP-2026-10-02-05`; this changes only the paper-shadow directional-move threshold.
+- Files:
+  - `market_bot/engine.py` (modified): Evaluate an independently configured lower trend-strength floor for paper-shadow BUY/SELL candidates without changing the primary signal.
+  - `market_bot/kite_main.py` (modified): Pass the lower floor only when paper shadow is enabled, paper mode is active, and live orders are disabled.
+  - `kite_config.json` (modified): Set the active paper-shadow trend-strength floor to 0.1%; retain the primary 0.5% floor and live-orders-disabled setting.
+  - `kite_config.example.json` (modified): Document the opt-in shadow threshold while keeping shadow promotion disabled by default.
+  - `tests/test_strategy.py` (modified): Verify bullish and bearish paper-shadow candidates below the primary threshold preserve primary HOLD and reject invalid threshold configurations.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the paper-only threshold and its experimental status.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record rationale, baseline, and pending evaluation.
+- Validation and result: The first combined regression run exposed an incomplete paper-mode test fixture (`trade_journal` was missing); after completing the fixture, focused strategy/runtime tests passed (`80 passed`) and the full suite passed (`153 passed, 1 skipped`). Both configs parsed, `git diff --check` passed, and Pylance reported no engine diagnostics; `kite_main.py` retains two existing warnings.
+- Outcome / follow-up / rollback: This changes candidate eligibility only; no increase in trades or profit is claimed. Compare shadow candidate/rejection counts and separately attributed closed-trade outcomes; disable by removing `paper_shadow_min_trend_strength` or turning off `paper_trade_trend_shadow_signals`.

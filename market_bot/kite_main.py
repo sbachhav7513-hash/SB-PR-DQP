@@ -837,6 +837,16 @@ class KiteTradingBot:
                     )
                     else None
                 ),
+                paper_shadow_min_trend_strength=(
+                    float(self.config["paper_shadow_min_trend_strength"])
+                    if (
+                        self.config.get("paper_trade_trend_shadow_signals", False)
+                        and self.paper_trading_enabled
+                        and not self.live_orders_enabled
+                        and "paper_shadow_min_trend_strength" in self.config
+                    )
+                    else None
+                ),
                 volume_confirmation_history=volume_confirmation_history,
             )
         except Exception:

@@ -7,6 +7,7 @@
   "paper_shadow_relax_entry_confirmation": true,
   "paper_shadow_min_entry_score": 55,
   "paper_shadow_min_adx": 10.0,
+  "paper_shadow_min_trend_strength": 0.001,
   "paper_shadow_allow_sideways": true,
   "live_orders_enabled": false,
   "live_orders_confirmed": false,

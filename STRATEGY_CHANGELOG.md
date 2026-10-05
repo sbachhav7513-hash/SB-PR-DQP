@@ -265,3 +265,19 @@ No completed experiments recorded yet.
 - Decision: Keep this as a paper-only experiment with live orders disabled; do not claim a performance improvement.
 - Rollback: Set `paper_shadow_relax_entry_confirmation` to `false` or disable `paper_trade_trend_shadow_signals`.
 - Follow-up: Compare confirmation-rejection counts and closed-trade outcomes for the tagged variant after at least 10 closed paper trades; keep the result inconclusive if the sample is not available or comparable.
+
+### EXP-2026-10-05-01
+
+- Status: proposed; performance outcome is unmeasured.
+- Problem and evidence: The October 5 log excerpt showed repeated score-55 HOLDs with 20-bar moves around 0.005%-0.136%, below the active 0.5% primary trend-strength requirement. The excerpt does not include shadow rejection lines or a complete daily trade baseline.
+- Prior related log entries checked: `EXP-2026-09-30-01` through `EXP-2026-09-30-03`, `EXP-2026-10-02-03`, and `EXP-2026-10-02-05`; prior paper-shadow floors cover score, sideways regime, and ADX, not the directional-move threshold.
+- Hypothesis: Letting the paper-shadow candidate path use a 0.1% 20-bar directional move threshold may allow some lower-magnitude bullish/bearish candidates to reach the existing downstream paper filters, while preserving the primary 0.5% threshold and live-order guard.
+- Single variable being changed: `paper_shadow_min_trend_strength`, from no override (same as primary `min_trend_strength=0.005`) to `0.001` for opted-in paper-shadow candidates only.
+- Code/config before: Revision `4207332`; active local config has `min_trend_strength=0.005`, `paper_trade_trend_shadow_signals=true`, `paper_shadow_allow_sideways=true`, `paper_shadow_min_adx=10.0`, `paper_shadow_min_entry_score=55`, paper mode enabled, and live orders disabled.
+- Baseline period and metrics: The provided October 5 excerpt includes no opened trades or candidate/rejection summary. It shows example moves of 0.005%-0.136% and repeated primary HOLDs; exact shadow candidates, fills, and P&L are unavailable.
+- Test method and fixed evaluation period/sample: Verify BUY and SELL candidate selection at the lower floor and unchanged primary HOLD behavior; then collect shadow candidate/rejection counts and separately attributed paper outcomes. Do not judge performance until at least 10 closed paper trades; compare costs, net P&L, win/loss sizes, and drawdown when available.
+- Change made: Added a separately gated paper-shadow trend-strength override at 0.1%; primary, live, score, volatility, and risk thresholds remain unchanged. Dated 2026-10-05.
+- Results: The initial combined regression run failed because the paper-mode test fixture lacked `trade_journal`; after correcting that fixture, focused strategy/runtime tests passed (`80 passed`) and the full suite passed (`153 passed, 1 skipped`). Both configs parsed, `git diff --check` passed, and Pylance reported no engine diagnostics. No matched historical option replay or performance outcome is available.
+- Decision: Paper-only experiment, not a claim of increased profitability or guaranteed entries.
+- Rollback: Remove `paper_shadow_min_trend_strength` from the active config or disable `paper_trade_trend_shadow_signals`.
+- Follow-up: Review the daily report's shadow candidate/rejection counts and closed trades after each session; keep this single-variable trial isolated until the sample threshold is met.
