@@ -125,9 +125,12 @@ tokens in `instrument_tokens`, and configure the option universe:
 }
 ```
 
-At startup the bot selects the nearest non-expired expiry within
-`option_expiry_days`, then the ATM call and put for each underlying using the
-spot token price. The selected option premium is streamed and scored directly;
+At startup the bot selects the nearest non-expired expiry within the greater
+of `option_expiry_days` and the days remaining to the current calendar month's
+end, then the ATM call and put for each underlying using the spot token price.
+This keeps the configured lookahead while ensuring current-month expiries are
+within range; it does not guarantee every underlying has a matching contract or
+usable quote. The selected option premium is streamed and scored directly;
 the configured stop and target percentages therefore apply to the option
 premium. `paper_trading_enabled` should remain `true` until this flow has been
 validated with your account and broker settings. A signal can still be HOLD,

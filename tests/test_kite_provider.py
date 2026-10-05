@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, timedelta
 from unittest.mock import Mock, call, patch
 
@@ -88,6 +89,62 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
         "NIFTY_PE": "NIFTY26SEP25000PE",
     }
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
+
+
+def test_options_lookahead_includes_expiry_at_calendar_month_end():
+    kite = Mock()
+    today = date.today()
+    month_end = today.replace(
+        day=calendar.monthrange(today.year, today.month)[1]
+    )
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{month_end:%d}25000CE",
+            "instrument_type": "CE",
+            "expiry": month_end,
+            "strike": 25000,
+            "instrument_token": 200,
+            "lot_size": 65,
+        },
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{month_end:%d}25000PE",
+            "instrument_type": "PE",
+            "expiry": month_end,
+            "strike": 25000,
+            "instrument_token": 201,
+            "lot_size": 65,
+        },
+    ]
+    kite.ltp.return_value = {
+        "100": {"last_price": 25010.0},
+        "200": {"last_price": 120.0},
+        "201": {"last_price": 110.0},
+    }
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_expiry_days=0,
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    resolved = stream.refresh_instrument_tokens()
+
+    assert resolved == {
+        "NIFTY": 100,
+        "NIFTY_CE": 200,
+        "NIFTY_PE": 201,
+    }
 
 
 def test_stop_disables_retries_before_closing_stream():
