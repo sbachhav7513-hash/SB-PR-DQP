@@ -17,8 +17,6 @@ class TradingScore:
     score: int
     signal: str
     reasons: List[str] = field(default_factory=list)
-    trend_shadow_signal: Optional[str] = None
-    trend_shadow_rejection_reason: Optional[str] = None
     strategy_variant: Optional[str] = None
 
 
@@ -362,22 +360,11 @@ def score_market(
     min_trend_strength: float = 0.02,
     trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.005,
-    allow_paper_shadow_sideways: bool = False,
-    paper_shadow_min_adx: Optional[float] = None,
     volume_confirmation_history: Optional[List[Dict]] = None,
-    paper_shadow_min_trend_strength: Optional[float] = None,
 ) -> TradingScore:
     history = _current_session_history(history)
     if trend_momentum_bonus_threshold is None:
         trend_momentum_bonus_threshold = min_trend_strength
-    if paper_shadow_min_adx is not None and not 0.0 <= paper_shadow_min_adx < min_adx:
-        raise ValueError("paper_shadow_min_adx must be non-negative and below min_adx")
-    if paper_shadow_min_trend_strength is not None and not (
-        0.0 <= paper_shadow_min_trend_strength < min_trend_strength
-    ):
-        raise ValueError(
-            "paper_shadow_min_trend_strength must be non-negative and below min_trend_strength"
-        )
     closes = [item["close"] for item in history if "close" in item]
     if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
@@ -412,12 +399,7 @@ def score_market(
 
     adx = calculate_adx(history)
     adx_rejected = adx is not None and adx < min_adx
-    shadow_adx_eligible = (
-        paper_shadow_min_adx is not None
-        and adx is not None
-        and adx >= paper_shadow_min_adx
-    )
-    if adx_rejected and not shadow_adx_eligible:
+    if adx_rejected:
         return TradingScore(
             ticker=ticker,
             score=0,
@@ -471,7 +453,7 @@ def score_market(
         f"20-bar move {regime_net_move_pct:.3f}% "
         f"< {sideways_net_move_pct:.3f}%"
     )
-    if sideways_rejected and not allow_paper_shadow_sideways:
+    if sideways_rejected:
         return TradingScore(
             ticker=ticker,
             score=0,
@@ -548,23 +530,6 @@ def score_market(
         and macd <= 0
         and macd <= prev_macd + 1e-9
     )
-    shadow_up_trend_conf = (
-        fast_now > slow_now
-        and price > closes[-20]
-        and paper_shadow_min_trend_strength is not None
-        and trend_strength > paper_shadow_min_trend_strength
-        and macd >= 0
-        and macd >= prev_macd - 1e-9
-    )
-    shadow_down_trend_conf = (
-        fast_now < slow_now
-        and price < closes[-20]
-        and paper_shadow_min_trend_strength is not None
-        and trend_strength > paper_shadow_min_trend_strength
-        and macd <= 0
-        and macd <= prev_macd + 1e-9
-    )
-
     minimum_buy_price = recent_high * (1.0 - signal_proximity_pct)
     maximum_sell_price = recent_low * (1.0 + signal_proximity_pct)
     if score >= 55 and up_trend_conf and price >= minimum_buy_price:
@@ -573,14 +538,6 @@ def score_market(
         signal = "SELL"
     else:
         signal = "HOLD"
-
-    trend_shadow_signal = signal if signal in {"BUY", "SELL"} else None
-    if trend_shadow_signal is None and score >= 55:
-        if shadow_up_trend_conf and price >= minimum_buy_price:
-            trend_shadow_signal = "BUY"
-        elif shadow_down_trend_conf and price <= maximum_sell_price:
-            trend_shadow_signal = "SELL"
-    trend_shadow_rejection_reason = None
 
     if complete_ohlcv and signal in {"BUY", "SELL"}:
         vwap = calculate_vwap(history)
@@ -643,17 +600,6 @@ def score_market(
         )
         if context_reason:
             reasons.append(f"{context_name}: {context_reason}")
-        if trend_shadow_signal:
-            shadow_signal, shadow_reason = filter_signal_by_context(
-                trend_shadow_signal,
-                context_bars,
-                ema_fast,
-                ema_slow,
-                hard_context_filter,
-            )
-            if shadow_signal == "HOLD" and shadow_reason:
-                trend_shadow_rejection_reason = f"{context_name}: {shadow_reason}"
-
     if reason is not None:
         reasons.append(reason)
 
@@ -662,8 +608,6 @@ def score_market(
         score=min(score, 100),
         signal=signal,
         reasons=reasons,
-        trend_shadow_signal=trend_shadow_signal,
-        trend_shadow_rejection_reason=trend_shadow_rejection_reason,
     )
 
 

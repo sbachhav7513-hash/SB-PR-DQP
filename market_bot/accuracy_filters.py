@@ -5,7 +5,6 @@ Quick fixes to improve win rate from 50% to 60%
 
 from typing import List, Dict, Optional
 import logging
-import math
 
 logger = logging.getLogger(__name__)
 
@@ -26,33 +25,6 @@ class AccuracyFilters:
         self.min_volatility_pct = max(float(min_volatility_pct), 0.0)
         self.max_volatility_pct = max(float(max_volatility_pct), self.min_volatility_pct)
 
-    def get_min_score(
-        self,
-        recent_trades: int,
-        recent_win_rate: float,
-        configured_min_score: Optional[int] = None,
-    ) -> int:
-        """Adjust a configured entry floor using a sufficiently large sample."""
-        if recent_trades < 0:
-            raise ValueError("recent_trades must be non-negative")
-        if not math.isfinite(recent_win_rate) or not 0.0 <= recent_win_rate <= 100.0:
-            raise ValueError("recent_win_rate must be between 0 and 100")
-
-        base_floor = (
-            self.min_score_floor
-            if configured_min_score is None
-            else max(0, min(int(configured_min_score), self.min_score_ceiling))
-        )
-        if recent_trades < 10:
-            return base_floor
-        if recent_win_rate < 35.0:
-            return min(base_floor + 2, self.min_score_ceiling)
-        if recent_win_rate < 45.0:
-            return min(base_floor + 1, self.min_score_ceiling)
-        if recent_win_rate < 55.0:
-            return base_floor
-        return max(base_floor - 1, 0)
-    
     # ========== FILTER 1: Volatility Check ==========
     @staticmethod
     def calculate_atr(history: List[Dict], period: int = 14) -> float:
@@ -319,7 +291,6 @@ class AccuracyFilters:
         minute: int,
         record_entry: bool = True,
         min_score: Optional[int] = None,
-        require_confirmation: bool = True,
     ) -> tuple[bool, str]:
         """
         All filters combined for final entry decision.
@@ -336,12 +307,8 @@ class AccuracyFilters:
             return False, "volatility"
         
         # Filter 2: Confirmation candle
-        confirmation = (
-            self.has_confirmation(signal, current_bar, previous_bar)
-            if require_confirmation
-            else True
-        )
-        if require_confirmation and not confirmation:
+        confirmation = self.has_confirmation(signal, current_bar, previous_bar)
+        if not confirmation:
             return False, "confirmation"
         
         # Filter 3: Score threshold & signal

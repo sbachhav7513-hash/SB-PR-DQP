@@ -23,9 +23,7 @@ paper_trading_data/
 The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. After market close, the bot writes `daily_summary.parquet` and `daily_review.md`; the review reports closed-trade results, signal/outcome counts, HOLD reason mentions, filter rejections, and shadow-candidate rejections. On Friday, the bot creates the broader Markdown review in that week's folder.
 
 
-Decision rows also record `trend_shadow_signal` and `trend_shadow_rejection_reason`. Set `paper_trade_trend_shadow_signals` to `true` only for paper trading to allow a candidate that passes the existing context, news, session, volatility, confirmation, and risk filters into the normal paper-order path. `paper_shadow_min_entry_score` changes only the score floor for this paper variant; `paper_shadow_allow_sideways` lets only this paper variant evaluate sideways bars, while the primary signal remains HOLD. `paper_shadow_min_adx` and `paper_shadow_min_trend_strength` can similarly relax only the paper-shadow ADX and directional-move thresholds; the primary signal retains its configured floors. These experimental thresholds are not backtested recommendations. The live-order guard remains in force. These trades are labeled `trend_shadow_paper` and reported separately; an empty rejection reason alone does not mean the candidate would be profitable, and no daily trade is guaranteed.
-
-Paper entries adapt their score floor only after 10 closed trades of the same strategy variant, using the latest 10 outcomes. The floor moves by at most two points and remains within the strategy's 0-85 score range; live-order entries continue using the configured fixed floor. Fewer than 10 valid closed outcomes leave the paper floor unchanged. This is a paper-only experiment, not evidence of higher accuracy; evaluate closed results by variant after at least 10 trades and do not interpret candidate volume as profitability.
+Paper and live trading use the same signal strategy and entry filters. `paper_trading_enabled` and `live_orders_enabled` select execution mode only; they do not change signal thresholds, confirmation requirements, or option-quality checks. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.
 
 For options-mode breakout confirmation, underlying OHLC/ATR remain the signal basis, but relative volume is read from the selected option contract and matched to each underlying bar within half the configured bar interval. Unmatched bars are not forward-filled and fail the volume check. Offline replay can use the same separation with `--volume-confirmation-data <option-bars.csv|parquet>`; its timestamps must exactly match the underlying signal candles. Option volume confirms activity in that contract, not market-wide underlying participation.
 
@@ -81,21 +79,54 @@ disabled. The futures implementation remains available behind the existing
 mode gate for a deliberate future migration back to `intraday_futures`.
 Option paper positions must pass the configured premium stop-risk budget;
 paper mode does not force an oversized minimum lot.
+`max_risk_per_trade` caps the planned stop-risk of each individual trade; the
+active paper experiment sets it to ₹2,000, equal to the 2% daily stop for a
+₹100,000 account. Option stops are set to 10% of the premium; open-position
+stop-risk and realized losses are reserved against the daily budget. For
+example, three 65-unit NIFTY lots at a ₹100 premium reserve ₹1,950 at the
+planned stop, leaving ₹50 available for other entries. One stopped trade can
+therefore consume nearly the full daily budget. This is a paper-only risk
+experiment, not a safe default for live trading; slippage, gaps, and costs can
+make realized losses exceed planned stop-risk. The staged first target is also
+10%, so the nominal initial reward-to-risk is 1:1 before costs. After a
+restart, same-session open paper positions and realized losses are restored
+from the trade journal; invalid or prior-session open records stop startup so
+they can be reconciled safely.
 
 ### VPS systemd setup
 
-Install the provided unit once on the VPS, adjusting `User`, `WorkingDirectory`,
-and both `/opt/sb-pr-dqp` paths in `kite-trading-bot.service` if the repository
-is located elsewhere:
+If using systemd on the VPS, install the service unit once, adjusting `User`,
+`WorkingDirectory`, and the `/opt/sb-pr-dqp` paths in
+`kite-trading-bot.service` if the repository is located elsewhere. Start the
+service manually only after refreshing the daily Kite token:
 
 ```bash
 sudo cp kite-trading-bot.service /etc/systemd/system/kite-trading-bot.service
 sudo systemctl daemon-reload
-sudo systemctl enable kite-trading-bot.service
+```
+
+Kite access tokens expire daily. Each trading day, refresh the token
+interactively on the VPS first:
+
+```bash
+python run_kite_bot.py --authorize-only
+```
+
+The login callback listens on `127.0.0.1:8000`; when authorizing over SSH, keep
+the existing SSH tunnel to that port open and complete the login in a local
+browser. The fresh token is saved to `.env` for the systemd service. After
+authorization succeeds, start the bot manually:
+
+```bash
 sudo systemctl start kite-trading-bot.service
 ```
 
-After copying a new unit file, verify that systemd loaded the intended setting:
+Alternatively, run `python run_kite_bot.py` directly after refreshing the token.
+Do not configure an automatic daily service start: the Kite token must be
+refreshed first. If the token is not refreshed, service startup will fail closed
+rather than place orders with an invalid session.
+
+After installing the service, verify its settings:
 
 ```bash
 systemctl show kite-trading-bot.service -p ExecStart -p Restart -p User -p WorkingDirectory
@@ -114,8 +145,8 @@ journalctl -u kite-trading-bot.service -e
 Use `systemctl stop kite-trading-bot.service` to stop it after close. `systemctl
 restart kite-trading-bot.service` always starts a new process, even when the
 previous process exited normally, so do not use `restart` as the end-of-day
-stop command. The service uses `--no-auth`; refresh the daily Kite token
-interactively before starting it when the token expires.
+stop command. Start it again manually only after refreshing the token for the
+next session.
 
 #### 4. **Monitor Real-Time Dashboard**
 While bot runs, monitor:

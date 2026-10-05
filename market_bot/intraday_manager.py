@@ -6,6 +6,7 @@ Handles position sizing, time-based exits, and leverage management
 from datetime import datetime, time as time_type, timedelta, timezone
 from typing import Optional, Dict
 import logging
+import math
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,8 @@ class IntradayManager:
         trailing_activation_ratio: float = 0.5,
         trailing_distance_ratio: float = 0.25,
         daily_max_loss: Optional[float] = None,
+        daily_max_loss_pct: float = 2.0,
+        max_risk_per_trade: Optional[float] = None,
     ):
         """
         Initialize the intraday manager.
@@ -67,9 +70,13 @@ class IntradayManager:
         """
         self.account_size = account_size
         self.risk_per_trade_pct = risk_per_trade_pct
-        configured_trade_risk = (account_size * risk_per_trade_pct) / 100.0
+        configured_trade_risk = (
+            (account_size * risk_per_trade_pct) / 100.0
+            if max_risk_per_trade is None
+            else max(float(max_risk_per_trade), 0.0)
+        )
         self.daily_max_loss = (
-            max(account_size * 0.02, 250.0)
+            max(account_size * daily_max_loss_pct / 100.0, 0.0)
             if daily_max_loss is None
             else max(float(daily_max_loss), 0.0)
         )
@@ -117,7 +124,6 @@ class IntradayManager:
         symbol: str, 
         entry_price: float, 
         stop_loss_price: float,
-        allow_paper_lot: bool = False,
     ) -> int:
         """
         Calculate position size for futures based on risk management.
@@ -151,22 +157,14 @@ class IntradayManager:
         # Paper mode can observe one complete lot without changing live risk rules.
         if risk_per_lot <= 0:
             return 0
-        lots = int(self.max_risk_per_trade / risk_per_lot)
+        risk_budget = self.available_daily_risk()
+        lots = int(risk_budget / risk_per_lot)
         if lots < 1:
-            if allow_paper_lot:
-                logger.info(
-                    "[%s] Paper position sizing: simulating one lot; "
-                    "estimated risk %.2f exceeds budget %.2f",
-                    symbol,
-                    risk_per_lot,
-                    self.max_risk_per_trade,
-                )
-                return lot_size
             logger.warning(
                 "[%s] One lot risks %.2f, above the configured limit of %.2f; skipping",
                 symbol,
                 risk_per_lot,
-                self.max_risk_per_trade,
+                risk_budget,
             )
             return 0
 
@@ -191,6 +189,12 @@ class IntradayManager:
             return False, f"{symbol} already traded this session; only one trade per symbol per session is allowed"
         if self.daily_pnl <= -self.daily_max_loss:
             return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
+        available_risk = self.available_daily_risk()
+        if available_risk <= 1e-6:
+            return False, (
+                "Aggregate daily risk budget exhausted "
+                f"(open risk plus realized losses reach the {self.daily_max_loss:.0f} cap)"
+            )
         if self.consecutive_losses >= self.max_consecutive_losses:
             return False, (
                 f"Consecutive loss circuit breaker triggered "
@@ -223,6 +227,33 @@ class IntradayManager:
         )
         return abs(entry_price - stop_loss_price) * multiplier * quantity
 
+    def open_position_risk(self) -> float:
+        return sum(
+            self.estimate_trade_risk(
+                symbol,
+                abs(int(position.get("quantity", 0) or 0)),
+                float(position["entry_price"]),
+                float(position["stop_loss"]),
+            )
+            for symbol, position in self.active_positions.items()
+        )
+
+    def available_daily_risk(self) -> float:
+        self._refresh_session()
+        realized_losses = max(-self.daily_pnl, 0.0)
+        remaining_daily_budget = (
+            self.daily_max_loss - realized_losses - self.open_position_risk()
+        )
+        return max(0.0, min(self.max_risk_per_trade, remaining_daily_budget))
+
+    def daily_risk_exceeded(self) -> bool:
+        self._refresh_session()
+        realized_losses = max(-self.daily_pnl, 0.0)
+        return (
+            realized_losses + self.open_position_risk()
+            > self.daily_max_loss + 1e-6
+        )
+
     def record_trade_open(self, symbol: str, direction: str) -> None:
         self._refresh_session()
         self.daily_trade_count += 1
@@ -230,22 +261,61 @@ class IntradayManager:
         logger.info("[%s] Recorded open trade for %s; daily_trade_count=%d", symbol, direction, self.daily_trade_count)
 
     def restore_session_trades(self, trades: list[dict]) -> None:
-        """Restore today's symbol exposure from the persistent trade journal."""
+        """Restore today's symbol exposure and realized P&L from the journal."""
         self._refresh_session()
+        closed_today = []
         for trade in trades:
             symbol = trade.get("ticker") or trade.get("symbol")
-            if not symbol:
-                continue
             try:
                 timestamp = datetime.fromisoformat(
                     str(trade.get("timestamp", "")).replace("Z", "+00:00")
                 )
             except (TypeError, ValueError):
-                continue
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=timezone.utc)
-            if timestamp.astimezone(IST).date() == self._session_date:
+                timestamp = None
+            if timestamp is not None:
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                timestamp = timestamp.astimezone(IST)
+            if (
+                symbol
+                and timestamp is not None
+                and timestamp.date() == self._session_date
+            ):
                 self.session_trade_symbols.add(str(symbol))
+            if trade.get("status") != "closed":
+                continue
+            try:
+                closed_at = datetime.fromisoformat(
+                    str(trade.get("closed_at", "")).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                continue
+            if closed_at.tzinfo is None:
+                closed_at = closed_at.replace(tzinfo=timezone.utc)
+            closed_at = closed_at.astimezone(IST)
+            if closed_at.date() == self._session_date:
+                try:
+                    pnl = float(trade["pnl"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "Cannot restore aggregate daily risk from a closed journal "
+                        "trade with invalid P&L"
+                    ) from exc
+                if not math.isfinite(pnl):
+                    raise RuntimeError(
+                        "Cannot restore aggregate daily risk from a closed journal "
+                        "trade with non-finite P&L"
+                    )
+                closed_today.append((closed_at, pnl))
+
+        closed_today.sort(key=lambda item: item[0])
+        self.daily_pnl = sum(pnl for _, pnl in closed_today)
+        self.consecutive_losses = 0
+        for _, pnl in reversed(closed_today):
+            if pnl < 0:
+                self.consecutive_losses += 1
+            else:
+                break
 
     def record_trade_close(self, symbol: str, reason: str, pnl: float) -> None:
         self._refresh_session()
@@ -274,6 +344,9 @@ class IntradayManager:
         if session_date == self._session_date:
             return
         self._session_date = session_date
+        self.daily_trade_count = 0
+        self.consecutive_losses = 0
+        self.daily_pnl = 0.0
         self.session_trade_symbols.clear()
         self.session_reversal_symbols.clear()
 
@@ -553,25 +626,20 @@ class IntradayManager:
         premium: float,
         max_risk_per_trade: Optional[float] = None,
         premium_stop_pct: float = 0.20,
-        allow_paper_lot: bool = False,
     ) -> int:
         """Premium-based sizing for options: risk = premium * quantity * stop_pct."""
         if premium <= 0:
             return 0
-        risk_budget = max_risk_per_trade if max_risk_per_trade is not None else self.max_risk_per_trade
+        risk_budget = (
+            max_risk_per_trade
+            if max_risk_per_trade is not None
+            else self.available_daily_risk()
+        )
         if risk_budget <= 0:
             return 0
         lot_size = int(self.contract_specs.get(symbol, {}).get("lot_size", 1))
         stop_value_per_lot = premium * premium_stop_pct * lot_size
         max_lots = int(risk_budget / max(stop_value_per_lot, 1e-6))
         if max_lots < 1:
-            if allow_paper_lot:
-                logger.info(
-                    "[%s] Paper option sizing: simulating one lot; estimated risk %.2f exceeds budget %.2f",
-                    symbol,
-                    stop_value_per_lot,
-                    risk_budget,
-                )
-                return lot_size
             return 0
         return min(max_lots, 5) * lot_size
