@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import math
@@ -7,7 +8,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -390,7 +391,15 @@ class KiteMarketStream:
             if expiry not in expiries_by_underlying[underlying]:
                 expiries_by_underlying[underlying].append(expiry)
 
-        expiry_limit = today.toordinal() + max(self.config.option_expiry_days, 0)
+        days_to_month_end = calendar.monthrange(today.year, today.month)[1] - today.day
+        lookahead_days = max(self.config.option_expiry_days, 0, days_to_month_end)
+        expiry_limit = today + timedelta(days=lookahead_days)
+        logger.info(
+            "Option expiry lookahead: through %s (configured=%d days, month-end=%d days)",
+            expiry_limit,
+            self.config.option_expiry_days,
+            days_to_month_end,
+        )
         selected_expiries: Dict[str, date] = {}
         expiry_mode = self.config.option_expiry_mode.lower().strip()
         if expiry_mode not in {"nearest", "next_week"}:
@@ -399,8 +408,14 @@ class KiteMarketStream:
             )
         for underlying, expiries in expiries_by_underlying.items():
             eligible = sorted(
-                expiry for expiry in expiries if expiry.toordinal() <= expiry_limit
+                expiry for expiry in expiries if expiry <= expiry_limit
             )
+            if not eligible:
+                logger.warning(
+                    "Skipping %s: no option expiry through %s",
+                    underlying,
+                    expiry_limit,
+                )
             if expiry_mode == "next_week":
                 if len(eligible) < 2:
                     logger.warning(
