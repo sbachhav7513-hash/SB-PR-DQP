@@ -4,6 +4,7 @@
   "trading_mode": "intraday_options",
   "paper_trading_enabled": true,
   "paper_trade_trend_shadow_signals": false,
+  "paper_shadow_relax_entry_confirmation": false,
   "paper_shadow_min_entry_score": 55,
   "paper_shadow_min_adx": 10.0,
   "paper_shadow_allow_sideways": false,

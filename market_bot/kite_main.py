@@ -888,6 +888,9 @@ class KiteTradingBot:
                         min_score=self._adaptive_paper_min_entry_score(
                             "trend_shadow_paper"
                         ),
+                        require_confirmation=not self._paper_shadow_confirmation_relaxed(
+                            "trend_shadow_paper"
+                        ),
                     )
                 )
                 if not allowed:
@@ -1022,7 +1025,16 @@ class KiteTradingBot:
                 )
                 return
 
-            if not self._has_option_candle_momentum(
+            relax_shadow_confirmation = self._paper_shadow_confirmation_relaxed(
+                getattr(market_score, "strategy_variant", None)
+            )
+            if relax_shadow_confirmation:
+                logger.info(
+                    "[%s] Paper shadow experiment: option candle-momentum "
+                    "confirmation relaxed",
+                    symbol,
+                )
+            elif not self._has_option_candle_momentum(
                 market_score.signal, signal_bars[-1].to_dict()
             ):
                 logger.info(
@@ -1088,6 +1100,9 @@ class KiteTradingBot:
                 hour=now.hour,
                 minute=now.minute,
                 min_score=entry_min_score,
+                require_confirmation=not self._paper_shadow_confirmation_relaxed(
+                    getattr(market_score, "strategy_variant", None)
+                ),
             )
             if not allowed:
                 logger.info(
@@ -1475,6 +1490,17 @@ class KiteTradingBot:
         market_score.strategy_variant = "trend_shadow_paper"
         market_score.reasons.append("Paper-only trend shadow experiment entry")
         return True
+
+    def _paper_shadow_confirmation_relaxed(
+        self, strategy_variant: Optional[str]
+    ) -> bool:
+        """Relax entry confirmation only for explicitly enabled paper shadow trades."""
+        return bool(
+            strategy_variant == "trend_shadow_paper"
+            and self.config.get("paper_shadow_relax_entry_confirmation", False)
+            and self.paper_trading_enabled
+            and not self.live_orders_enabled
+        )
 
     def _paper_shadow_min_entry_score(self) -> Optional[int]:
         if (

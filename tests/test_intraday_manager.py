@@ -206,6 +206,58 @@ def test_trend_shadow_promotion_is_opt_in_and_paper_only():
     assert rejected.signal == "HOLD"
 
 
+def test_shadow_confirmation_relaxation_is_opt_in_and_paper_only():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_shadow_relax_entry_confirmation": True}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+
+    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is True
+    assert bot._paper_shadow_confirmation_relaxed("primary") is False
+
+    bot.live_orders_enabled = True
+    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is False
+
+    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = False
+    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is False
+
+
+def test_accuracy_filter_can_relax_only_directional_confirmation():
+    filters = AccuracyFilters()
+    history = [
+        {"high": 101.0, "low": 99.0, "close": 100.0}
+        for _ in range(14)
+    ]
+    validation = {
+        "symbol": "NIFTY",
+        "signal": "BUY",
+        "score": 85,
+        "history": history,
+        "current_bar": {"close": 99.0},
+        "previous_bar": {"close": 100.0},
+        "current_time": 1000.0,
+        "hour": 10,
+        "minute": 0,
+        "record_entry": False,
+    }
+
+    strict_allowed, strict_reason = filters.validate_entry_with_reason(**validation)
+    relaxed_allowed, relaxed_reason = filters.validate_entry_with_reason(
+        **validation, require_confirmation=False
+    )
+    low_score_allowed, low_score_reason = filters.validate_entry_with_reason(
+        **{**validation, "score": 60}, require_confirmation=False
+    )
+
+    assert strict_allowed is False
+    assert strict_reason == "confirmation"
+    assert relaxed_allowed is True
+    assert relaxed_reason == "OK"
+    assert low_score_allowed is False
+    assert low_score_reason == "score<70"
+
+
 def test_paper_position_size_simulates_one_lot_when_risk_budget_is_too_small():
     manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
 
