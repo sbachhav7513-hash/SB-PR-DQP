@@ -294,3 +294,88 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record rationale, baseline, and pending evaluation.
 - Validation and result: The first combined regression run exposed an incomplete paper-mode test fixture (`trade_journal` was missing); after completing the fixture, focused strategy/runtime tests passed (`80 passed`) and the full suite passed (`153 passed, 1 skipped`). Both configs parsed, `git diff --check` passed, and Pylance reported no engine diagnostics; `kite_main.py` retains two existing warnings.
 - Outcome / follow-up / rollback: This changes candidate eligibility only; no increase in trades or profit is claimed. Compare shadow candidate/rejection counts and separately attributed closed-trade outcomes; disable by removing `paper_shadow_min_trend_strength` or turning off `paper_trade_trend_shadow_signals`.
+
+#### DLY-2026-10-05-03
+
+- Reason: The October 5 paper review recorded 42 `position_size_zero` rejections. The user selected retaining the two-lot minimum and increasing the daily risk budget enough to permit a minimum-risk NIFTY option entry.
+- Related prior entries checked: `DLY-2026-10-02-04`, `DLY-2026-10-05-01`, and `DLY-2026-10-05-02`; prior option sizing requires two risk-qualified lots and caps exposure at three lots.
+- Files:
+  - `kite_config.json` (modified): Raise `daily_max_loss` from ₹250 to ₹350; paper trading remains enabled and live orders remain disabled.
+  - `tests/test_intraday_manager.py` (modified): Verify two 65-unit NIFTY lots at ₹12 premium and a 20% stop fit within the ₹350 risk budget (₹312 estimated stop risk).
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document how the daily-loss setting also caps per-trade sizing and the minimum option risk calculation.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the approved risk-setting change, evidence, and pending paper evaluation.
+- Validation and result: `tests/test_intraday_manager.py` passes (`50 passed`). Both Kite JSON configs parse, the active paper/live guards were checked, and `git diff --check` passes.
+- Outcome / follow-up / rollback: This permits sizing only when contract-specific risk remains within budget; it does not guarantee an entry, a daily trade, or profitability. Compare future zero-size rejections and realized losses. Restore `daily_max_loss` to ₹250 to revert.
+
+#### DLY-2026-10-05-04
+
+- Reason: Complete operational follow-up for the stale option quote and missing scheduled daily start: archived decisions showed quote/bar timestamps 19,800 seconds behind decision time, the bot currently needs a fresh daily Kite token, and the documented service had no weekday timer.
+- Related prior entries checked: `DLY-2026-10-05-01` already records normalization of Kite's naïve host-local timestamps; `DLY-2026-10-02-01` documents the service's clean end-of-day exit behavior.
+- Files:
+  - `market_bot/kite_provider.py` (not modified): Retain the existing timezone-normalization fix and stale-quote rejection; archived stale rows precede that fix and do not justify weakening freshness checks.
+  - `market_bot/intraday_manager.py` (modified): Reserve open-position stop-risk and restored realized losses against the aggregate daily budget, reset daily counters at session rollover, fail closed on invalid same-day realized P&L, and stop paper sizing from simulating lots above that budget.
+  - `market_bot/kite_main.py` (modified): Restore same-session open paper positions, enforce aggregate risk after broker fills, and apply remaining risk to new position sizing.
+  - `market_bot/weekly_report.py` (modified): Add entry-flow totals that distinguish BUY/SELL bar signals and expected unselected option-leg skips from side-eligible candidates and opened entries.
+  - `run_kite_bot.py` (modified): Add mutually exclusive `--authorize-only` mode to refresh and save the daily token without launching another bot process.
+  - `kite-trading-bot.service` (modified): Correct its generic mode description.
+  - `kite-trading-bot.timer` (added): Schedule weekday 08:45 IST startup without replaying a missed start after downtime.
+  - `tests/test_kite_provider.py` (modified): Cover conversion of Kite SDK naïve local datetimes to IST on the current host timezone.
+  - `tests/test_intraday_manager.py` (modified): Cover aggregate risk allocation, realized-loss restoration, daily counter rollover, invalid journal P&L, paper position restoration, post-fill risk rejection, and strict option sizing without a paper-only risk bypass.
+  - `tests/test_paper_reporting.py` (modified): Verify daily entry-flow reporting separates an unselected option leg from eligible candidates.
+  - `tests/test_run_kite_bot.py` (added): Verify authorize-only exits without starting the bot and rejects conflicting auth modes.
+  - `tests/test_kite_provider.py` (modified): Verify option sizing returns no position when the risk budget cannot cover a lot.
+  - `DAILY_WEEKLY_OPERATIONS.md` and `DAILY_CHANGELOG.md` (modified): Document timer installation, manual daily token refresh, and the remaining interactive SSH-tunnel requirement.
+- Validation and result: Focused regressions passed (`100 passed, 1 skipped`); the full suite passed (`163 passed, 1 skipped`). Pylance reported no diagnostics in the changed Python files, both Kite JSON configs parse, and `git diff --check` passed. Systemd unit/timer parsing must still be confirmed on the target VPS because systemd is unavailable on the Windows development host.
+- Outcome / follow-up / rollback: The timer schedules startup but does not automate Kite login or exchange holidays. Refresh the token before each scheduled session and verify the timer on the VPS. Remove the timer and restore manual startup if the deployment does not use systemd.
+
+#### DLY-2026-10-05-05
+
+- Reason: Clarify the risk policy: ₹350 is the maximum planned risk per individual trade, while the daily realized-loss stop should be 2% of the configured options-trading account balance.
+- Related prior entries checked: `DLY-2026-10-05-03` and `DLY-2026-10-05-04`; this corrects the earlier configuration that incorrectly used ₹350 as the daily stop.
+- Files:
+  - `kite_config.json` (modified): Set `max_risk_per_trade` to ₹350 and `daily_max_loss_pct` to 2%; for `account_size` ₹100,000 the daily stop is ₹2,000. Paper trading remains enabled and live orders remain disabled.
+  - `kite_config.example.json` (modified): Document both separate risk settings.
+  - `market_bot/intraday_manager.py` and `market_bot/kite_main.py` (modified): Apply the separate per-trade cap and account-percentage daily stop while continuing to reserve open-position risk against the daily budget.
+  - `tests/test_intraday_manager.py` (modified): Verify a ₹350 loss does not block another eligible trade and the cumulative 2% daily stop does block new entries.
+  - `DAILY_WEEKLY_OPERATIONS.md` and `DAILY_CHANGELOG.md` (modified): Document the corrected policy.
+- Validation and result: Focused manager tests passed (`57 passed`); full suite passed (`164 passed, 1 skipped`). Changed-file diagnostics reported no errors, both Kite JSON configs parse, the active config computes a ₹2,000 daily stop from 2% of ₹100,000, and `git diff --check` passed.
+- Outcome / follow-up: The daily stop scales with `account_size`; the per-trade cap remains ₹350. Reassess only when the options-trading capital or approved risk policy changes.
+
+#### DLY-2026-10-05-06
+
+- Reason: Remove the separate paper-only trend-shadow strategy and filter overrides so paper and live executions evaluate the same signals using the same configured filters.
+- Related prior entries checked: `EXP-2026-09-30-01` through `EXP-2026-10-05-01` describe the now-retired shadow experiments. Their historical records and archived trade reports are retained.
+- Files:
+  - `market_bot/engine.py` (modified): Remove the shadow candidate path and paper-specific ADX, sideways-regime, and trend-strength thresholds.
+  - `market_bot/kite_main.py` (modified): Remove shadow promotion, paper-only relaxed confirmation, and adaptive paper score floors; keep mode flags for execution routing.
+  - `market_bot/accuracy_filters.py` (modified): Require directional confirmation and use the configured score floor consistently.
+  - `kite_config.json` and `kite_config.example.json` (modified): Remove obsolete shadow-only settings.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document that trading mode changes execution only.
+  - `tests/test_strategy.py` and `tests/test_intraday_manager.py` (modified): Remove shadow-specific expectations and verify shared strategy/filter behavior.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record retirement of the experiment; retain prior entries as history.
+- Validation and result: Focused strategy/runtime/reporting tests passed (`86 passed`); the full suite passed (`152 passed, 1 skipped`). Both Kite configs parse, changed Python files have no reported problems, and `git diff --check` passed.
+- Outcome / follow-up: One strategy and shared entry filters now apply in paper and live modes; paper/live enable flags continue to select execution mode. No performance improvement is claimed.
+
+#### DLY-2026-10-05-07
+
+- Reason: Correct the automatic-start setup because Kite access tokens must be refreshed manually every trading day before the bot can start.
+- Related prior entries checked: `DLY-2026-10-05-04` added a weekday timer while noting the daily token refresh requirement; this change removes that timer rather than risking startup with a stale token.
+- Files:
+  - `kite-trading-bot.timer` (removed): Remove the automatic weekday bot startup.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document manual token refresh followed by manual systemd-service or direct bot startup; remove timer installation and verification instructions.
+  - `DAILY_CHANGELOG.md` (modified): Record this correction.
+- Validation and result: `git diff --check` passed; a repository search found no remaining operational timer installation or scheduling references.
+- Outcome / follow-up: Start the bot manually only after the daily Kite token refresh succeeds.
+
+#### DLY-2026-10-05-08
+
+- Reason: The October 5 archived paper session recorded 270 directional decision rows but no `trade_opened` outcome; the daily review reports zero closed trades. The flow includes 165 expected unselected option-leg skips, 42 `position_size_zero`, 56 option-quality rejections, and 7 `position_updated` rows. The user selected a 10% option-premium stop with per-trade planned risk limited by the remaining ₹2,000 daily budget.
+- Related prior entries checked: `DLY-2026-10-05-05` defines the ₹2,000 daily loss stop and `DLY-2026-10-05-06` keeps paper and live signal logic aligned. October 5 is a pre-change baseline; no performance inference is made.
+- Files:
+  - `kite_config.json` and `kite_config.example.json` (modified): Set the paper risk ceiling to ₹2,000 and option premium stop to 10%; the active config remains paper-enabled and live-orders-disabled.
+  - `market_bot/kite_main.py` (modified): Use the latest option premium consistently as the paper entry reference for sizing, stop, and target; live fills continue to reset these levels to fill price.
+  - `tests/test_intraday_manager.py` (modified): Verify latest-premium entry/stop alignment and that a three-lot NIFTY position at ₹100 premium reserves ₹1,950, leaving only ₹50 under the daily cap.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the 1:1 nominal first target/stop relationship and the possibility that one stopped trade consumes nearly the entire daily budget.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the user-selected risk-policy experiment and its pending paper evaluation.
+- Validation and result: `tests/test_intraday_manager.py` and `tests/test_kite_provider.py` passed (`90 passed, 1 skipped`); both Kite config JSON files parse; `git diff --check` passed. Pylance found only two existing `kite_main.py` warnings outside the edited entry path (`datetime.utcnow` deprecation and an unused `signal` parameter).
+- Outcome / follow-up: Paper-only; collect at least 10 comparable closed trades and report stop slippage, costs, P&L, drawdown, and all entry-flow outcomes. Do not enable live orders or claim a performance gain based on increased entries.

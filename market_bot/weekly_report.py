@@ -587,6 +587,7 @@ def write_daily_review(
     hold_reasons: Dict[str, int] = defaultdict(int)
     shadow_rejections: Dict[str, int] = defaultdict(int)
     shadow_candidates = 0
+    option_leg_skips = 0
     has_shadow_telemetry = any(
         "trend_shadow_signal" in item or "trend_shadow_rejection_reason" in item
         for item in decisions
@@ -598,6 +599,8 @@ def write_daily_review(
         outcome = normalize_decision_outcome(decision.get("outcome"))
         outcome_counts[outcome] += 1
         detail = str(decision.get("outcome_detail") or decision.get("outcome") or "")
+        if detail == "OPTION_LEG_SKIPPED":
+            option_leg_skips += 1
         if outcome in {"accuracy_filter", "option_filter", "risk_blocked", "execution_failed"}:
             rejection_counts[detail or outcome] += 1
 
@@ -645,6 +648,12 @@ def write_daily_review(
         "",
         "## Signals",
         *format_counts(signal_counts),
+        "",
+        "## Entry Flow",
+        f"- BUY/SELL signals: {signal_counts['BUY'] + signal_counts['SELL']}",
+        f"- Unselected option-leg skips: {option_leg_skips}",
+        f"- Side-eligible directional candidates: {max(signal_counts['BUY'] + signal_counts['SELL'] - option_leg_skips, 0)}",
+        f"- Entries opened: {outcome_counts['trade_opened']}",
         "",
         "## Outcomes",
         *format_counts(outcome_counts),

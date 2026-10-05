@@ -126,7 +126,7 @@ def authorize(config_path: Path, open_browser: bool = False) -> None:
 
     os.environ["KITE_ACCESS_TOKEN"] = result["access_token"]
     set_local_environment("KITE_ACCESS_TOKEN", result["access_token"])
-    print("Fresh access token saved to .env. Starting the trading bot.")
+    print("Fresh access token saved to .env.")
 
 
 def main() -> None:
@@ -137,12 +137,22 @@ def main() -> None:
         action="store_true",
         help="Open the Kite login page locally instead of printing its URL.",
     )
-    parser.add_argument(
+    auth_mode = parser.add_mutually_exclusive_group()
+    auth_mode.add_argument(
         "--no-auth",
         action="store_true",
         help="Fail clearly when the daily access token is invalid instead of prompting for login.",
     )
+    auth_mode.add_argument(
+        "--authorize-only",
+        action="store_true",
+        help="Refresh the daily Kite access token and exit without starting the bot.",
+    )
     args = parser.parse_args()
+
+    if args.authorize_only:
+        authorize(args.config, open_browser=args.open_browser)
+        return
 
     if not has_valid_access_token(args.config):
         if args.no_auth or not sys.stdin.isatty():

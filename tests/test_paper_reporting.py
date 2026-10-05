@@ -111,6 +111,14 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
             "reasons": ["confirmation"],
         }
     )
+    recorder.record_decision(
+        {
+            "timestamp": timestamp,
+            "signal": "SELL",
+            "outcome": "OPTION_LEG_SKIPPED",
+            "reasons": ["non-preferred option leg"],
+        }
+    )
 
     review = write_daily_review(
         str(tmp_path), str(paper_dir), target_date=date(2026, 9, 30)
@@ -124,6 +132,10 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
         "| NIFTY | BUY | trend_shadow_paper | 60 | N/A | N/A | -10.00 | STOP_LOSS |"
         in content
     )
+    assert "- BUY/SELL signals: 1" in content
+    assert "- Unselected option-leg skips: 1" in content
+    assert "- Side-eligible directional candidates: 0" in content
+    assert "- Entries opened: 0" in content
     assert "accuracy_filter: 1" in content
     assert "accuracy_filter_rejected:volatility: 1" in content
     assert "Sideways regime: 1" in content

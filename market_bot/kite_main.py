@@ -152,9 +152,8 @@ class KiteTradingBot:
         risk_sized_quantity = self.intraday_manager.calculate_option_size(
             symbol,
             premium=max(premium, 0.01),
-            max_risk_per_trade=self.intraday_manager.max_risk_per_trade,
+            max_risk_per_trade=self.intraday_manager.available_daily_risk(),
             premium_stop_pct=premium_stop_pct,
-            allow_paper_lot=False,
         )
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
         minimum_lots = int(self.config.get("option_min_lots", 2))
@@ -201,6 +200,8 @@ class KiteTradingBot:
             trailing_activation_ratio=self.config.get("trailing_activation_ratio", 0.5),
             trailing_distance_ratio=self.config.get("trailing_distance_ratio", 0.25),
             daily_max_loss=self.config.get("daily_max_loss"),
+            daily_max_loss_pct=self.config.get("daily_max_loss_pct", 2.0),
+            max_risk_per_trade=self.config.get("max_risk_per_trade"),
         )
 
         self.bar_builder = BarBuilder(
@@ -247,7 +248,10 @@ class KiteTradingBot:
         )
         self.paper_trading_dir = self.config.get("paper_trading_dir", "paper_trading_data")
         self.trade_journal = TradeJournal("trades.jsonl", self.paper_trading_dir)
-        self.intraday_manager.restore_session_trades(self.trade_journal.read_trades())
+        session_trades = self.trade_journal.read_trades()
+        self.intraday_manager.restore_session_trades(session_trades)
+        if self.paper_trading_enabled:
+            self._restore_paper_positions(session_trades)
         self.decision_journal = DecisionJournal(
             self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
@@ -300,6 +304,100 @@ class KiteTradingBot:
             notifier = getattr(self, "telegram_notifier", None)
             if notifier:
                 notifier.send_message(f"URGENT: broker reconciliation failed; trading paused.\n{exc}")
+
+    def _restore_paper_positions(self, trades: list[dict]) -> None:
+        today = datetime.now(IST).date()
+        for trade in trades:
+            if trade.get("status") != "open":
+                continue
+            symbol = trade.get("ticker") or trade.get("symbol")
+            timestamp = self._journal_datetime(trade.get("timestamp"))
+            if not symbol or timestamp is None or timestamp.date() != today:
+                raise RuntimeError(
+                    "Cannot safely restore an open paper position outside today's "
+                    f"session: {symbol or 'unknown'}"
+                )
+            try:
+                direction = str(trade.get("action", "")).upper()
+                quantity = int(trade.get("quantity", 0))
+                entry_price = float(trade["entry"])
+                stop_loss = float(trade["stop_loss"])
+                take_profit = float(trade["take_profit"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise RuntimeError(
+                    f"Open paper position {symbol} has invalid journal risk fields"
+                ) from exc
+            if (
+                direction not in {"BUY", "SELL"}
+                or quantity <= 0
+                or entry_price <= 0
+                or stop_loss <= 0
+                or take_profit <= 0
+                or not all(
+                    math.isfinite(value)
+                    for value in (entry_price, stop_loss, take_profit)
+                )
+            ):
+                raise RuntimeError(
+                    f"Open paper position {symbol} has invalid journal risk fields"
+                )
+            if str(symbol) in self.intraday_manager.active_positions:
+                raise RuntimeError(
+                    f"Multiple open paper journal entries found for {symbol}"
+                )
+
+            self.intraday_manager.register_position(
+                str(symbol),
+                direction,
+                quantity,
+                entry_price,
+                stop_loss,
+                take_profit,
+                signal_score=(
+                    int(trade["score"]) if trade.get("score") is not None else None
+                ),
+                staged_targets_enabled=(
+                    trade.get("exit_strategy") == "tiered_milestone"
+                ),
+                target_increment_pct=float(
+                    trade.get(
+                        "option_milestone_pct",
+                        self.config.get("option_milestone_pct", 0.10),
+                    )
+                ),
+                minimum_signal_score=(
+                    int(trade["minimum_signal_score"])
+                    if trade.get("minimum_signal_score") is not None
+                    else None
+                ),
+                strong_signal_score=int(self.config.get("strong_signal_score", 82)),
+                entry_time=self._journal_datetime(trade.get("entry_time")) or timestamp,
+                milestone_started_at=self._journal_datetime(
+                    trade.get("milestone_started_at")
+                ),
+                target_stage=int(trade.get("target_stage", 0) or 0),
+                trailing_stop=(
+                    float(trade["trailing_stop"])
+                    if trade.get("trailing_stop") is not None
+                    else None
+                ),
+                current_signal_score=(
+                    int(trade["current_signal_score"])
+                    if trade.get("current_signal_score") is not None
+                    else None
+                ),
+                decision_window_minutes=(
+                    int(trade["decision_window_minutes"])
+                    if trade.get("decision_window_minutes") is not None
+                    else None
+                ),
+            )
+
+        if self.intraday_manager.daily_risk_exceeded():
+            raise RuntimeError(
+                "Restored paper positions and realized losses exceed the aggregate "
+                f"daily risk cap of {self.intraday_manager.daily_max_loss:.2f}"
+            )
 
     def _persist_risk_state(self, positions: list[dict], orders: list[dict]) -> None:
         target_date = datetime.now(IST).date().isoformat()
@@ -375,7 +473,15 @@ class KiteTradingBot:
             entry_price = float(trade.get("entry", broker_position.get("average_price", 0.0)))
             stop_loss = float(trade.get("stop_loss", entry_price))
             take_profit = float(trade.get("take_profit", entry_price))
-            if entry_price <= 0 or stop_loss <= 0 or take_profit <= 0:
+            if (
+                entry_price <= 0
+                or stop_loss <= 0
+                or take_profit <= 0
+                or not all(
+                    math.isfinite(value)
+                    for value in (entry_price, stop_loss, take_profit)
+                )
+            ):
                 raise RuntimeError(f"Open trade {symbol} has incomplete risk levels")
             if not trade.get("protection_order_id"):
                 raise RuntimeError(f"Open trade {symbol} has no recorded protective stop")
@@ -469,6 +575,11 @@ class KiteTradingBot:
             for row in positions
         )
         self.intraday_manager.daily_pnl = realized_pnl
+        if self.intraday_manager.daily_risk_exceeded():
+            raise RuntimeError(
+                "Broker positions and realized losses exceed the aggregate daily "
+                f"risk cap of {self.intraday_manager.daily_max_loss:.2f}"
+            )
         self._risk_state_reconciled = True
 
     def _reconcile_after_order_failure(self, symbol: str) -> None:
@@ -522,8 +633,12 @@ class KiteTradingBot:
         return preferred is not None and symbol == preferred
 
     def _option_trade_action(self, symbol: str, signal: str) -> str:
-        """Buy the selected option leg instead of shorting the bearish leg."""
-        if self._options_enabled() and symbol.endswith("_PE") and signal == "SELL":
+        """Buy the trend-aligned option leg and never short an option."""
+        if self._options_enabled() and symbol.endswith(("_CE", "_PE")):
+            if signal not in {"BUY", "SELL"} or not self._option_leg_is_active(
+                symbol, signal
+            ):
+                return "HOLD"
             return "BUY"
         return signal
 
@@ -821,32 +936,6 @@ class KiteTradingBot:
                 signal_proximity_pct=float(
                     self.config.get("signal_proximity_pct", 0.005)
                 ),
-                allow_paper_shadow_sideways=(
-                    self.config.get("paper_trade_trend_shadow_signals", False)
-                    and self.config.get("paper_shadow_allow_sideways", False)
-                    and self.paper_trading_enabled
-                    and not self.live_orders_enabled
-                ),
-                paper_shadow_min_adx=(
-                    float(self.config["paper_shadow_min_adx"])
-                    if (
-                        self.config.get("paper_trade_trend_shadow_signals", False)
-                        and self.paper_trading_enabled
-                        and not self.live_orders_enabled
-                        and "paper_shadow_min_adx" in self.config
-                    )
-                    else None
-                ),
-                paper_shadow_min_trend_strength=(
-                    float(self.config["paper_shadow_min_trend_strength"])
-                    if (
-                        self.config.get("paper_trade_trend_shadow_signals", False)
-                        and self.paper_trading_enabled
-                        and not self.live_orders_enabled
-                        and "paper_shadow_min_trend_strength" in self.config
-                    )
-                    else None
-                ),
                 volume_confirmation_history=volume_confirmation_history,
             )
         except Exception:
@@ -862,60 +951,6 @@ class KiteTradingBot:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
 
-        shadow_signal = getattr(market_score, "trend_shadow_signal", None)
-        if shadow_signal in {"BUY", "SELL"}:
-            shadow_rejection = getattr(
-                market_score, "trend_shadow_rejection_reason", None
-            )
-            if news_context and not shadow_rejection:
-                _, news_reason = apply_news_filter(shadow_signal, news_context)
-                if news_reason:
-                    shadow_rejection = f"news: {news_reason}"
-
-            now = datetime.now(IST)
-            if not shadow_rejection and session_state != "REGULAR_SESSION":
-                shadow_rejection = f"market_session: {session_state.lower()}"
-            if not shadow_rejection and self._late_window_blocked(now):
-                shadow_rejection = "late_window"
-            if not shadow_rejection:
-                previous_bar = (
-                    signal_bars[-2].to_dict()
-                    if len(signal_bars) > 1
-                    else signal_bars[-1].to_dict()
-                )
-                allowed, rejection_reason = (
-                    self.accuracy_filters.validate_entry_with_reason(
-                        symbol=symbol,
-                        signal=shadow_signal,
-                        score=market_score.score,
-                        history=history,
-                        current_bar=signal_bars[-1].to_dict(),
-                        previous_bar=previous_bar,
-                        current_time=time.time(),
-                        hour=now.hour,
-                        minute=now.minute,
-                        record_entry=False,
-                        min_score=self._adaptive_paper_min_entry_score(
-                            "trend_shadow_paper"
-                        ),
-                        require_confirmation=not self._paper_shadow_confirmation_relaxed(
-                            "trend_shadow_paper"
-                        ),
-                    )
-                )
-                if not allowed:
-                    shadow_rejection = rejection_reason
-
-            market_score.trend_shadow_rejection_reason = shadow_rejection
-            paper_shadow_promoted = self._promote_paper_shadow_signal(market_score)
-            logger.info(
-                "[%s] TREND_SHADOW signal=%s status=%s",
-                symbol,
-                shadow_signal,
-                "paper_only_entry_enabled"
-                if paper_shadow_promoted
-                else shadow_rejection or "signal_gates_passed_no_order",
-            )
         logger.info(
             "[%s] Score=%s Signal=%s Reasons=%s",
             symbol,
@@ -1035,16 +1070,7 @@ class KiteTradingBot:
                 )
                 return
 
-            relax_shadow_confirmation = self._paper_shadow_confirmation_relaxed(
-                getattr(market_score, "strategy_variant", None)
-            )
-            if relax_shadow_confirmation:
-                logger.info(
-                    "[%s] Paper shadow experiment: option candle-momentum "
-                    "confirmation relaxed",
-                    symbol,
-                )
-            elif not self._has_option_candle_momentum(
+            if not self._has_option_candle_momentum(
                 market_score.signal, signal_bars[-1].to_dict()
             ):
                 logger.info(
@@ -1091,14 +1117,7 @@ class KiteTradingBot:
             )
             current_time = time.time()
             now = datetime.now(IST)
-            entry_min_score = self._adaptive_paper_min_entry_score(
-                getattr(market_score, "strategy_variant", None)
-            )
-            position_minimum_score = (
-                entry_min_score
-                if entry_min_score is not None
-                else self.accuracy_filters.min_score_floor
-            )
+            position_minimum_score = self.accuracy_filters.min_score_floor
             allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
                 symbol=symbol,
                 signal=market_score.signal,
@@ -1109,10 +1128,7 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
-                min_score=entry_min_score,
-                require_confirmation=not self._paper_shadow_confirmation_relaxed(
-                    getattr(market_score, "strategy_variant", None)
-                ),
+                min_score=self.accuracy_filters.min_score_floor,
             )
             if not allowed:
                 logger.info(
@@ -1484,110 +1500,6 @@ class KiteTradingBot:
             return reason
         return reason
 
-    def _promote_paper_shadow_signal(self, market_score) -> bool:
-        """Promote a validated shadow candidate only for opted-in paper trading."""
-        if (
-            not self.config.get("paper_trade_trend_shadow_signals", False)
-            or not self.paper_trading_enabled
-            or self.live_orders_enabled
-            or market_score.signal != "HOLD"
-            or market_score.trend_shadow_signal not in {"BUY", "SELL"}
-            or market_score.trend_shadow_rejection_reason
-        ):
-            return False
-
-        market_score.signal = market_score.trend_shadow_signal
-        market_score.strategy_variant = "trend_shadow_paper"
-        market_score.reasons.append("Paper-only trend shadow experiment entry")
-        return True
-
-    def _paper_shadow_confirmation_relaxed(
-        self, strategy_variant: Optional[str]
-    ) -> bool:
-        """Relax entry confirmation only for explicitly enabled paper shadow trades."""
-        return bool(
-            strategy_variant == "trend_shadow_paper"
-            and self.config.get("paper_shadow_relax_entry_confirmation", False)
-            and self.paper_trading_enabled
-            and not self.live_orders_enabled
-        )
-
-    def _paper_shadow_min_entry_score(self) -> Optional[int]:
-        if (
-            self.config.get("paper_trade_trend_shadow_signals", False)
-            and self.paper_trading_enabled
-            and not self.live_orders_enabled
-        ):
-            return int(
-                self.config.get(
-                    "paper_shadow_min_entry_score",
-                    self.accuracy_filters.min_score_floor,
-                )
-            )
-        return None
-
-    def _adaptive_paper_min_entry_score(
-        self, strategy_variant: Optional[str] = None
-    ) -> Optional[int]:
-        """Adapt only paper score floors, isolated to the current strategy variant."""
-        if not getattr(self, "paper_trading_enabled", False) or getattr(
-            self, "live_orders_enabled", False
-        ):
-            return None
-
-        variant = strategy_variant or "primary"
-        base_floor = (
-            int(
-                self.config.get(
-                    "paper_shadow_min_entry_score",
-                    self.accuracy_filters.min_score_floor,
-                )
-            )
-            if variant == "trend_shadow_paper"
-            else self.accuracy_filters.min_score_floor
-        )
-        closed_pnls = []
-        for trade in self.trade_journal.read_trades():
-            if trade.get("status") != "closed":
-                continue
-            if str(trade.get("strategy_variant") or "primary") != variant:
-                continue
-            try:
-                pnl = float(trade.get("pnl"))
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Ignoring closed trade with invalid P&L for adaptive score: %s",
-                    trade.get("ticker", "unknown"),
-                )
-                continue
-            if not math.isfinite(pnl):
-                logger.warning(
-                    "Ignoring closed trade with non-finite P&L for adaptive score: %s",
-                    trade.get("ticker", "unknown"),
-                )
-                continue
-            closed_pnls.append(pnl)
-
-        recent_pnls = closed_pnls[-10:]
-        recent_win_rate = (
-            sum(pnl > 0 for pnl in recent_pnls) / len(recent_pnls) * 100.0
-            if recent_pnls
-            else 0.0
-        )
-        min_score = self.accuracy_filters.get_min_score(
-            recent_trades=len(recent_pnls),
-            recent_win_rate=recent_win_rate,
-            configured_min_score=base_floor,
-        )
-        logger.debug(
-            "Adaptive paper score floor: variant=%s trades=%d win_rate=%.1f%% floor=%d",
-            variant,
-            len(recent_pnls),
-            recent_win_rate,
-            min_score,
-        )
-        return min_score
-
     def _record_decision(
         self,
         symbol: str,
@@ -1614,12 +1526,6 @@ class KiteTradingBot:
                 "reasons": reasons,
                 "strategy_variant": (
                     getattr(market_score, "strategy_variant", None) or "primary"
-                ),
-                "trend_shadow_signal": getattr(
-                    market_score, "trend_shadow_signal", None
-                ),
-                "trend_shadow_rejection_reason": getattr(
-                    market_score, "trend_shadow_rejection_reason", None
                 ),
                 "news_risk": news_context.risk_level if news_context else "DISABLED",
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
@@ -1662,6 +1568,7 @@ class KiteTradingBot:
                     staged_option_targets
                 )
                 premium = float(self.latest_prices.get(symbol, price))
+                price = premium
                 stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
                 take_profit = price * (1.0 + premium_target_pct)
                 quantity = self._calculate_option_quantity(
@@ -1680,7 +1587,6 @@ class KiteTradingBot:
                     symbol,
                     price,
                     stop_loss,
-                    allow_paper_lot=self.paper_trading_enabled,
                 )
 
             if quantity == 0:
@@ -1762,6 +1668,14 @@ class KiteTradingBot:
             ):
                 self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
                 return "risk_blocked:filled_risk_exceeds_limit"
+            if (
+                self.live_orders_enabled
+                and self.intraday_manager.daily_risk_exceeded()
+            ):
+                self._abort_live_entry(
+                    symbol, price, "AGGREGATE_RISK_LIMIT_EXCEEDED"
+                )
+                return "risk_blocked:filled_risk_exceeds_aggregate_limit"
 
             mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
@@ -1857,6 +1771,7 @@ class KiteTradingBot:
                     staged_option_targets
                 )
                 premium = float(self.latest_prices.get(symbol, price))
+                price = premium
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
                 take_profit = max(price * (1.0 - premium_target_pct), 0.01)
                 quantity = self._calculate_option_quantity(
@@ -1875,7 +1790,6 @@ class KiteTradingBot:
                     symbol,
                     price,
                     stop_loss,
-                    allow_paper_lot=self.paper_trading_enabled,
                 )
 
             if quantity == 0:
@@ -1957,6 +1871,14 @@ class KiteTradingBot:
             ):
                 self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
                 return "risk_blocked:filled_risk_exceeds_limit"
+            if (
+                self.live_orders_enabled
+                and self.intraday_manager.daily_risk_exceeded()
+            ):
+                self._abort_live_entry(
+                    symbol, price, "AGGREGATE_RISK_LIMIT_EXCEEDED"
+                )
+                return "risk_blocked:filled_risk_exceeds_aggregate_limit"
 
             mode = "intraday_options" if self._options_enabled() else "futures"
             option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None

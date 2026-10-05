@@ -281,3 +281,50 @@ No completed experiments recorded yet.
 - Decision: Paper-only experiment, not a claim of increased profitability or guaranteed entries.
 - Rollback: Remove `paper_shadow_min_trend_strength` from the active config or disable `paper_trade_trend_shadow_signals`.
 - Follow-up: Review the daily report's shadow candidate/rejection counts and closed trades after each session; keep this single-variable trial isolated until the sample threshold is met.
+
+### EXP-2026-10-05-02
+
+- Status: running; execution-frequency and performance outcomes are unmeasured.
+- Problem and evidence: The October 5, 2026 daily paper review recorded 42 `position_size_zero` rejections. The active ₹250 `daily_max_loss` also caps per-trade sizing; two NIFTY lots at the configured ₹12 minimum premium and 20% stop have ₹312 estimated stop risk (65-unit lot).
+- Prior related log entries checked: `EXP-2026-10-02-04` and `EXP-2026-10-02-05` document the paper-only option sizing and entry-confirmation controls. This change does not alter signal thresholds, option quality filters, lot bounds, or live execution.
+- Hypothesis: Raising only the configured loss/risk budget to ₹350 should allow a minimum-premium two-lot NIFTY entry to pass risk sizing when sufficient aggregate daily budget remains; higher-risk contracts and entries exceeding the combined open-risk/realized-loss budget remain ineligible.
+- Single variable being changed: Active `daily_max_loss`, from ₹250 to ₹350.
+- Code commit/version and config before: Revision `5a449fd`; active paper-only config had account size ₹100,000, per-trade risk 1%, two-lot minimum, 20% option stop, ₹250 daily loss cap, and live orders disabled.
+- Baseline period and metrics: October 5 daily review: 9,683 decisions, 270 BUY/SELL signals, zero closed trades, and 42 `position_size_zero` outcomes. Comparable entry and P&L performance by premium/underlying is unavailable.
+- Test method and fixed evaluation period/sample: Verify two 65-unit NIFTY lots at ₹12 premium require ₹312 and fit the ₹350 budget. After the next 10 comparable paper sessions, compare zero-size rejections, opened and closed trades, risk at entry, realized P&L, and drawdown; do not infer profitability from trade frequency.
+- Change made: Set active `daily_max_loss` to ₹350; paper mode stays on and live orders stay off. Dated 2026-10-05.
+- Results: `tests/test_intraday_manager.py` passes (`50 passed`); config/diff validation passes. Paper-market frequency and P&L observations are pending.
+- Decision and evidence: The selected cap covers this specified minimum-risk example with ₹38 headroom; the follow-up implementation now reserves aggregate open stop-risk and realized daily losses against the same ₹350 cap. This does not guarantee an entry or establish strategy profitability.
+- Rollback/version if reverted: Set `daily_max_loss` back to ₹250.
+- Follow-up or reason to revisit: Review simultaneous open-position exposure and the paper daily P&L cap behavior; revisit the cap only with explicit risk approval and measured results.
+
+#### Risk policy clarification — 2026-10-05
+
+- Correction: The ₹350 setting is a maximum planned loss per individual trade, not the daily stop. The active config now sets `max_risk_per_trade` to ₹350 and `daily_max_loss_pct` to 2% of `account_size` (₹2,000 for ₹100,000).
+- Behavior: A ₹350 loss alone does not stop new trades. Realized daily losses reaching the 2% stop block new entries; open-position stop-risk is also reserved against that daily budget.
+- Validation: Regression tests verify another trade remains eligible after a ₹350 loss and that the cumulative daily stop blocks entries.
+- Paper performance remains unmeasured; this risk-policy correction does not promise a trade every day or profitability.
+
+#### Single strategy across paper and live modes — 2026-10-05
+
+- Decision: Retire the paper-only trend-shadow strategy and its relaxed filters following the user's request to maintain one strategy and use configuration only to select paper or live execution.
+- Implementation: Paper and live modes now share the same scorer, configured score floor, directional confirmation, option-candle confirmation, and risk/quality gates. Removed shadow signal promotion, per-variant adaptive paper floors, and shadow-specific config keys.
+- Historical records: Earlier shadow experiment entries, trade rows, and archived candidate telemetry are retained as historical data; they no longer define active runtime behavior.
+- Validation: Focused strategy/runtime/reporting tests passed (`86 passed`); the full suite passed (`152 passed, 1 skipped`). Both Kite configs parse and `git diff --check` passed.
+- Performance outcome: Unmeasured. This is a consistency/maintenance change, not a claim of improved strategy performance.
+
+### EXP-2026-10-05-03
+
+- Status: running; frequency and performance outcomes are unmeasured.
+- Problem and evidence: The October 5 decision archive contains 270 BUY/SELL decision rows but no `trade_opened` outcome; the same-day review reports zero closed trades. The decision flow includes 165 unselected option-leg skips, 42 `position_size_zero` outcomes, 56 option-quality rejections, and 7 `position_updated` outcomes. These rows are repeated bar decisions, not 270 independent opportunities. This archive predates retirement of the paper-only shadow strategy, so it is diagnostic rather than a comparable baseline for the current unified strategy.
+- Prior related log entries checked: `EXP-2026-10-02-04` and `EXP-2026-10-02-05` describe option signal confirmation and sizing; `EXP-2026-10-05-02` documented the earlier ₹350 sizing cap and was superseded by the distinct ₹2,000 daily-stop policy. The current code uses option premium and contract lot size to estimate stop-risk.
+- Hypothesis: A 10% premium stop and a per-trade ceiling equal to the remaining ₹2,000 daily risk budget may admit some otherwise-valid ATM option entries while preserving the aggregate daily stop-risk limit.
+- Single policy being changed: Option stop-risk budget policy, from a fixed ₹350 per-trade cap and 20% premium stop to a 10% premium stop sized up to the remaining 2% daily budget. The 10% staged first target remains unchanged, making the nominal first-stage reward-to-risk 1:1 before costs.
+- Code/config before: Active config was paper-enabled/live-disabled, account size ₹100,000, `max_risk_per_trade=350`, `daily_max_loss_pct=2`, two-lot minimum, 20% option stop, and 10% first milestone.
+- Baseline period and metrics: 2026-10-05; 9,683 decisions, 270 BUY/SELL decision rows, no `trade_opened` outcome, and 0 closed trades. Entry flow: 165 unselected-leg skips, 42 sizing rejects, 56 option-quality rejects, and 7 position updates. This predates shadow-strategy retirement, so it is not a matched current-strategy baseline. The 42 sizing rows do not preserve premium/lot risk detail, so the exact entry increase cannot be replayed from this archive.
+- Test method and fixed evaluation period/sample: Keep universe, signal score, trend/context filters, confirmation, quote freshness, contract-quality floors, lot bounds, and exits unchanged. Compare entry-flow counts and stop-risk utilization across the next 10 paper sessions; evaluate P&L, fees/slippage, drawdown, win/loss size, and expectancy only after at least 10 closed trades. Keep live orders disabled.
+- Change made: Set `max_risk_per_trade=2000` and `option_premium_stop_pct=0.10` in the active and example configs. Align paper entry price, sizing premium, and stop/target reference to the latest option price; live entries continue recalculating from broker fill price.
+- Results: Focused manager/provider tests passed (`90 passed, 1 skipped`); both JSON configs parse and `git diff --check` passes. Paper-market frequency and performance remain pending.
+- Decision: User-approved paper risk experiment only. A stopped position may consume nearly the entire ₹2,000 daily stop; daily loss and aggregate open-risk checks remain enabled. No daily trade or profitability is guaranteed.
+- Rollback: Restore `max_risk_per_trade=350` and `option_premium_stop_pct=0.20` in the configs; revert the latest-premium alignment change if its regression test fails.
+- Follow-up: Review the actual number of opened trades and stop-risk utilization, then closed-trade metrics. Never treat increased frequency by itself as an improvement.

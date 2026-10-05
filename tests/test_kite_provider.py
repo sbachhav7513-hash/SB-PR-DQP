@@ -3,6 +3,7 @@ import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, call, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -227,10 +228,22 @@ def test_buy_uses_ce_and_sell_uses_pe_for_underlying():
 
 def test_bearish_option_signal_buys_pe_instead_of_shorting_it():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"trading_mode": "intraday_options"}
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {"NIFTY_CE": 200, "NIFTY_PE": 201},
+    }
 
     assert bot._option_trade_action("NIFTY_CE", "BUY") == "BUY"
     assert bot._option_trade_action("NIFTY_PE", "SELL") == "BUY"
+    assert bot._option_trade_action("NIFTY_CE", "SELL") == "HOLD"
+    assert bot._option_trade_action("NIFTY_PE", "BUY") == "HOLD"
+
+
+def test_futures_sell_action_is_unchanged_in_both_mode():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_both"}
+
+    assert bot._option_trade_action("NIFTY", "SELL") == "SELL"
 
 
 def test_option_selection_does_not_fallback_to_the_opposite_leg():
@@ -576,7 +589,7 @@ def test_intraday_manager_allows_multiple_trades_but_blocks_symbol_repeats():
     assert "reversed" in reason.lower() or "loss" in reason.lower() or "trade" in reason.lower()
 
 
-def test_option_position_size_uses_contract_lots_and_paper_fallback():
+def test_option_position_size_uses_contract_lots_and_respects_risk_budget():
     manager = IntradayManager(account_size=100000, risk_per_trade_pct=1.0)
     manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
 
@@ -586,9 +599,6 @@ def test_option_position_size_uses_contract_lots_and_paper_fallback():
     assert manager.calculate_option_size(
         "NIFTY_CE", premium=100.0, premium_stop_pct=0.35
     ) == 0
-    assert manager.calculate_option_size(
-        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35, allow_paper_lot=True
-    ) == 65
 
 
 def test_refresh_instrument_tokens_fails_for_unresolved_symbols():
@@ -806,6 +816,19 @@ def test_on_ticks_uses_kite_exchange_timestamp_and_volume_fields():
         exchange_epoch, tz=timezone.utc
     ).astimezone(tick.timestamp.tzinfo)
     assert tick.volume == 42
+
+
+def test_naive_kite_timestamp_normalizes_from_host_local_time():
+    exchange_epoch = datetime(
+        2026, 10, 5, 4, 50, tzinfo=timezone.utc
+    ).timestamp()
+    raw_timestamp = datetime.fromtimestamp(exchange_epoch)
+
+    normalized = KiteMarketStream._normalize_exchange_timestamp(raw_timestamp)
+
+    assert normalized == datetime.fromtimestamp(
+        exchange_epoch, tz=ZoneInfo("Asia/Kolkata")
+    )
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX timezone control")

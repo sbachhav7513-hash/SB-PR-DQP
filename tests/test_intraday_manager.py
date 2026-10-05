@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.bar_builder import Bar
 from market_bot.intraday_manager import IntradayManager
@@ -41,7 +43,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "option_premium_stop_pct": 0.20,
+        "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
     }
     bot.live_orders_enabled = False
@@ -67,20 +69,84 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
         "NIFTY_CE",
         premium=123.0,
         max_risk_per_trade=bot.intraday_manager.max_risk_per_trade,
-        premium_stop_pct=0.20,
-        allow_paper_lot=False,
+        premium_stop_pct=0.10,
+    )
+    position = bot.intraday_manager.active_positions["NIFTY_CE"]
+    assert position["entry_price"] == 123.0
+    assert position["stop_loss"] == pytest.approx(110.7)
+
+
+def test_active_paper_config_sizes_options_within_remaining_daily_risk():
+    with open("kite_config.json", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    manager = IntradayManager(
+        account_size=config["account_size"],
+        max_risk_per_trade=config["max_risk_per_trade"],
+        daily_max_loss_pct=config["daily_max_loss_pct"],
+    )
+    manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
+    bot = object.__new__(KiteTradingBot)
+    bot.config = config
+    bot.intraday_manager = manager
+
+    quantity = bot._calculate_option_quantity(
+        "NIFTY_CE",
+        premium=100.0,
+        premium_stop_pct=config["option_premium_stop_pct"],
+    )
+    risk = manager.estimate_trade_risk(
+        "NIFTY_CE",
+        quantity,
+        100.0,
+        100.0 * (1.0 - config["option_premium_stop_pct"]),
     )
 
+    assert config["paper_trading_enabled"] is True
+    assert config["live_orders_enabled"] is False
+    assert manager.daily_max_loss == 2_000.0
+    assert quantity == 3 * 65
+    assert risk == pytest.approx(1_950.0)
+    assert risk <= manager.available_daily_risk()
 
-def test_daily_loss_limit_caps_per_trade_risk_budget():
+    manager.register_position("NIFTY_CE", "BUY", quantity, 100.0, 90.0, 110.0)
+    assert manager.available_daily_risk() == pytest.approx(50.0)
+
+
+def test_per_trade_risk_cap_is_separate_from_two_percent_daily_stop():
     manager = IntradayManager(
         account_size=100_000,
         risk_per_trade_pct=1.0,
-        daily_max_loss=250.0,
+        max_risk_per_trade=350.0,
+        daily_max_loss_pct=2.0,
     )
 
-    assert manager.max_risk_per_trade == 250.0
-    assert manager.calculate_position_size("NIFTY", 100.0, 90.0) == 0
+    manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
+
+    assert manager.max_risk_per_trade == 350.0
+    assert manager.daily_max_loss == 2_000.0
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=12.0, premium_stop_pct=0.20
+    ) == 130
+
+    manager.record_trade_close("NIFTY_CE", "STOP_LOSS", pnl=-350.0)
+
+    assert manager.can_open_trade("BANKNIFTY_CE", "BUY") == (True, "OK")
+    assert manager.available_daily_risk() == 350.0
+
+
+def test_two_percent_daily_loss_stop_blocks_after_cumulative_losses():
+    manager = IntradayManager(
+        account_size=100_000,
+        max_risk_per_trade=350.0,
+        daily_max_loss_pct=2.0,
+    )
+    manager.daily_pnl = -2_000.0
+
+    allowed, reason = manager.can_open_trade("NIFTY_CE", "BUY")
+
+    assert allowed is False
+    assert "daily loss cap" in reason.lower()
 
 
 def test_one_minute_volatility_floor_uses_configurable_small_percentage():
@@ -158,72 +224,15 @@ def test_primary_score_floor_is_70_and_shadow_override_remains_available():
     below_floor_allowed, below_floor_reason = (
         AccuracyFilters().validate_entry_with_reason(**below_floor)
     )
-    shadow_validation = {**validation, "score": 60}
-    shadow_allowed, shadow_reason = AccuracyFilters().validate_entry_with_reason(
-        **shadow_validation, min_score=55
-    )
-
     assert primary_allowed is True
     assert primary_reason == "OK"
     assert below_floor_allowed is False
     assert below_floor_reason == "score<70"
     assert AccuracyFilters.should_enter_trade("BUY", 70, True, True)
     assert not AccuracyFilters.should_enter_trade("BUY", 69, True, True)
-    assert shadow_allowed is True
-    assert shadow_reason == "OK"
 
 
-def test_trend_shadow_promotion_is_opt_in_and_paper_only():
-    bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_trade_trend_shadow_signals": True}
-    bot.paper_trading_enabled = True
-    bot.live_orders_enabled = False
-    bot.accuracy_filters = AccuracyFilters()
-    bot.config["paper_shadow_min_entry_score"] = 55
-    assert bot._paper_shadow_min_entry_score() == 55
-    candidate = SimpleNamespace(
-        signal="HOLD",
-        trend_shadow_signal="BUY",
-        trend_shadow_rejection_reason=None,
-        strategy_variant=None,
-        reasons=[],
-    )
-
-    assert bot._promote_paper_shadow_signal(candidate) is True
-    assert candidate.signal == "BUY"
-    assert candidate.strategy_variant == "trend_shadow_paper"
-
-    bot.live_orders_enabled = True
-    assert bot._paper_shadow_min_entry_score() is None
-    rejected = SimpleNamespace(
-        signal="HOLD",
-        trend_shadow_signal="SELL",
-        trend_shadow_rejection_reason=None,
-        strategy_variant=None,
-        reasons=[],
-    )
-    assert bot._promote_paper_shadow_signal(rejected) is False
-    assert rejected.signal == "HOLD"
-
-
-def test_shadow_confirmation_relaxation_is_opt_in_and_paper_only():
-    bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_shadow_relax_entry_confirmation": True}
-    bot.paper_trading_enabled = True
-    bot.live_orders_enabled = False
-
-    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is True
-    assert bot._paper_shadow_confirmation_relaxed("primary") is False
-
-    bot.live_orders_enabled = True
-    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is False
-
-    bot.live_orders_enabled = False
-    bot.paper_trading_enabled = False
-    assert bot._paper_shadow_confirmation_relaxed("trend_shadow_paper") is False
-
-
-def test_accuracy_filter_can_relax_only_directional_confirmation():
+def test_accuracy_filter_requires_confirmation_and_same_score_floor():
     filters = AccuracyFilters()
     history = [
         {"high": 101.0, "low": 99.0, "close": 100.0}
@@ -243,30 +252,147 @@ def test_accuracy_filter_can_relax_only_directional_confirmation():
     }
 
     strict_allowed, strict_reason = filters.validate_entry_with_reason(**validation)
-    relaxed_allowed, relaxed_reason = filters.validate_entry_with_reason(
-        **validation, require_confirmation=False
-    )
     low_score_allowed, low_score_reason = filters.validate_entry_with_reason(
-        **{**validation, "score": 60}, require_confirmation=False
+        **{
+            **validation,
+            "score": 60,
+            "current_bar": {"close": 101.0},
+        }
     )
 
     assert strict_allowed is False
     assert strict_reason == "confirmation"
-    assert relaxed_allowed is True
-    assert relaxed_reason == "OK"
     assert low_score_allowed is False
     assert low_score_reason == "score<70"
 
 
-def test_paper_position_size_simulates_one_lot_when_risk_budget_is_too_small():
+def test_paper_position_size_respects_risk_budget_when_one_lot_is_too_large():
     manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
 
-    assert (
-        manager.calculate_position_size(
-            "NIFTY", 100.0, 70.0, allow_paper_lot=True
-        )
-        == 50
+    assert manager.calculate_position_size("NIFTY", 100.0, 70.0) == 0
+
+
+def test_open_positions_and_realized_losses_share_daily_risk_budget():
+    manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss=350.0,
     )
+    manager.set_contract_specs(
+        {
+            "NIFTY_CE": {"lot_size": 65, "multiplier": 1},
+            "BANKNIFTY_CE": {"lot_size": 10, "multiplier": 1},
+            "ICICIBANK_CE": {"lot_size": 10, "multiplier": 1},
+        }
+    )
+    manager.register_position("NIFTY_CE", "BUY", 130, 12.0, 9.6, 14.4)
+
+    assert manager.open_position_risk() == pytest.approx(312.0)
+    assert manager.available_daily_risk() == pytest.approx(38.0)
+    assert (
+        manager.calculate_option_size(
+            "BANKNIFTY_CE", 10.0, premium_stop_pct=0.20
+        )
+        == 10
+    )
+
+    manager.register_position("BANKNIFTY_CE", "BUY", 10, 10.0, 8.0, 12.0)
+    assert manager.available_daily_risk() == pytest.approx(18.0)
+    assert (
+        manager.calculate_option_size(
+            "ICICIBANK_CE", 10.0, premium_stop_pct=0.20
+        )
+        == 0
+    )
+    assert manager.daily_risk_exceeded() is False
+
+
+def test_session_trade_restore_reinstates_realized_daily_loss():
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    manager = IntradayManager(daily_max_loss=350.0)
+    manager.restore_session_trades(
+        [
+            {
+                "ticker": "NIFTY_CE",
+                "status": "closed",
+                "timestamp": now.isoformat(),
+                "closed_at": now.isoformat(),
+                "pnl": -125.0,
+            }
+        ]
+    )
+
+    assert manager.daily_pnl == -125.0
+    assert manager.available_daily_risk() == pytest.approx(225.0)
+
+
+def test_session_rollover_resets_daily_loss_and_trade_counters():
+    manager = IntradayManager(daily_max_loss=350.0)
+    manager._session_date = datetime(2000, 1, 1).date()
+    manager.daily_pnl = -125.0
+    manager.daily_trade_count = 2
+    manager.consecutive_losses = 2
+    manager.session_trade_symbols.add("NIFTY_CE")
+    manager.session_reversal_symbols.add("NIFTY_PE")
+
+    manager._refresh_session()
+
+    assert manager.daily_pnl == 0.0
+    assert manager.daily_trade_count == 0
+    assert manager.consecutive_losses == 0
+    assert manager.session_trade_symbols == set()
+    assert manager.session_reversal_symbols == set()
+    assert manager.available_daily_risk() == pytest.approx(350.0)
+
+
+def test_session_restore_fails_closed_for_invalid_realized_pnl():
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    manager = IntradayManager(daily_max_loss=350.0)
+
+    with pytest.raises(RuntimeError, match="non-finite P&L"):
+        manager.restore_session_trades(
+            [
+                {
+                    "ticker": "NIFTY_CE",
+                    "status": "closed",
+                    "timestamp": now.isoformat(),
+                    "closed_at": now.isoformat(),
+                    "pnl": float("nan"),
+                }
+            ]
+        )
+
+
+def test_paper_open_position_restore_reserves_daily_risk():
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_milestone_pct": 0.10, "strong_signal_score": 82}
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss=350.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    bot._restore_paper_positions(
+        [
+            {
+                "ticker": "NIFTY_CE",
+                "action": "BUY",
+                "quantity": 130,
+                "entry": 12.0,
+                "stop_loss": 9.6,
+                "take_profit": 14.4,
+                "status": "open",
+                "timestamp": now.isoformat(),
+            }
+        ]
+    )
+
+    assert set(bot.intraday_manager.active_positions) == {"NIFTY_CE"}
+    assert bot.intraday_manager.available_daily_risk() == pytest.approx(38.0)
 
 
 def test_close_trade_records_exit_reason(tmp_path):
@@ -362,6 +488,49 @@ def test_live_entry_aborts_when_fill_slippage_exceeds_risk_cap():
     assert result == "risk_blocked:filled_risk_exceeds_limit"
     bot.kite_stream.place_protective_stop_order.assert_called_once()
     bot._abort_live_entry.assert_called_once_with("NIFTY", 200.0, "RISK_LIMIT_EXCEEDED")
+
+
+def test_live_entry_aborts_when_fill_exceeds_aggregate_daily_risk():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_futures"}
+    bot.live_orders_enabled = True
+    bot.paper_trading_enabled = False
+    bot._entries_paused = False
+    bot._risk_state_reconciled = True
+    bot.intraday_manager = IntradayManager(
+        account_size=10_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss=150.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {
+            "EXISTING": {"lot_size": 1, "multiplier": 1},
+            "NIFTY": {"lot_size": 1, "multiplier": 1},
+        }
+    )
+    bot.intraday_manager.register_position(
+        "EXISTING", "BUY", 145, 100.0, 99.0, 102.0
+    )
+    bot.kite_stream = Mock()
+    bot.kite_stream.is_connected = True
+    bot.kite_stream.place_market_order.return_value = "entry-order"
+    bot.kite_stream.wait_for_order_fill.return_value = {
+        "filled_quantity": 5,
+        "average_price": 200.0,
+    }
+    bot.kite_stream.place_protective_stop_order.return_value = "stop-order"
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.return_value = None
+    bot.telegram_notifier = Mock()
+    bot._abort_live_entry = Mock()
+
+    result = bot._handle_buy_signal("NIFTY", 100.0, 80)
+
+    assert result == "risk_blocked:filled_risk_exceeds_aggregate_limit"
+    bot.kite_stream.place_protective_stop_order.assert_called_once()
+    bot._abort_live_entry.assert_called_once_with(
+        "NIFTY", 200.0, "AGGREGATE_RISK_LIMIT_EXCEEDED"
+    )
 
 
 def test_live_entry_aborts_when_protective_stop_placement_fails():
@@ -694,6 +863,26 @@ def test_option_sizing_requires_two_risk_qualified_lots_and_caps_at_three():
     assert bot._option_quantity_within_lot_bounds("NIFTY_CE", 3 * 65)
 
 
+def test_two_nifty_option_lots_fit_configured_risk_budget_at_minimum_premium():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_min_lots": 2, "option_max_lots": 3}
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss=350.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    quantity = bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.20)
+
+    assert quantity == 2 * 65
+    assert bot.intraday_manager.estimate_trade_risk(
+        "NIFTY_CE", quantity, 12.0, 12.0 * (1.0 - 0.20)
+    ) == pytest.approx(312.0)
+
+
 def test_staged_target_does_not_move_back_when_price_retraces():
     manager = IntradayManager()
     manager.register_position(
@@ -767,55 +956,6 @@ def test_disabling_trailing_keeps_fixed_target_exit():
     assert bot._check_position_exit("NIFTY", 85.0) == "TAKE_PROFIT"
 
 
-def test_adaptive_score_threshold_stays_inside_strategy_score_range():
-    filters = AccuracyFilters()
-
-    assert filters.get_min_score(recent_trades=9, recent_win_rate=20.0) == 70
-    assert filters.get_min_score(recent_trades=10, recent_win_rate=20.0) == 72
-    assert filters.get_min_score(recent_trades=10, recent_win_rate=40.0) == 71
-    assert filters.get_min_score(recent_trades=10, recent_win_rate=50.0) == 70
-    assert filters.get_min_score(recent_trades=10, recent_win_rate=72.0) == 69
-    assert (
-        AccuracyFilters(min_entry_score=100).get_min_score(10, 0.0)
-        == 85
-    )
-
-
-def test_adaptive_paper_score_floors_use_recent_closed_trades_by_variant():
-    bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_shadow_min_entry_score": 55}
-    bot.paper_trading_enabled = True
-    bot.live_orders_enabled = False
-    bot.accuracy_filters = AccuracyFilters(min_entry_score=75)
-    bot.trade_journal = Mock()
-    bot.trade_journal.read_trades.return_value = [
-        {
-            "status": "closed",
-            "pnl": -1.0,
-            "strategy_variant": "primary",
-        }
-        for _ in range(10)
-    ] + [
-        {
-            "status": "closed",
-            "pnl": 1.0,
-            "strategy_variant": "trend_shadow_paper",
-        }
-        for _ in range(10)
-    ]
-
-    assert bot._adaptive_paper_min_entry_score("primary") == 77
-    assert bot._adaptive_paper_min_entry_score("trend_shadow_paper") == 54
-
-    bot.trade_journal.read_trades.return_value = bot.trade_journal.read_trades.return_value[:9]
-    assert bot._adaptive_paper_min_entry_score("primary") == 75
-
-    bot.live_orders_enabled = True
-    bot.trade_journal.read_trades.reset_mock()
-    assert bot._adaptive_paper_min_entry_score("primary") is None
-    bot.trade_journal.read_trades.assert_not_called()
-
-
 def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
     filters = AccuracyFilters()
 
@@ -827,7 +967,13 @@ def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
     ) is True
 
 
-def test_option_volatility_filter_uses_underlying_signal_bars():
+@pytest.mark.parametrize(
+    ("paper_trading_enabled", "live_orders_enabled"),
+    [(True, False), (False, True)],
+)
+def test_option_entry_uses_one_strategy_in_both_modes(
+    paper_trading_enabled, live_orders_enabled
+):
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
@@ -835,8 +981,6 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
         "options_underlyings": ["NIFTY"],
         "benchmark_symbols": [],
         "late_window_enabled": False,
-        "paper_trade_trend_shadow_signals": True,
-        "paper_shadow_min_trend_strength": 0.001,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -857,8 +1001,8 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     bot.intraday_manager = Mock()
     bot.intraday_manager.should_exit_all_positions.return_value = False
     bot.use_market_context = False
-    bot.paper_trading_enabled = True
-    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = paper_trading_enabled
+    bot.live_orders_enabled = live_orders_enabled
     bot.benchmark_symbol = "NIFTY"
     bot.news_monitor = None
     bot.premarkarket_candidates = []
@@ -870,10 +1014,7 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     bot._record_decision = Mock()
     bot.accuracy_filters = Mock()
     bot.accuracy_filters.min_score_floor = 70
-    bot.accuracy_filters.get_min_score.return_value = 70
     bot.accuracy_filters.validate_entry_with_reason.return_value = (False, "volatility")
-    bot.trade_journal = Mock()
-    bot.trade_journal.read_trades.return_value = []
 
     with patch("market_bot.kite_main.market_session_state", return_value="REGULAR_SESSION"), \
         patch(
@@ -885,13 +1026,22 @@ def test_option_volatility_filter_uses_underlying_signal_bars():
     assert score_market_mock.call_args.kwargs[
         "volume_confirmation_history"
     ] == [{"volume": 10}] * len(underlying_bars)
-    assert score_market_mock.call_args.kwargs[
-        "paper_shadow_min_trend_strength"
-    ] == 0.001
+    assert not any(
+        key.startswith(("paper_shadow_", "allow_paper_shadow"))
+        for key in score_market_mock.call_args.kwargs
+    )
     validated_history = bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "history"
     ]
     assert validated_history == [item.to_dict() for item in underlying_bars]
+    assert (
+        bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs["min_score"]
+        == 70
+    )
+    assert (
+        "require_confirmation"
+        not in bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs
+    )
 
     underlying_bars[-1] = Bar(
         datetime(2026, 9, 24, 10, 29), 25000, 25010, 24990, 25005, 100
