@@ -824,8 +824,10 @@ class KiteMarketStream:
     @staticmethod
     def _normalize_exchange_timestamp(raw_timestamp: Any) -> datetime:
         timestamp: Optional[datetime] = None
+        naive_datetime_is_local = False
         if isinstance(raw_timestamp, datetime):
             timestamp = raw_timestamp
+            naive_datetime_is_local = timestamp.tzinfo is None
         elif isinstance(raw_timestamp, str):
             try:
                 timestamp = datetime.fromisoformat(
@@ -845,7 +847,10 @@ class KiteMarketStream:
             timestamp = datetime.fromtimestamp(epoch_seconds, tz=IST)
 
         if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=IST)
+            if naive_datetime_is_local:
+                timestamp = timestamp.astimezone(IST)
+            else:
+                timestamp = timestamp.replace(tzinfo=IST)
         else:
             timestamp = timestamp.astimezone(IST)
         if timestamp.year < 2000:
