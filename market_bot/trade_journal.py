@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -218,10 +219,13 @@ class DecisionJournal:
 
 
 class TradeJournal:
+    PAPER_MARK_INTERVAL_SECONDS = 60
+
     def __init__(self, path: str = "trades.jsonl", paper_data_dir: Optional[str] = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.paper_recorder = PaperTradingRecorder(paper_data_dir) if paper_data_dir else None
+        self._last_paper_mark_at: Dict[str, Optional[datetime]] = {}
 
     def _write_trades(self, trades: List[Dict[str, Any]]) -> None:
         with self.path.open("w", encoding="utf-8") as handle:
@@ -234,6 +238,7 @@ class TradeJournal:
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
         entry.setdefault("trade_id", f"{entry['ticker']}-{entry['timestamp']}-{entry.get('action', 'UNKNOWN')}")
+        self._last_paper_mark_at.pop(str(entry["ticker"]), None)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, default=str) + "\n")
         if self.paper_recorder:
@@ -265,7 +270,63 @@ class TradeJournal:
             return trade
         return None
 
+    def update_trade_mark(
+        self, ticker: str, current_price: float, action: Optional[str] = None
+    ) -> bool:
+        """Periodically persist a paper position's latest price for restart recovery."""
+        if not math.isfinite(current_price) or current_price <= 0:
+            raise ValueError("current_price must be a finite positive number")
+
+        now = datetime.now(timezone.utc)
+        if ticker in self._last_paper_mark_at:
+            previous_update = self._last_paper_mark_at[ticker]
+            if previous_update is None:
+                return False
+            elapsed = (now - previous_update).total_seconds()
+            if 0 <= elapsed < self.PAPER_MARK_INTERVAL_SECONDS:
+                return False
+
+        trades = self.read_trades()
+        for trade in reversed(trades):
+            if trade.get("ticker") != ticker and trade.get("symbol") != ticker:
+                continue
+            if trade.get("status") != "open":
+                continue
+            trade_action = str(trade.get("action", "")).upper()
+            if action and trade_action != action.upper():
+                continue
+
+            try:
+                previous_update = datetime.fromisoformat(
+                    str(trade.get("updated_at", "")).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                previous_update = None
+            if previous_update is not None:
+                if previous_update.tzinfo is None:
+                    previous_update = previous_update.replace(tzinfo=timezone.utc)
+                previous_update = previous_update.astimezone(timezone.utc)
+                elapsed = (now - previous_update).total_seconds()
+                if 0 <= elapsed < self.PAPER_MARK_INTERVAL_SECONDS:
+                    self._last_paper_mark_at[ticker] = previous_update
+                    return False
+
+            trade["last_price"] = float(current_price)
+            trade["updated_at"] = now.isoformat(timespec="seconds")
+            self._write_trades(trades)
+            if self.paper_recorder:
+                self.paper_recorder.record_trade(trade)
+            self._last_paper_mark_at[ticker] = now
+            return True
+
+        logger.error(
+            "Cannot persist paper price mark: no open journal trade for %s", ticker
+        )
+        self._last_paper_mark_at[ticker] = None
+        return False
+
     def update_trade_pnl(self, ticker: str, current_price: float, action: Optional[str] = None) -> float:
+        self._last_paper_mark_at.pop(ticker, None)
         trades = self.read_trades()
         for trade in reversed(trades):
             if trade.get("ticker") != ticker:
@@ -342,20 +403,25 @@ class TradeJournal:
         exit_price: float,
         action: Optional[str] = None,
         reason: str = "SIGNAL",
+        trade_id: Optional[str] = None,
+        closed_at: Optional[str] = None,
     ) -> float:
         trades = self.read_trades()
         for trade in reversed(trades):
-            if trade.get("ticker") != ticker:
+            if trade.get("ticker") != ticker and trade.get("symbol") != ticker:
+                continue
+            if trade_id is not None and str(trade.get("trade_id")) != trade_id:
                 continue
             if trade.get("status") != "open":
                 continue
-            if action and trade.get("action") != action:
+            trade_action = str(trade.get("action", "")).upper()
+            if action and trade_action != action.upper():
                 continue
 
             entry_price = float(trade.get("entry", 0.0))
-            if trade.get("action") == "BUY":
+            if trade_action == "BUY":
                 pnl = exit_price - entry_price
-            elif trade.get("action") == "SELL":
+            elif trade_action == "SELL":
                 pnl = entry_price - exit_price
             else:
                 pnl = 0.0
@@ -363,11 +429,15 @@ class TradeJournal:
             trade["pnl"] = pnl
             trade["exit_price"] = exit_price
             trade["status"] = "closed"
-            trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            trade["closed_at"] = (
+                closed_at
+                or datetime.now(timezone.utc).isoformat(timespec="seconds")
+            )
             trade["reason"] = reason
             self._write_trades(trades)
             if self.paper_recorder:
                 self.paper_recorder.record_trade(trade)
+            self._last_paper_mark_at.pop(ticker, None)
             return pnl
 
         return 0.0

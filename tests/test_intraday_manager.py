@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
@@ -393,6 +393,114 @@ def test_paper_open_position_restore_reserves_daily_risk():
 
     assert set(bot.intraday_manager.active_positions) == {"NIFTY_CE"}
     assert bot.intraday_manager.available_daily_risk() == pytest.approx(38.0)
+
+
+def test_paper_trade_mark_is_persisted_and_throttled(tmp_path):
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "AAPL",
+            "action": "BUY",
+            "entry": 100.0,
+        }
+    )
+
+    assert journal.update_trade_mark("AAPL", 108.0, "BUY") is True
+    [trade] = journal.read_trades()
+    assert trade["last_price"] == 108.0
+    assert trade["updated_at"]
+
+    assert journal.update_trade_mark("AAPL", 109.0, "BUY") is False
+    assert journal.read_trades()[0]["last_price"] == 108.0
+
+
+def test_paper_market_tick_persists_active_position_mark():
+    bot = object.__new__(KiteTradingBot)
+    bot.symbol_map = {101: "AAPL"}
+    bot.latest_prices = {}
+    bot.option_quote_cache = {}
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={"AAPL": {"direction": "BUY"}},
+        should_exit_all_positions=Mock(return_value=False),
+    )
+    bot.paper_trading_enabled = True
+    bot.trade_journal = Mock()
+    bot.bar_builder = Mock()
+    bot._check_position_exit = Mock()
+    tick = SimpleNamespace(
+        instrument_token=101,
+        last_price=108.0,
+        volume=100,
+        timestamp=datetime.now(ZoneInfo("Asia/Kolkata")),
+        oi=None,
+        iv=None,
+    )
+
+    bot._on_tick(tick)
+
+    bot.trade_journal.update_trade_mark.assert_called_once_with(
+        "AAPL", 108.0, "BUY"
+    )
+
+
+def test_stale_paper_position_closes_at_last_persisted_mark(tmp_path):
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    opened_at = now - timedelta(days=1)
+    mark_time = opened_at + timedelta(minutes=5)
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "AAPL",
+            "action": "BUY",
+            "quantity": 2,
+            "entry": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+            "last_price": 108.0,
+            "updated_at": mark_time.isoformat(),
+            "timestamp": opened_at.isoformat(),
+        }
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.trade_journal = journal
+    bot.intraday_manager = IntradayManager()
+
+    bot._restore_paper_positions(journal.read_trades())
+
+    [trade] = journal.read_trades()
+    assert trade["status"] == "closed"
+    assert trade["exit_price"] == 108.0
+    assert trade["pnl"] == 8.0
+    assert trade["closed_at"] == mark_time.isoformat(timespec="seconds")
+    assert trade["reason"] == "STALE_PAPER_POSITION_RECOVERY_AT_LAST_MARK"
+    assert bot.intraday_manager.active_positions == {}
+
+
+def test_stale_paper_position_without_valid_recovery_mark_stays_open(tmp_path):
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "AAPL",
+            "action": "BUY",
+            "quantity": 2,
+            "entry": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+            "updated_at": now.isoformat(),
+            "timestamp": (now - timedelta(days=1)).isoformat(),
+        }
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.trade_journal = journal
+    bot.intraday_manager = IntradayManager()
+
+    with pytest.raises(RuntimeError, match="last_price recovery mark"):
+        bot._restore_paper_positions(journal.read_trades())
+
+    assert journal.read_trades()[0]["status"] == "open"
 
 
 def test_close_trade_records_exit_reason(tmp_path):
