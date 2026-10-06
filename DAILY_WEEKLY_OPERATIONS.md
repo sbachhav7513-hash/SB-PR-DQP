@@ -90,8 +90,11 @@ experiment, not a safe default for live trading; slippage, gaps, and costs can
 make realized losses exceed planned stop-risk. The staged first target is also
 10%, so the nominal initial reward-to-risk is 1:1 before costs. After a
 restart, same-session open paper positions and realized losses are restored
-from the trade journal; invalid or prior-session open records stop startup so
-they can be reconciled safely.
+from the trade journal. Active paper positions persist a price mark at most once
+per minute. Prior-session open paper records are closed using the last persisted
+price and its update time as a recovery mark; startup remains blocked if either
+value is missing or invalid. This mark is not guaranteed to be the exchange's
+official session-close price.
 
 ### VPS systemd setup
 
