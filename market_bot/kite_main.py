@@ -406,23 +406,19 @@ class KiteTradingBot:
         self, trade: dict, symbol: str, entry_time: datetime
     ) -> None:
         try:
-            exit_price = float(trade["last_price"])
+            entry_price = float(trade["entry"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise RuntimeError(
                 f"Cannot auto-close stale paper position {symbol}: "
-                "journal has no valid last_price recovery mark"
+                "journal has no valid entry price for recovery"
             ) from exc
-        mark_time = self._journal_datetime(trade.get("updated_at"))
         if (
-            not math.isfinite(exit_price)
-            or exit_price <= 0
-            or mark_time is None
-            or mark_time < entry_time
-            or mark_time > datetime.now(IST)
+            not math.isfinite(entry_price)
+            or entry_price <= 0
         ):
             raise RuntimeError(
                 f"Cannot auto-close stale paper position {symbol}: "
-                "journal has no valid last_price recovery mark and timestamp"
+                "journal has no valid entry price for recovery"
             )
 
         direction = str(trade.get("action", "")).upper()
@@ -431,6 +427,41 @@ class KiteTradingBot:
                 f"Cannot auto-close stale paper position {symbol}: "
                 "journal has an invalid action"
             )
+        now = datetime.now(IST)
+        mark_time = self._journal_datetime(trade.get("updated_at"))
+        try:
+            last_price = float(trade["last_price"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            last_price = None
+        has_valid_mark = (
+            last_price is not None
+            and math.isfinite(last_price)
+            and last_price > 0
+            and mark_time is not None
+            and entry_time <= mark_time <= now
+        )
+        if has_valid_mark:
+            exit_price = last_price
+            closed_at = mark_time.isoformat(timespec="seconds")
+            reason = "STALE_PAPER_POSITION_RECOVERY_AT_LAST_MARK"
+            logger.warning(
+                "[%s] Auto-closing stale paper position at last persisted mark "
+                "%.4f from %s",
+                symbol,
+                exit_price,
+                closed_at,
+            )
+        else:
+            exit_price = entry_price
+            closed_at = now.isoformat(timespec="seconds")
+            reason = "STALE_PAPER_POSITION_RECOVERY_AT_ENTRY_ESTIMATE"
+            logger.warning(
+                "[%s] No valid persisted price mark; estimating stale paper exit "
+                "at entry price %.4f (zero estimated P&L)",
+                symbol,
+                exit_price,
+            )
+
         trade_id = str(trade.get("trade_id")) if trade.get("trade_id") else None
         if not trade_id:
             matching_open_trades = [
@@ -445,8 +476,6 @@ class KiteTradingBot:
                     f"Cannot safely identify stale paper journal entry for {symbol}"
                 )
 
-        reason = "STALE_PAPER_POSITION_RECOVERY_AT_LAST_MARK"
-        closed_at = mark_time.isoformat(timespec="seconds")
         self.trade_journal.close_trade(
             symbol,
             exit_price,
@@ -480,13 +509,6 @@ class KiteTradingBot:
             raise RuntimeError(
                 f"Failed to persist stale paper position recovery for {symbol}"
             )
-        logger.warning(
-            "[%s] Auto-closed stale paper position at journal recovery mark %.4f "
-            "from %s",
-            symbol,
-            exit_price,
-            mark_time.isoformat(timespec="seconds"),
-        )
 
     def _persist_risk_state(self, positions: list[dict], orders: list[dict]) -> None:
         target_date = datetime.now(IST).date().isoformat()

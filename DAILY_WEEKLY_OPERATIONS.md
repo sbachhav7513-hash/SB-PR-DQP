@@ -92,9 +92,10 @@ make realized losses exceed planned stop-risk. The staged first target is also
 restart, same-session open paper positions and realized losses are restored
 from the trade journal. Active paper positions persist a price mark at most once
 per minute. Prior-session open paper records are closed using the last persisted
-price and its update time as a recovery mark; startup remains blocked if either
-value is missing or invalid. This mark is not guaranteed to be the exchange's
-official session-close price.
+price and its update time as a recovery mark when valid. If no valid mark exists,
+the bot closes the record at its entry price as a zero-P&L estimate and labels
+the journal reason accordingly. Neither recovery value is guaranteed to be the
+exchange's official session-close price or actual realized performance.
 
 ### VPS systemd setup
 

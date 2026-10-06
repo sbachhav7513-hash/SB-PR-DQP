@@ -477,7 +477,9 @@ def test_stale_paper_position_closes_at_last_persisted_mark(tmp_path):
     assert bot.intraday_manager.active_positions == {}
 
 
-def test_stale_paper_position_without_valid_recovery_mark_stays_open(tmp_path):
+def test_stale_paper_position_without_recovery_mark_closes_at_entry_estimate(
+    tmp_path,
+):
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     journal = TradeJournal(str(tmp_path / "trades.jsonl"))
     journal.log_trade(
@@ -497,10 +499,13 @@ def test_stale_paper_position_without_valid_recovery_mark_stays_open(tmp_path):
     bot.trade_journal = journal
     bot.intraday_manager = IntradayManager()
 
-    with pytest.raises(RuntimeError, match="last_price recovery mark"):
-        bot._restore_paper_positions(journal.read_trades())
+    bot._restore_paper_positions(journal.read_trades())
 
-    assert journal.read_trades()[0]["status"] == "open"
+    [trade] = journal.read_trades()
+    assert trade["status"] == "closed"
+    assert trade["exit_price"] == trade["entry"] == 100.0
+    assert trade["pnl"] == 0.0
+    assert trade["reason"] == "STALE_PAPER_POSITION_RECOVERY_AT_ENTRY_ESTIMATE"
 
 
 def test_close_trade_records_exit_reason(tmp_path):
