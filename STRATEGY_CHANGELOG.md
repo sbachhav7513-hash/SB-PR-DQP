@@ -328,3 +328,12 @@ No completed experiments recorded yet.
 - Decision: User-approved paper risk experiment only. A stopped position may consume nearly the entire ₹2,000 daily stop; daily loss and aggregate open-risk checks remain enabled. No daily trade or profitability is guaranteed.
 - Rollback: Restore `max_risk_per_trade=350` and `option_premium_stop_pct=0.20` in the configs; revert the latest-premium alignment change if its regression test fails.
 - Follow-up: Review the actual number of opened trades and stop-risk utilization, then closed-trade metrics. Never treat increased frequency by itself as an improvement.
+
+## Operational and correctness notes (not strategy experiments)
+
+### 2026-10-06 — Stale paper-position recovery
+
+- Classification: Operational correctness fix; no strategy signal, entry/exit rule, or performance experiment changed.
+- Change: Active paper positions persist periodic price marks. On restart, stale open records close at a valid saved mark; if no valid mark exists, recovery closes at entry price and labels the journal outcome as an estimated zero-P&L exit.
+- Validation: `tests/test_intraday_manager.py` passed (`59 passed`).
+- Performance outcome: Not measured and not applicable; the entry-price fallback is an accounting estimate, not evidence of actual execution or profitability.

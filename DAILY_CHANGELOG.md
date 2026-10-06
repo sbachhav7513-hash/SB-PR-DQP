@@ -379,3 +379,18 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the user-selected risk-policy experiment and its pending paper evaluation.
 - Validation and result: `tests/test_intraday_manager.py` and `tests/test_kite_provider.py` passed (`90 passed, 1 skipped`); both Kite config JSON files parse; `git diff --check` passed. Pylance found only two existing `kite_main.py` warnings outside the edited entry path (`datetime.utcnow` deprecation and an unused `signal` parameter).
 - Outcome / follow-up: Paper-only; collect at least 10 comparable closed trades and report stop slippage, costs, P&L, drawdown, and all entry-flow outcomes. Do not enable live orders or claim a performance gain based on increased entries.
+
+### 2026-10-06
+
+#### DLY-2026-10-06-01
+
+- Reason: A stale open AAPL paper journal record had no `last_price`, so the previously added stale-position recovery still stopped startup. The user approved closing such records at entry price with explicitly estimated zero P&L.
+- Related prior entries checked: `DLY-2026-10-05-04` and `DLY-2026-10-05-05` document paper journal restoration and risk-state recovery; this is an operational correctness fix, not a strategy or risk-policy experiment.
+- Files:
+  - `market_bot/trade_journal.py` (modified): Persist active paper-position price marks at most once per minute for restart recovery.
+  - `market_bot/kite_main.py` (modified): Recover stale open paper records at a valid persisted mark when available; otherwise close at entry and label the record `STALE_PAPER_POSITION_RECOVERY_AT_ENTRY_ESTIMATE`.
+  - `tests/test_intraday_manager.py` (modified): Cover checkpoint throttling, tick-driven mark persistence, persisted-mark recovery, and the missing-mark entry-price estimate.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the recovery mark and estimated fallback, including their limitations.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this operational correction separately from strategy experiments and performance claims.
+- Validation and result: `tests/test_intraday_manager.py` passed (`59 passed`); Pylance reported no diagnostics in the touched Python files; `git diff --check` passed.
+- Outcome / follow-up: Startup can recover legacy stale records with a valid positive entry price, but an entry-price exit is an estimate rather than an exchange close or realized return. No strategy-performance conclusion is implied.
