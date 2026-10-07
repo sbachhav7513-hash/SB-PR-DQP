@@ -151,6 +151,7 @@ python run_kite_bot.py
 This version:
 - Connects to Zerodha Kite WebSocket for live tick data
 - Aggregates ticks into configurable bar intervals
+- Falls back to a valid tick `timestamp` when Kite's `exchange_timestamp` is invalid; drops the tick if both are invalid
 - Evaluates signals on fresh live bars
 - Sends Telegram alerts when conditions are met
 
