@@ -119,6 +119,25 @@ def test_close_only_regime_classifier_identifies_sideways_market():
     assert "20-bar move" in result.reasons[0]
 
 
+def test_lower_sideways_net_move_threshold_admits_modest_directional_move():
+    step = 0.27 / 19
+    closes = [100.0] * 10 + [100.0 + index * step for index in range(20)]
+
+    strict_regime = classify_price_regime(
+        closes,
+        sideways_range_pct=0.3,
+        sideways_net_move_pct=0.3,
+    )
+    relaxed_regime = classify_price_regime(
+        closes,
+        sideways_range_pct=0.3,
+        sideways_net_move_pct=0.25,
+    )
+
+    assert strict_regime == "SIDEWAYS"
+    assert relaxed_regime == "TRENDING"
+
+
 def test_bearish_setup_near_recent_high_does_not_get_proximity_bonus():
     closes = [102.0 - index * 0.05 for index in range(30)]
     closes.extend(
@@ -169,6 +188,39 @@ def test_bearish_recent_low_bonus_and_entry_use_same_proximity():
     assert strict_result.signal == "HOLD"
     assert default_result.score == 85
     assert default_result.signal == "SELL"
+
+
+def test_slightly_wider_proximity_admits_nearby_bearish_setup():
+    closes = [100.0] * 21 + [90.0]
+    closes.extend(90.5 + index * 0.1 for index in range(9))
+    closes.append(90.6)
+    fast = [99.5] * (len(closes) - 1) + [99.0]
+    slow = [100.0] * len(closes)
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda values, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[40.0] * len(closes)), \
+        patch("market_bot.engine.calculate_adx", return_value=None), \
+        patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        previous_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            signal_proximity_pct=0.005,
+            session_state="REGULAR_SESSION",
+        )
+        relaxed_result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            signal_proximity_pct=0.0075,
+            session_state="REGULAR_SESSION",
+        )
+
+    assert previous_result.signal == "HOLD"
+    assert relaxed_result.signal == "SELL"
+    assert "Price near recent low" in relaxed_result.reasons
 
 
 def test_bullish_recent_high_bonus_and_entry_use_same_proximity():
@@ -248,6 +300,32 @@ def test_compression_breakout_can_pass_sideways_regime_gate():
 
     assert result.score > 0
     assert "Sideways regime" not in result.reasons
+
+
+def test_min_adx_threshold_can_admit_setup_at_adx_11():
+    history = [{"close": 100.0 + index * 0.1} for index in range(40)]
+
+    with patch("market_bot.engine.calculate_adx", return_value=11.5):
+        rejected = score_market(
+            "TEST",
+            history,
+            min_adx=12.0,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
+        admitted = score_market(
+            "TEST",
+            history,
+            min_adx=11.0,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
+
+    assert rejected.signal == "HOLD"
+    assert "ADX too weak (11.5 < 12.0)" in rejected.reasons
+    assert admitted.signal == "BUY"
 
 
 def test_close_only_regime_classifier_rejects_single_bar_exhaustion():

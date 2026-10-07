@@ -382,6 +382,39 @@ Outcome / follow-up / rollback:
 
 ### 2026-10-06
 
+#### DLY-2026-10-07-01
+
+- Reason: The October 6 paper archive recorded zero BUY/SELL signals across 9,859 decisions; the user requested a small strategy relaxation to improve the chance of producing paper candidates.
+- Related prior entries checked: `DLY-2026-10-05-06` keeps one shared strategy for paper/live execution; `EXP-2026-10-05-03` documents the still-unmeasured paper risk-policy experiment. No live-specific signal path was added.
+- Files:
+  - `kite_config.json` and `kite_config.example.json` (modified): Widen `signal_proximity_pct` from 0.5% to 0.75%.
+  - `tests/test_strategy.py` (modified): Verify the wider setting admits a nearby bearish setup while the old setting does not.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the change as a bounded paper experiment with a 10-session observation period.
+- Validation and result: `tests/test_strategy.py` passed (`23 passed`); both Kite configs parse, the active config remains paper-enabled/live-disabled, and `git diff --check` passed. The archived bars are insufficient to estimate how many past setups the wider band would have admitted.
+- Outcome / follow-up: Paper mode remains enabled and live orders remain disabled. More qualifying candidates are possible but neither daily trades nor profitability are guaranteed; evaluate rejection flow and performance with recorded evidence.
+
+#### DLY-2026-10-07-02
+
+- Reason: The user requested lowering the ADX threshold from 12 to 11 to modestly relax strategy eligibility.
+- Related prior entries checked: `EXP-2026-10-02-02` documents a retired paper-shadow override; no shadow path is restored. The current paper/live scorer remains shared.
+- Files:
+  - `kite_config.json` and `kite_config.example.json` (modified): Set `min_adx` to 11.0.
+  - `tests/test_strategy.py` (modified): Verify ADX 11.5 is rejected at a threshold of 12 but may qualify at 11.
+  - `STRATEGY_CHANGELOG.md` (modified): Record this as a separate paper experiment.
+- Validation and result: `tests/test_strategy.py` passed (`24 passed`); both Kite configs parse with `min_adx=11.0`, the active config remains paper-enabled/live-disabled, and `git diff --check` passed. Performance effects remain unmeasured.
+- Outcome / follow-up: Other signal and risk controls remain unchanged; paper mode stays enabled and live orders stay disabled. More candidate eligibility is not a performance or daily-trade guarantee.
+
+#### DLY-2026-10-07-03
+
+- Reason: The October 6 daily archive has 4,897 repeated sideways-regime HOLD reason mentions, making the regime gate the most frequent identifiable strategy blocker. These are mentions, not distinct opportunities; underlying-context-only rows are not trade rejections.
+- Related prior entries checked: `DLY-2026-10-07-01` and `DLY-2026-10-07-02` record separate proximity and ADX adjustments. This change touches only the sideways net-move threshold.
+- Files:
+  - `kite_config.json` (modified): Lower `sideways_net_move_pct` from 0.30% to 0.25%; keep `sideways_range_pct` at 0.30%.
+  - `tests/test_strategy.py` (modified): Verify the regime gate allows a 0.27% 20-bar move at the new threshold but not the old threshold.
+  - `STRATEGY_CHANGELOG.md` (modified): Record this as an isolated paper experiment and define a 10-session observation period.
+- Validation and result: Pending focused strategy tests, config parsing, and diff checks.
+- Outcome / follow-up: Paper mode remains enabled and live orders remain disabled. The gate relaxation may create more eligible candidates but does not guarantee trades or profitability; keep all downstream safeguards active.
+
 #### DLY-2026-10-06-01
 
 - Reason: A stale open AAPL paper journal record had no `last_price`, so the previously added stale-position recovery still stopped startup. The user approved closing such records at entry price with explicitly estimated zero P&L.
