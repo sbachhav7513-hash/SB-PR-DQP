@@ -1094,6 +1094,8 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         "options_underlyings": ["NIFTY"],
         "benchmark_symbols": [],
         "late_window_enabled": False,
+        "paper_allow_trend_continuation": True,
+        "paper_min_entry_score": 55,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -1115,6 +1117,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     bot.intraday_manager.should_exit_all_positions.return_value = False
     bot.use_market_context = False
     bot.paper_trading_enabled = paper_trading_enabled
+    bot.paper_min_entry_score = 55
     bot.live_orders_enabled = live_orders_enabled
     bot.benchmark_symbol = "NIFTY"
     bot.news_monitor = None
@@ -1123,22 +1126,47 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     bot.latest_prices = {}
     bot.kite_stream = SimpleNamespace(contract_expiries={})
     bot._preferred_option_symbol = Mock(return_value="NIFTY_CE")
+    bot._has_option_candle_momentum = Mock(return_value=True)
     bot._option_quality_gate = Mock(return_value=(True, "OK"))
     bot._record_decision = Mock()
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
     bot.accuracy_filters = Mock()
     bot.accuracy_filters.min_score_floor = 70
-    bot.accuracy_filters.validate_entry_with_reason.return_value = (False, "volatility")
+    bot.accuracy_filters.validate_entry_with_reason.side_effect = (
+        lambda **kwargs: (
+            kwargs["score"] >= kwargs["min_score"],
+            f"score<{kwargs['min_score']}",
+        )
+    )
 
     with patch("market_bot.kite_main.market_session_state", return_value="REGULAR_SESSION"), \
         patch(
             "market_bot.kite_main.score_market",
-            return_value=SimpleNamespace(signal="BUY", score=80, reasons=[]),
+            return_value=SimpleNamespace(
+                signal="BUY", score=60, reasons=[], strategy_variant=None
+            ),
         ) as score_market_mock:
         bot.on_bar_complete("100", option_bars[-1])
 
     assert score_market_mock.call_args.kwargs[
         "volume_confirmation_history"
     ] == [{"volume": 10}] * len(underlying_bars)
+    assert score_market_mock.call_args.kwargs[
+        "paper_allow_trend_continuation"
+    ] is paper_trading_enabled
+    assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+        "min_score"
+    ] == (55 if paper_trading_enabled else 70)
+    if paper_trading_enabled:
+        bot._handle_buy_signal.assert_called_once()
+        assert bot._handle_buy_signal.call_args.kwargs[
+            "minimum_signal_score"
+        ] == 55
+    else:
+        bot._handle_buy_signal.assert_not_called()
+        assert bot._record_decision.call_args.args[5] == (
+            "accuracy_filter_rejected:score<70"
+        )
     assert not any(
         key.startswith(("paper_shadow_", "allow_paper_shadow"))
         for key in score_market_mock.call_args.kwargs
@@ -1149,7 +1177,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     assert validated_history == [item.to_dict() for item in underlying_bars]
     assert (
         bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs["min_score"]
-        == 70
+        == (55 if paper_trading_enabled else 70)
     )
     assert (
         "require_confirmation"
@@ -1158,6 +1186,9 @@ def test_option_entry_uses_one_strategy_in_both_modes(
 
     underlying_bars[-1] = Bar(
         datetime(2026, 9, 24, 10, 29), 25000, 25010, 24990, 25005, 100
+    )
+    bot._has_option_candle_momentum.side_effect = (
+        KiteTradingBot._has_option_candle_momentum
     )
     bot._record_decision.reset_mock()
     bot._option_quality_gate.reset_mock()

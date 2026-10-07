@@ -302,6 +302,67 @@ def test_compression_breakout_can_pass_sideways_regime_gate():
     assert "Sideways regime" not in result.reasons
 
 
+def test_paper_trend_continuation_relaxes_only_breakout_candle_checks():
+    history = [
+        {
+            "open": 99.9 + index * 0.5,
+            "high": 100.2 + index * 0.5,
+            "low": 99.8 + index * 0.5,
+            "close": 100.0 + index * 0.5,
+            "volume": 100,
+        }
+        for index in range(60)
+    ]
+    fast = [101.0 + index * 0.2 for index in range(40)]
+    slow = [100.0 + index * 0.1 for index in range(40)]
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda _closes, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[55.0]), patch(
+        "market_bot.engine.classify_price_regime", return_value="TRENDING"
+    ), patch(
+        "market_bot.engine.calculate_adx",
+        side_effect=[30.0, 20.0, 30.0, 20.0],
+    ), patch(
+        "market_bot.engine.is_compression_breakout", return_value=False
+    ), patch(
+        "market_bot.engine.breakout_quality", return_value=False
+    ), patch(
+        "market_bot.engine.calculate_vwap", return_value=None
+    ), patch("market_bot.engine.higher_timeframe_signal", return_value="BULLISH"):
+        strict = score_market(
+            "TEST",
+            history,
+            min_adx=0.0,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+            session_state="REGULAR_SESSION",
+        )
+        paper = score_market(
+            "TEST",
+            history,
+            min_adx=0.0,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+            session_state="REGULAR_SESSION",
+            paper_allow_trend_continuation=True,
+        )
+
+    assert strict.signal == "HOLD"
+    assert "No volatility compression before breakout" in strict.reasons
+    assert "Breakout lacks close, volume, or ATR confirmation" in strict.reasons
+    assert paper.signal == "BUY"
+    assert (
+        "Paper-only trend continuation: compression and breakout-candle checks relaxed"
+        in paper.reasons
+    )
+    assert "ADX rising and EMA spread expanding" in paper.reasons
+    assert "VWAP and higher-timeframe trend aligned" in paper.reasons
+
+
 def test_min_adx_threshold_can_admit_setup_at_adx_11():
     history = [{"close": 100.0 + index * 0.1} for index in range(40)]
 

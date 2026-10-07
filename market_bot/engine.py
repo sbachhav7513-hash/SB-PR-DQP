@@ -361,6 +361,7 @@ def score_market(
     trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.005,
     volume_confirmation_history: Optional[List[Dict]] = None,
+    paper_allow_trend_continuation: bool = False,
 ) -> TradingScore:
     history = _current_session_history(history)
     if trend_momentum_bonus_threshold is None:
@@ -548,13 +549,20 @@ def score_market(
         higher_timeframe = higher_timeframe_signal(history)
         quality_reasons: List[str] = []
 
-        if not is_compression_breakout(history):
+        if (
+            not paper_allow_trend_continuation
+            and not is_compression_breakout(history)
+        ):
             quality_reasons.append("No volatility compression before breakout")
-        if not breakout_quality(
+        if not paper_allow_trend_continuation and not breakout_quality(
             history, signal, volume_history=volume_confirmation_history
         ):
             quality_reasons.append("Breakout lacks close, volume, or ATR confirmation")
-        if current_adx is not None and previous_adx is not None and current_adx <= previous_adx:
+        if (
+            current_adx is not None
+            and previous_adx is not None
+            and current_adx <= previous_adx
+        ):
             quality_reasons.append("ADX is not rising")
         if current_spread <= previous_spread:
             quality_reasons.append("EMA spread is not expanding")
@@ -575,10 +583,20 @@ def score_market(
             signal = "HOLD"
             reasons.extend(quality_reasons)
         else:
+            if paper_allow_trend_continuation:
+                reasons.append(
+                    "Paper-only trend continuation: compression and breakout-candle "
+                    "checks relaxed"
+                )
+            else:
+                reasons.extend(
+                    [
+                        "Compression breakout confirmed",
+                        "Volume and ATR candle-size confirmed",
+                    ]
+                )
             reasons.extend(
                 [
-                    "Compression breakout confirmed",
-                    "Volume and ATR candle-size confirmed",
                     "ADX rising and EMA spread expanding",
                     "VWAP and higher-timeframe trend aligned",
                 ]
