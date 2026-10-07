@@ -875,6 +875,35 @@ def test_on_ticks_drops_implausible_epoch_exchange_timestamp():
     callback.assert_not_called()
 
 
+def test_on_ticks_falls_back_to_valid_timestamp_for_epoch_exchange_timestamp():
+    kite = Mock()
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token")
+        )
+
+    callback = Mock()
+    stream.on_tick_callback = callback
+    fallback_timestamp = datetime(2026, 10, 7, 9, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    stream.on_ticks(
+        None,
+        [
+            {
+                "instrument_token": 123,
+                "exchange_timestamp": datetime(1970, 1, 1),
+                "timestamp": fallback_timestamp,
+                "last_price": 100.0,
+            }
+        ],
+    )
+
+    tick = callback.call_args.args[0]
+    assert tick.timestamp == fallback_timestamp
+
+
 def test_refresh_instrument_tokens_selects_current_nearest_futures_expiry():
     kite = Mock()
     today = date.today()

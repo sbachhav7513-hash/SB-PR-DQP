@@ -876,19 +876,48 @@ class KiteMarketStream:
                     logger.warning("Dropping Kite tick with non-positive instrument_token=%s: %s", instrument_token, tick)
                     continue
 
-                raw_timestamp = tick.get("exchange_timestamp", tick.get("timestamp"))
+                exchange_timestamp = tick.get("exchange_timestamp")
+                fallback_timestamp = tick.get("timestamp")
+                raw_timestamp = (
+                    exchange_timestamp
+                    if exchange_timestamp is not None
+                    else fallback_timestamp
+                )
                 if raw_timestamp is None:
                     logger.warning("Dropping Kite tick without timestamp: %s", tick)
                     continue
                 try:
                     timestamp = self._normalize_exchange_timestamp(raw_timestamp)
                 except (OverflowError, OSError, TypeError, ValueError) as exc:
-                    logger.warning(
-                        "Dropping Kite tick with invalid exchange_timestamp=%r: %s",
-                        raw_timestamp,
-                        exc,
-                    )
-                    continue
+                    if exchange_timestamp is not None and fallback_timestamp is not None:
+                        try:
+                            timestamp = self._normalize_exchange_timestamp(
+                                fallback_timestamp
+                            )
+                        except (OverflowError, OSError, TypeError, ValueError) as fallback_exc:
+                            logger.warning(
+                                "Dropping Kite tick with invalid exchange_timestamp=%r "
+                                "and timestamp fallback=%r: %s; %s",
+                                exchange_timestamp,
+                                fallback_timestamp,
+                                exc,
+                                fallback_exc,
+                            )
+                            continue
+                        logger.debug(
+                            "Using Kite tick timestamp=%r because exchange_timestamp=%r "
+                            "is invalid: %s",
+                            fallback_timestamp,
+                            exchange_timestamp,
+                            exc,
+                        )
+                    else:
+                        logger.warning(
+                            "Dropping Kite tick with invalid exchange_timestamp=%r: %s",
+                            raw_timestamp,
+                            exc,
+                        )
+                        continue
 
                 tick_obj = Tick(
                     instrument_token=instrument_token,
