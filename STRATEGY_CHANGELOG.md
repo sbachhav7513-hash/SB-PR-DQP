@@ -337,3 +337,51 @@ No completed experiments recorded yet.
 - Change: Active paper positions persist periodic price marks. On restart, stale open records close at a valid saved mark; if no valid mark exists, recovery closes at entry price and labels the journal outcome as an estimated zero-P&L exit.
 - Validation: `tests/test_intraday_manager.py` passed (`59 passed`).
 - Performance outcome: Not measured and not applicable; the entry-price fallback is an accounting estimate, not evidence of actual execution or profitability.
+
+### EXP-2026-10-07-01
+
+- Status: running; trade frequency and performance outcomes are unmeasured.
+- Problem and evidence: The October 6 archive recorded 9,207 HOLD decisions and zero BUY/SELL signals. The current active signal proximity is 0.5%; directional scoring and entry require price to be near the recent high/low as well as trend and momentum confirmation.
+- Prior related log entries checked: `EXP-2026-10-05-03` records the unified paper/live strategy and pending paper risk-policy evaluation. No prior experiment widened the unified strategy's configured signal proximity.
+- Hypothesis: Widening the recent-extreme proximity from 0.5% to 0.75% may admit otherwise trend- and momentum-confirmed setups that are slightly farther from the recent high/low, without changing risk, option-quality, or live-order controls.
+- Single variable being changed: `signal_proximity_pct`, from `0.005` to `0.0075`.
+- Code/config before: Current unified scorer with active paper trading enabled and live orders disabled; active signal proximity was `0.005`.
+- Baseline period and metrics: October 6, 2026; 9,859 archived decisions, 0 BUY/SELL signals, and 0 opened trades. Archived bar history is truncated and cannot support a reliable replay of this parameter change.
+- Test method and fixed evaluation period/sample: Keep all other strategy/configuration variables unchanged. Observe the next 10 comparable paper sessions and record directional candidates, entries, rejection flow, closed-trade P&L after costs, win/loss sizes, and drawdown. Do not infer an edge from more signals; assess performance only after at least 10 closed trades.
+- Change made: Set `signal_proximity_pct` to `0.0075` in active and example configs and added a regression test for a bearish setup admitted by the wider band. Paper mode remains enabled and live orders remain disabled.
+- Results: `tests/test_strategy.py` passed (`23 passed`); both Kite configs parse with `signal_proximity_pct=0.0075`, paper trading enabled, and live orders disabled. `git diff --check` passed. Archived bar history is insufficient for a reliable retrospective signal-count estimate, so market-frequency and performance outcomes remain pending.
+- Decision and evidence: Keep as a bounded paper-only experiment pending session results. This increases eligibility, not a guaranteed trade or profitability.
+- Rollback/version if reverted: Restore `signal_proximity_pct` to `0.005` in both configs.
+- Follow-up or reason to revisit: Review actual candidates, opened/closed trades, all rejection reasons, costs, P&L, and drawdown after each session; revert if the change admits poor-quality entries.
+
+### EXP-2026-10-07-02
+
+- Status: running; trade frequency and performance outcomes are unmeasured.
+- Problem and evidence: The October 6 paper review counted 8 ADX-below-12 rejection mentions and zero BUY/SELL signals. These mentions are not independent opportunities, and the archived intraday history is insufficient for a reliable replay.
+- Prior related log entries checked: `EXP-2026-10-02-02` concerns a retired paper-shadow ADX override and does not apply to the current unified scorer; `EXP-2026-10-05-06` keeps paper and live on the same strategy. This trial lowers the shared configured floor by one point and does not reintroduce shadow logic.
+- Hypothesis: Lowering `min_adx` from 12 to 11 may admit some otherwise-qualified setups with ADX from 11 up to (but not including) 12 while retaining all other trend, proximity, confirmation, option-quality, and risk controls.
+- Single variable being changed: `min_adx`, from `12.0` to `11.0`.
+- Code/config before: The active paper config had `min_adx=12.0`, paper trading enabled, and live orders disabled; the example config used `18.0`.
+- Baseline period and metrics: October 6, 2026; 9,859 decisions, zero BUY/SELL signals, zero opened trades, and 8 ADX-too-weak reason mentions below 12. These counts do not estimate the number of unique candidates this change would admit.
+- Test method and fixed evaluation period/sample: Keep other strategy and risk settings fixed. Observe the next 10 comparable paper sessions; record ADX rejection counts, candidates, entries, closed-trade P&L after costs, win/loss sizes, and drawdown. Do not infer an edge from increased frequency; assess performance only after at least 10 closed trades.
+- Change made: Set `min_adx=11.0` in active and example configs and add a regression test showing an ADX 11.5 setup is rejected at 12 but can qualify at 11.
+- Results: `tests/test_strategy.py` passed (`24 passed`); both Kite configs parse with `min_adx=11.0`, paper trading enabled, and live orders disabled. `git diff --check` passed. Historical candidate/frequency and performance effects remain unmeasured.
+- Decision and evidence: Keep as a bounded paper experiment pending session evidence. It may increase candidate eligibility but does not guarantee a trade or profitability.
+- Rollback/version if reverted: Restore `min_adx` to `12.0` in the active config; restore the example config's previous documented default if reverting the template.
+- Follow-up or reason to revisit: Review daily ADX rejection counts and actual entry/closed-trade outcomes; revert if the additional candidates degrade measured results.
+
+### EXP-2026-10-07-03
+
+- Status: running; trade frequency and performance outcomes are unmeasured.
+- Problem and evidence: The October 6 archive contains 4,897 repeated HOLD reason mentions for the sideways-regime gate, versus 50 ADX-below-floor mentions. The archived rows are repeated symbol/bar evaluations, not unique opportunities; operational `underlying_context_only` rows are not rejected trades.
+- Prior related log entries checked: `EXP-2026-10-07-01` widened signal proximity and `EXP-2026-10-07-02` lowered the ADX floor. This experiment changes only the sideways 20-bar net-move threshold; the range threshold, trend rules, confirmations, option filters, and risk settings remain fixed.
+- Hypothesis: Lowering `sideways_net_move_pct` from 0.30% to 0.25% may allow setups with a modest 20-bar directional move to proceed past the sideways-regime early gate when the recent range is otherwise under 0.30%.
+- Single variable being changed: Active `sideways_net_move_pct`, from `0.30` to `0.25`.
+- Code/config before: Active paper config had `sideways_range_pct=0.30`, `sideways_net_move_pct=0.30`, `min_adx=11.0`, and `signal_proximity_pct=0.0075`; paper enabled, live orders disabled.
+- Baseline period and metrics: October 6, 2026, before the October 7 threshold changes; 9,859 decisions, zero BUY/SELL signals, zero opened trades, and 4,897 sideways reason mentions. This is a reason-mention count, not a unique missed-trade count; truncated bar history prevents reliable replay.
+- Test method and fixed evaluation period/sample: Keep every other active variable fixed. Observe the next 10 comparable paper sessions, tracking directional candidates, entries, rejection reasons, closed-trade P&L after costs, win/loss sizes, and drawdown. Do not infer an edge from trade frequency; assess performance only after at least 10 closed trades.
+- Change made: Set active `sideways_net_move_pct=0.25` and add a regression test that a 0.27% 20-bar move passes this regime gate while it remains sideways at the former 0.30% floor.
+- Results: Focused strategy tests and config validation pending.
+- Decision and evidence: Keep as a bounded paper experiment pending market observations. The change relaxes only the regime gate; downstream signal, context, option-quality, and risk gates remain in force.
+- Rollback/version if reverted: Restore active `sideways_net_move_pct` to `0.30`.
+- Follow-up or reason to revisit: Compare the next 10 sessions' candidate and entry flow, then evaluate measured outcomes; revert if the extra candidates degrade risk-adjusted results.
