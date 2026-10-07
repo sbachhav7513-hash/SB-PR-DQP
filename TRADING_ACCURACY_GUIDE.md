@@ -1,5 +1,17 @@
 # Trading Accuracy & Reliability Analysis
 
+## Paper-only trend continuation experiment
+
+`kite_config.json` enables `paper_allow_trend_continuation` for paper trading.
+This allows a scored trend setup to proceed without the separate volatility
+compression and breakout-candle checks that blocked candidates in the latest
+paper review. The active paper config also sets `paper_min_entry_score` to 55
+while `min_entry_score` remains 70; the lower floor only applies when paper
+trading is enabled. Direction, trend strength, ADX, VWAP, benchmark,
+confirmation, option quality, and risk checks still apply. Neither setting
+authorizes live orders or guarantees a trade or profitable result. Compare the
+next daily review before making any further changes.
+
 ## Current Strategy Assessment
 
 ### 🔴 **WARNING: NOT YET PRODUCTION-READY**

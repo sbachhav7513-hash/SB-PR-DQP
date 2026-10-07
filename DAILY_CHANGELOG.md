@@ -427,3 +427,34 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this operational correction separately from strategy experiments and performance claims.
 - Validation and result: `tests/test_intraday_manager.py` passed (`59 passed`); Pylance reported no diagnostics in the touched Python files; `git diff --check` passed.
 - Outcome / follow-up: Startup can recover legacy stale records with a valid positive entry price, but an entry-price exit is an estimate rather than an exchange close or realized return. No strategy-performance conclusion is implied.
+
+### 2026-10-08
+
+#### DLY-2026-10-08-01
+
+- Reason: The October 7 paper review recorded 8,752 regular-session decisions but zero BUY/SELL signals and zero opened trades. The review named missing compression and breakout-candle confirmation among the recurring HOLD reasons; this was a signal-generation block, not an order-placement failure.
+- Related prior entries checked: `DLY-2026-10-07-01` through `DLY-2026-10-07-03` and `EXP-2026-10-07-01` through `EXP-2026-10-07-03` record the proximity, ADX, and sideways-regime adjustments. This change relaxes two additional gates and is explicitly isolated to paper mode.
+- Files:
+  - `market_bot/engine.py` (modified): Add an opt-in paper trend-continuation path that skips only the compression and breakout-candle quality checks; retain ADX-rise, EMA expansion, VWAP, benchmark, and other gates.
+  - `market_bot/kite_main.py` (modified): Enable the relaxed scorer option only when paper trading is active and the config flag is true.
+  - `kite_config.json` (modified): Enable `paper_allow_trend_continuation`; paper trading stays enabled and live orders stay disabled.
+  - `kite_config.example.json` (modified): Document the option disabled by default.
+  - `tests/test_strategy.py` (modified): Verify strict mode rejects the setup and the paper option relaxes only the two named quality checks.
+  - `TRADING_ACCURACY_GUIDE.md` (modified): Document the paper-only experiment and its safety limits.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the change, evidence, validation, and pending outcome.
+- Validation and result: `tests/test_strategy.py` passed (`26 passed`). Full-suite run excluding the unrelated partial-object fixture test `test_on_tick_stores_timestamp_required_by_option_quality_gate` passed (`162 passed, 1 skipped, 1 deselected`). Pylance reported no errors in changed Python files; both Kite config JSON files parse; `git diff --check` passed.
+- Outcome / follow-up: This paper-only relaxation may produce additional directional signals but guarantees neither a trade nor profitability. Compare the next daily archive's directional signals, trade openings, remaining rejection reasons, and closed-trade outcomes; do not enable live orders based on this experiment.
+
+#### DLY-2026-10-08-02
+
+- Reason: The active scorer can produce a directional signal at score 55, while the final entry filter required 70. The user approved a separate lower score floor for paper entries to allow eligible lower-scored signals to reach the remaining safety gates.
+- Related prior entries checked: `DLY-2026-10-08-01` enables paper-only trend continuation while keeping live scoring strict; `DLY-2026-10-05-06` documents the shared strategy baseline. This change only adjusts the final score floor in paper mode.
+- Files:
+  - `market_bot/kite_main.py` (modified): Add validated `paper_min_entry_score`; apply it only when paper trading is enabled, both to entry validation and the stored signal-health floor. Live continues using `min_entry_score`.
+  - `kite_config.json` (modified): Set paper floor to 55; keep the standard floor at 70 and live orders disabled.
+  - `kite_config.example.json` (modified): Document a conservative paper floor of 70 by default.
+  - `tests/test_intraday_manager.py` (modified): Verify a score-60 option signal passes the paper score gate at 55, is rejected live at 70, and the position-health threshold follows the mode.
+  - `TRADING_ACCURACY_GUIDE.md` (modified): Document both paper-only settings and unchanged downstream controls.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this bounded experiment and its pending results.
+- Validation and result: Focused runtime tests passed (`6 passed`); the full suite excluding the unrelated incomplete-fixture test `test_on_tick_stores_timestamp_required_by_option_quality_gate` passed (`162 passed, 1 skipped, 1 deselected`). Pylance reported no errors in changed Python files; both Kite configs parse and contain the expected 55 paper / 70 standard floors with live orders disabled; `git diff --check` passed.
+- Outcome / follow-up: Paper-only; lower-scored entries can still be rejected by confirmation, option quality, position sizing, or risk controls. No trade or performance improvement is guaranteed. Review candidate and rejection counts tomorrow before considering another change.

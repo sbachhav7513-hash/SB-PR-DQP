@@ -276,10 +276,30 @@ class KiteTradingBot:
             min_volatility_pct=float(self.config.get("min_volatility_pct", 0.05)),
             max_volatility_pct=float(self.config.get("max_volatility_pct", 5.0)),
         )
+        self.paper_min_entry_score = int(
+            self.config.get(
+                "paper_min_entry_score",
+                self.accuracy_filters.min_score_floor,
+            )
+        )
+        if not 0 <= self.paper_min_entry_score <= 85:
+            raise ValueError("paper_min_entry_score must be between 0 and 85")
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
         ) if self.config.get("news_enabled", True) else None
+
+    def _entry_score_floor(self) -> int:
+        """Use a lower configured floor only for paper entries."""
+        standard_floor = getattr(
+            getattr(self, "accuracy_filters", None),
+            "min_score_floor",
+            int(self.config.get("min_entry_score", 70)),
+        )
+        if not getattr(self, "paper_trading_enabled", False):
+            return standard_floor
+        paper_floor = getattr(self, "paper_min_entry_score", standard_floor)
+        return min(standard_floor, paper_floor)
 
     def _on_connection_change(self, connected: bool, reason: str) -> None:
         self._entries_paused = not connected
@@ -1048,6 +1068,10 @@ class KiteTradingBot:
                     self.config.get("signal_proximity_pct", 0.005)
                 ),
                 volume_confirmation_history=volume_confirmation_history,
+                paper_allow_trend_continuation=(
+                    getattr(self, "paper_trading_enabled", False)
+                    and bool(self.config.get("paper_allow_trend_continuation", False))
+                ),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -1228,7 +1252,7 @@ class KiteTradingBot:
             )
             current_time = time.time()
             now = datetime.now(IST)
-            position_minimum_score = self.accuracy_filters.min_score_floor
+            position_minimum_score = self._entry_score_floor()
             allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
                 symbol=symbol,
                 signal=market_score.signal,
@@ -1239,7 +1263,7 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
-                min_score=self.accuracy_filters.min_score_floor,
+                min_score=position_minimum_score,
             )
             if not allowed:
                 logger.info(
@@ -1749,7 +1773,7 @@ class KiteTradingBot:
                 minimum_signal_score=(
                     minimum_signal_score
                     if minimum_signal_score is not None
-                    else int(self.config.get("min_entry_score", 70))
+                    else self._entry_score_floor()
                 ),
                 strong_signal_score=int(self.config.get("strong_signal_score", 82)),
                 weak_signal_lockin_pct=float(
@@ -1952,7 +1976,7 @@ class KiteTradingBot:
                 minimum_signal_score=(
                     minimum_signal_score
                     if minimum_signal_score is not None
-                    else int(self.config.get("min_entry_score", 70))
+                    else self._entry_score_floor()
                 ),
                 strong_signal_score=int(self.config.get("strong_signal_score", 82)),
                 weak_signal_lockin_pct=float(
