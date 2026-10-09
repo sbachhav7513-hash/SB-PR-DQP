@@ -639,7 +639,9 @@ class IntradayManager:
             return 0
         lot_size = int(self.contract_specs.get(symbol, {}).get("lot_size", 1))
         stop_value_per_lot = premium * premium_stop_pct * lot_size
-        max_lots = int(risk_budget / max(stop_value_per_lot, 1e-6))
+        max_lots = math.floor(
+            risk_budget / max(stop_value_per_lot, 1e-6) + 1e-12
+        )
         if max_lots < 1:
             return 0
         return min(max_lots, 5) * lot_size

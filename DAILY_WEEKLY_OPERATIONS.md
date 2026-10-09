@@ -78,24 +78,35 @@ The active `kite_config.json` is options-only: `trading_mode` is
 disabled. The futures implementation remains available behind the existing
 mode gate for a deliberate future migration back to `intraday_futures`.
 Option paper positions must pass the configured premium stop-risk budget;
-paper mode does not force an oversized minimum lot.
-`max_risk_per_trade` caps the planned stop-risk of each individual trade; the
-active paper experiment sets it to ₹2,000, equal to the 2% daily stop for a
-₹100,000 account. Option stops are set to 10% of the premium; open-position
-stop-risk and realized losses are reserved against the daily budget. For
-example, three 65-unit NIFTY lots at a ₹100 premium reserve ₹1,950 at the
-planned stop, leaving ₹50 available for other entries. One stopped trade can
-therefore consume nearly the full daily budget. This is a paper-only risk
-experiment, not a safe default for live trading; slippage, gaps, and costs can
-make realized losses exceed planned stop-risk. The staged first target is also
-10%, so the nominal initial reward-to-risk is 1:1 before costs. After a
-restart, same-session open paper positions and realized losses are restored
-from the trade journal. Active paper positions persist a price mark at most once
-per minute. Prior-session open paper records are closed using the last persisted
-price and its update time as a recovery mark when valid. If no valid mark exists,
-the bot closes the record at its entry price as a zero-P&L estimate and labels
-the journal reason accordingly. Neither recovery value is guaranteed to be the
-exchange's official session-close price or actual realized performance.
+paper mode does not force an oversized minimum lot. The minimum is one lot,
+but a one-lot position is still rejected whenever its planned stop-risk exceeds
+the remaining per-trade or daily risk budget.
+The active ₹100,000 paper account uses a 10% daily loss limit (₹10,000).
+Each option entry is additionally capped at 10% of the selected contract's
+one-lot premium (`premium × lot size`); with the current 10% premium stop,
+that permits at most one lot per entry. For example, a 65-unit NIFTY option at
+₹100 premium has ₹6,500 one-lot premium and a ₹650 planned stop-risk cap.
+Open-position stop-risk and realized losses are reserved against the daily
+budget; in options mode, the static `max_risk_per_trade` setting is not used
+as the entry cap. This is a paper-only risk experiment, not a safe default for
+live trading; slippage, gaps, and costs can make realized losses exceed planned
+stop-risk. The staged first target is also 10%, so the nominal initial
+reward-to-risk is 1:1 before costs. After a restart, same-session open paper
+positions and realized losses are restored from the trade journal. Active
+paper positions persist a price mark at most once per minute. Prior-session
+open paper records are closed using the last persisted price and its update
+time as a recovery mark when valid. If no valid mark exists, the bot closes
+the record at its entry price as a zero-P&L estimate and labels the journal
+reason accordingly. Neither recovery value is guaranteed to be the exchange's
+official session-close price or actual realized performance.
+
+As a bounded paper-only frequency experiment, the active config permits a
+directional option signal candle body/range ratio of 40% (`paper_option_min_candle_body_ratio`);
+the default and live threshold remain 60%. This relaxes only that candle gate:
+signal direction, option quote/quality, entry validation, and risk limits still
+apply. It does not guarantee an entry or demonstrate an edge. Review the
+rejection counts and outcomes after each session and keep the setting at 60%
+unless the paper results justify continuing the experiment.
 
 ### VPS systemd setup
 

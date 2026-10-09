@@ -113,9 +113,22 @@ class KiteTradingBot:
             return float(self.config.get("option_milestone_pct", 0.10))
         return float(self.config.get("option_premium_target_pct", 0.20))
 
+    def _option_candle_min_body_ratio(self) -> float:
+        if getattr(self, "paper_trading_enabled", False):
+            return getattr(
+                self,
+                "paper_option_min_candle_body_ratio",
+                OPTION_MIN_CANDLE_BODY_RATIO,
+            )
+        return OPTION_MIN_CANDLE_BODY_RATIO
+
     @staticmethod
-    def _has_option_candle_momentum(signal: str, candle: Dict) -> bool:
-        """Require a directional candle body covering at least 60% of its range."""
+    def _has_option_candle_momentum(
+        signal: str,
+        candle: Dict,
+        minimum_body_ratio: float = OPTION_MIN_CANDLE_BODY_RATIO,
+    ) -> bool:
+        """Require a directional candle body to meet the configured range ratio."""
         try:
             candle_open = float(candle["open"])
             candle_high = float(candle["high"])
@@ -144,31 +157,57 @@ class KiteTradingBot:
             else False
         )
         body_ratio = abs(candle_close - candle_open) / candle_range
-        return direction_matches and body_ratio >= OPTION_MIN_CANDLE_BODY_RATIO
+        return (
+            math.isfinite(minimum_body_ratio)
+            and 0 < minimum_body_ratio <= 1
+            and direction_matches
+            and body_ratio >= minimum_body_ratio
+        )
 
     def _calculate_option_quantity(
         self, symbol: str, premium: float, premium_stop_pct: float
     ) -> int:
-        risk_sized_quantity = self.intraday_manager.calculate_option_size(
-            symbol,
-            premium=max(premium, 0.01),
-            max_risk_per_trade=self.intraday_manager.available_daily_risk(),
-            premium_stop_pct=premium_stop_pct,
-        )
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
-        minimum_lots = int(self.config.get("option_min_lots", 2))
+        minimum_lots = int(self.config.get("option_min_lots", 1))
         maximum_lots = int(self.config.get("option_max_lots", 3))
         if lot_size <= 0 or minimum_lots < 1 or maximum_lots < minimum_lots:
             raise ValueError("Option lot sizing requires valid lot bounds and contract specs")
 
+        risk_budget = min(
+            self.intraday_manager.available_daily_risk(),
+            self._option_trade_risk_limit(symbol, premium),
+        )
+        risk_sized_quantity = self.intraday_manager.calculate_option_size(
+            symbol,
+            premium=max(premium, 0.01),
+            max_risk_per_trade=risk_budget,
+            premium_stop_pct=premium_stop_pct,
+        )
         risk_sized_lots = risk_sized_quantity // lot_size
         if risk_sized_lots < minimum_lots:
             return 0
         return min(risk_sized_lots, maximum_lots) * lot_size
 
+    def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
+        lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
+        if lot_size <= 0:
+            raise ValueError(f"Option contract {symbol} has an invalid lot size")
+        max_risk_per_lot_pct = float(
+            self.config.get("option_max_risk_per_lot_pct", 10.0)
+        )
+        if not math.isfinite(max_risk_per_lot_pct) or not 0 < max_risk_per_lot_pct <= 100:
+            raise ValueError("option_max_risk_per_lot_pct must be between 0 and 100")
+        return max(premium, 0.01) * lot_size * max_risk_per_lot_pct / 100.0
+
+    def _entry_risk_limit(self, symbol: str, premium: float) -> float:
+        risk_limit = float(self.intraday_manager.max_risk_per_trade)
+        if self._options_enabled() and "_" in symbol:
+            risk_limit = min(risk_limit, self._option_trade_risk_limit(symbol, premium))
+        return risk_limit
+
     def _option_quantity_within_lot_bounds(self, symbol: str, quantity: int) -> bool:
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
-        minimum_lots = int(self.config.get("option_min_lots", 2))
+        minimum_lots = int(self.config.get("option_min_lots", 1))
         maximum_lots = int(self.config.get("option_max_lots", 3))
         return (
             lot_size > 0
@@ -192,7 +231,23 @@ class KiteTradingBot:
         self.config_path = Path(config_path)
         self.config = self._load_config()
 
-        # Initialize intraday manager for futures trading
+        daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
+        options_mode = self.config.get("trading_mode") in {
+            "intraday_options",
+            "intraday_both",
+        }
+        max_risk_per_trade = self.config.get("max_risk_per_trade")
+        if options_mode:
+            daily_risk_budget = self.config.get("daily_max_loss")
+            if daily_risk_budget is None:
+                daily_risk_budget = (
+                    float(self.config.get("account_size", 100000))
+                    * float(daily_max_loss_pct)
+                    / 100.0
+                )
+            max_risk_per_trade = max(float(daily_risk_budget), 0.0)
+
+        # Initialize intraday manager; option entries apply their premium-based cap below.
         self.intraday_manager = IntradayManager(
             account_size=self.config.get("account_size", 100000),
             risk_per_trade_pct=self.config.get("risk_per_trade_pct", 1.0),
@@ -200,8 +255,8 @@ class KiteTradingBot:
             trailing_activation_ratio=self.config.get("trailing_activation_ratio", 0.5),
             trailing_distance_ratio=self.config.get("trailing_distance_ratio", 0.25),
             daily_max_loss=self.config.get("daily_max_loss"),
-            daily_max_loss_pct=self.config.get("daily_max_loss_pct", 2.0),
-            max_risk_per_trade=self.config.get("max_risk_per_trade"),
+            daily_max_loss_pct=daily_max_loss_pct,
+            max_risk_per_trade=max_risk_per_trade,
         )
 
         self.bar_builder = BarBuilder(
@@ -284,6 +339,19 @@ class KiteTradingBot:
         )
         if not 0 <= self.paper_min_entry_score <= 85:
             raise ValueError("paper_min_entry_score must be between 0 and 85")
+        self.paper_option_min_candle_body_ratio = float(
+            self.config.get(
+                "paper_option_min_candle_body_ratio",
+                OPTION_MIN_CANDLE_BODY_RATIO,
+            )
+        )
+        if (
+            not math.isfinite(self.paper_option_min_candle_body_ratio)
+            or not 0 < self.paper_option_min_candle_body_ratio <= 1
+        ):
+            raise ValueError(
+                "paper_option_min_candle_body_ratio must be greater than 0 and at most 1"
+            )
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
@@ -619,10 +687,10 @@ class KiteTradingBot:
             estimated_risk = self.intraday_manager.estimate_trade_risk(
                 symbol, quantity, entry_price, stop_loss
             )
-            if estimated_risk > self.intraday_manager.max_risk_per_trade + 1e-6:
+            if estimated_risk > self._entry_risk_limit(symbol, entry_price) + 1e-6:
                 raise RuntimeError(
                     f"Open trade {symbol} exceeds the per-trade risk cap: "
-                    f"{estimated_risk:.2f} > {self.intraday_manager.max_risk_per_trade:.2f}"
+                    f"{estimated_risk:.2f} > {self._entry_risk_limit(symbol, entry_price):.2f}"
                 )
             entry_score = (
                 int(trade["score"]) if trade.get("score") is not None else None
@@ -1206,7 +1274,9 @@ class KiteTradingBot:
                 return
 
             if not self._has_option_candle_momentum(
-                market_score.signal, signal_bars[-1].to_dict()
+                market_score.signal,
+                signal_bars[-1].to_dict(),
+                minimum_body_ratio=self._option_candle_min_body_ratio(),
             ):
                 logger.info(
                     "[%s] Option entry rejected: signal candle lacks directional momentum",
@@ -1804,7 +1874,7 @@ class KiteTradingBot:
                 self.live_orders_enabled
                 and self.intraday_manager.estimate_trade_risk(
                     symbol, quantity, price, stop_loss
-                ) > self.intraday_manager.max_risk_per_trade + 1e-6
+                ) > self._entry_risk_limit(symbol, price) + 1e-6
             ):
                 self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
                 return "risk_blocked:filled_risk_exceeds_limit"
@@ -2007,7 +2077,7 @@ class KiteTradingBot:
                 self.live_orders_enabled
                 and self.intraday_manager.estimate_trade_risk(
                     symbol, quantity, price, stop_loss
-                ) > self.intraday_manager.max_risk_per_trade + 1e-6
+                ) > self._entry_risk_limit(symbol, price) + 1e-6
             ):
                 self._abort_live_entry(symbol, price, "RISK_LIMIT_EXCEEDED")
                 return "risk_blocked:filled_risk_exceeds_limit"

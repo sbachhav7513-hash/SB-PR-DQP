@@ -458,3 +458,44 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this bounded experiment and its pending results.
 - Validation and result: Focused runtime tests passed (`6 passed`); the full suite excluding the unrelated incomplete-fixture test `test_on_tick_stores_timestamp_required_by_option_quality_gate` passed (`162 passed, 1 skipped, 1 deselected`). Pylance reported no errors in changed Python files; both Kite configs parse and contain the expected 55 paper / 70 standard floors with live orders disabled; `git diff --check` passed.
 - Outcome / follow-up: Paper-only; lower-scored entries can still be rejected by confirmation, option quality, position sizing, or risk controls. No trade or performance improvement is guaranteed. Review candidate and rejection counts tomorrow before considering another change.
+
+#### DLY-2026-10-08-03
+
+- Reason: The October 8 daily paper review recorded 49 BUY/SELL decisions and 25 side-eligible candidates but no opened trades; six side-eligible candidates were rejected as `position_size_zero`. The option sizing helper and both configs required a two-lot minimum even when the risk budget could cover one lot.
+- Related prior entries checked: `DLY-2026-10-05-05` and `EXP-2026-10-05-03` record option premium sizing and a one-lot minimum-risk requirement; `DLY-2026-10-08-01` and `DLY-2026-10-08-02` document separate signal/entry-floor paper experiments. This change only makes the configured minimum lot one; existing risk calculations remain in force.
+- Files:
+  - `market_bot/kite_main.py` (modified): Set the option-sizing and lot-validation fallback minimum to one lot.
+  - `kite_config.json` and `kite_config.example.json` (modified): Set `option_min_lots` to 1.
+  - `tests/test_intraday_manager.py` (modified): Verify one TCS option lot is sized only when its planned risk fits the configured cap.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the one-lot minimum and continued risk-budget enforcement.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the rationale, boundaries, and evaluation status.
+- Validation and result: `tests/test_intraday_manager.py` passed (`59 passed`); Pylance reported no errors in the touched Python files; `git diff --check` passed.
+- Outcome / follow-up: Removes the fixed two-lot minimum as a blocker, but does not bypass entry-quality or risk checks and does not guarantee a trade or profit. Review subsequent paper-session entry and rejection counts.
+
+#### DLY-2026-10-08-04
+
+- Reason: The user clarified the options risk policy: cap each trade at 10% of one lot's premium value and cap daily risk at 10% of account value.
+- Related prior entries checked: `DLY-2026-10-08-03` records the one-lot minimum; `DLY-2026-10-05-05` and `EXP-2026-10-05-03` record the preceding 2% daily budget and 10% premium stop. This entry records the subsequent user-directed risk-policy change; it does not claim improved trading performance.
+- Files:
+  - `kite_config.json` and `kite_config.example.json` (modified): Set `daily_max_loss_pct` to 10%, leave the options `max_risk_per_trade` override unset, and set `option_max_risk_per_lot_pct` to 10%.
+  - `market_bot/kite_main.py` (modified): Cap option sizing and entry/recovery risk checks at the lesser of remaining daily budget and 10% of one lot's premium notional; derive the options-mode daily trade-risk ceiling from the daily account-percentage budget.
+  - `market_bot/intraday_manager.py` (modified): Avoid losing an exactly affordable option lot to floating-point division rounding.
+  - `tests/test_intraday_manager.py` (modified): Verify the ₹10,000 daily cap on a ₹100,000 account, the 10%-of-lot-premium entry cap, and a TCS lot risk calculation.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the updated paper risk values and example.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the risk-policy change and validation.
+- Validation and result: `tests/test_intraday_manager.py` passed (`59 passed`); Pylance reported no errors in the touched Python files; active and example Kite JSON settings were checked; `git diff --check` passed.
+- Outcome / follow-up: Paper trading remains enabled and live orders remain disabled. A 10% account daily loss cap is materially larger than the earlier 2% cap; actual fills, gaps, slippage, and fees can exceed planned stop-risk. Observe and review realized paper losses; no increased trade frequency or profitability is claimed.
+
+#### DLY-2026-10-08-05
+
+- Reason: The October 8 review recorded 15 `OPTION_FILTER_WEAK_CANDLE_MOMENTUM` rejections among 25 side-eligible directional candidates. The user approved one more controlled change to this execution filter after earlier paper-only sizing/risk changes.
+- Related prior entries checked: `DLY-2026-10-08-01` and `DLY-2026-10-08-02` record paper-only continuation and score-floor trials; `DLY-2026-10-08-03` and `DLY-2026-10-08-04` record the one-lot option sizing and revised risk budget. This trial changes only the minimum option signal candle body/range ratio.
+- Files:
+  - `market_bot/kite_main.py` (modified): Add a validated paper candle-body ratio setting; use it only for paper entries and preserve the 60% requirement for live/default behavior.
+  - `kite_config.json` (modified): Set the active paper-only candle-body ratio to 40%; live orders remain disabled.
+  - `kite_config.example.json` (modified): Keep the example/default ratio at 60%.
+  - `tests/test_intraday_manager.py` (modified): Verify 40% versus 60% candle qualification and paper-only threshold selection.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the experiment, unchanged live threshold, remaining gates, and limitations.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record baseline, hypothesis, and evaluation plan.
+- Validation and result: `tests/test_intraday_manager.py` passed (`60 passed`); Pylance reported no errors in the touched Python files; `kite_config.json` and `kite_config.example.json` parsed successfully; `git diff --check` passed.
+- Outcome / follow-up: Paper-only experiment; this can admit additional directional candles but does not bypass the other entry or risk checks and cannot guarantee trades or profitability. Compare the next session's candle rejection count, remaining rejection reasons, entries, and closed-trade results before changing another strategy variable.
