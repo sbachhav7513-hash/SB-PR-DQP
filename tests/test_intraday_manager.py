@@ -45,11 +45,15 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
         "trading_mode": "intraday_options",
         "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
+        "option_max_risk_per_lot_pct": 10.0,
     }
     bot.live_orders_enabled = False
     bot.paper_trading_enabled = True
     bot.intraday_manager = IntradayManager()
-    bot.intraday_manager.calculate_option_size = Mock(return_value=2)
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+    bot.intraday_manager.calculate_option_size = Mock(return_value=2 * 65)
     bot.trade_journal = Mock()
     bot.trade_journal.get_open_trade.return_value = None
     bot.telegram_notifier = Mock()
@@ -68,7 +72,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     bot.intraday_manager.calculate_option_size.assert_called_once_with(
         "NIFTY_CE",
         premium=123.0,
-        max_risk_per_trade=bot.intraday_manager.max_risk_per_trade,
+        max_risk_per_trade=pytest.approx(799.5),
         premium_stop_pct=0.10,
     )
     position = bot.intraday_manager.active_positions["NIFTY_CE"]
@@ -82,7 +86,9 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
 
     manager = IntradayManager(
         account_size=config["account_size"],
-        max_risk_per_trade=config["max_risk_per_trade"],
+        max_risk_per_trade=(
+            config["account_size"] * config["daily_max_loss_pct"] / 100.0
+        ),
         daily_max_loss_pct=config["daily_max_loss_pct"],
     )
     manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
@@ -104,13 +110,55 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
 
     assert config["paper_trading_enabled"] is True
     assert config["live_orders_enabled"] is False
-    assert manager.daily_max_loss == 2_000.0
-    assert quantity == 3 * 65
-    assert risk == pytest.approx(1_950.0)
+    assert config["option_min_lots"] == 1
+    assert config["max_risk_per_trade"] is None
+    assert config["daily_max_loss_pct"] == 10.0
+    assert config["option_max_risk_per_lot_pct"] == 10.0
+    assert manager.daily_max_loss == 10_000.0
+    assert manager.max_risk_per_trade == 10_000.0
+    assert quantity == 65
+    assert risk == pytest.approx(650.0)
+    assert risk <= manager.available_daily_risk()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        quantity,
+        100.0,
+        100.0 * (1.0 - config["option_premium_stop_pct"]),
+        100.0 * 1.10,
+    )
+
+    manager.set_contract_specs(
+        {
+            "NIFTY_CE": {"lot_size": 65, "multiplier": 1},
+            "TCS_PE": {"lot_size": 175, "multiplier": 1},
+        }
+    )
+    quantity = bot._calculate_option_quantity(
+        "TCS_PE",
+        premium=95.60,
+        premium_stop_pct=config["option_premium_stop_pct"],
+    )
+    risk = manager.estimate_trade_risk(
+        "TCS_PE",
+        quantity,
+        95.60,
+        95.60 * (1.0 - config["option_premium_stop_pct"]),
+    )
+
+    assert quantity == 175
+    assert risk == pytest.approx(1_673.0)
     assert risk <= manager.available_daily_risk()
 
-    manager.register_position("NIFTY_CE", "BUY", quantity, 100.0, 90.0, 110.0)
-    assert manager.available_daily_risk() == pytest.approx(50.0)
+    manager.register_position(
+        "TCS_PE",
+        "BUY",
+        quantity,
+        95.60,
+        95.60 * (1.0 - config["option_premium_stop_pct"]),
+        95.60 * 1.10,
+    )
+    assert manager.available_daily_risk() == pytest.approx(7_677.0)
 
 
 def test_per_trade_risk_cap_is_separate_from_two_percent_daily_stop():
@@ -976,9 +1024,13 @@ def test_option_sizing_requires_two_risk_qualified_lots_and_caps_at_three():
     assert bot._option_quantity_within_lot_bounds("NIFTY_CE", 3 * 65)
 
 
-def test_two_nifty_option_lots_fit_configured_risk_budget_at_minimum_premium():
+def test_option_trade_risk_is_capped_at_one_lot_premium_value():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"option_min_lots": 2, "option_max_lots": 3}
+    bot.config = {
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+        "option_max_risk_per_lot_pct": 20.0,
+    }
     bot.intraday_manager = IntradayManager(
         account_size=100_000,
         risk_per_trade_pct=1.0,
@@ -990,10 +1042,10 @@ def test_two_nifty_option_lots_fit_configured_risk_budget_at_minimum_premium():
 
     quantity = bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.20)
 
-    assert quantity == 2 * 65
+    assert quantity == 65
     assert bot.intraday_manager.estimate_trade_risk(
         "NIFTY_CE", quantity, 12.0, 12.0 * (1.0 - 0.20)
-    ) == pytest.approx(312.0)
+    ) == pytest.approx(156.0)
 
 
 def test_staged_target_does_not_move_back_when_price_retraces():
@@ -1206,10 +1258,15 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     )
 
 
-def test_option_candle_momentum_requires_directional_body_to_cover_sixty_percent():
+def test_option_candle_momentum_uses_requested_directional_body_ratio():
     assert KiteTradingBot._has_option_candle_momentum(
-        "BUY", {"open": 100, "high": 110, "low": 90, "close": 105}
+        "BUY", {"open": 100, "high": 115, "low": 95, "close": 110}
     ) is False
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY",
+        {"open": 100, "high": 115, "low": 95, "close": 110},
+        minimum_body_ratio=0.40,
+    ) is True
     assert KiteTradingBot._has_option_candle_momentum(
         "BUY", {"open": 100, "high": 110, "low": 90, "close": 95}
     ) is False
@@ -1222,6 +1279,17 @@ def test_option_candle_momentum_requires_directional_body_to_cover_sixty_percent
     assert KiteTradingBot._has_option_candle_momentum(
         "BUY", {"open": 100, "high": 100, "low": 100, "close": 100}
     ) is False
+
+
+def test_option_candle_threshold_is_paper_only():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_option_min_candle_body_ratio": 0.40}
+    bot.paper_option_min_candle_body_ratio = 0.40
+
+    bot.paper_trading_enabled = True
+    assert bot._option_candle_min_body_ratio() == 0.40
+    bot.paper_trading_enabled = False
+    assert bot._option_candle_min_body_ratio() == 0.60
 
 
 def test_options_only_underlying_bars_are_context_not_trade_entries():
