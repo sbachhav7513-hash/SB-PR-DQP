@@ -499,3 +499,23 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record baseline, hypothesis, and evaluation plan.
 - Validation and result: `tests/test_intraday_manager.py` passed (`60 passed`); Pylance reported no errors in the touched Python files; `kite_config.json` and `kite_config.example.json` parsed successfully; `git diff --check` passed.
 - Outcome / follow-up: Paper-only experiment; this can admit additional directional candles but does not bypass the other entry or risk checks and cannot guarantee trades or profitability. Compare the next session's candle rejection count, remaining rejection reasons, entries, and closed-trade results before changing another strategy variable.
+
+#### DLY-2026-10-09-01
+
+- Reason: Complete the requested historical evaluation of the whole current paper options strategy; the 40% candle-body threshold is only one setting in the comparison.
+- Evaluation: Read-only Kite historical minute OHLCV and OI replay for October 7-8, 2026, comparing the active 40% paper candle-body threshold with a controlled 60% run. The replay applied the active scorer and paper trend-continuation/score-floor settings, option selection and premium/volume/OI gates, accuracy/cooldown and timing checks, one-trade-per-leg/session control, 10%-of-one-lot-premium risk sizing, 10%-of-account daily risk budget, and paper exits/timeboxes. No orders were placed.
+- Whole-strategy result at 40%: 10 closed trades, 2 winners (20%); gross P/L -INR 3,496.25. Estimated net: -INR 3,896.25 with INR 40 brokerage per round trip and no slippage; -INR 4,200.75 at 5 bps slippage per side; -INR 4,505.25 at 10 bps; -INR 5,114.25 at 20 bps. Session gross P/L: October 7 -INR 2,360 (7 trades); October 8 -INR 1,136.25 (3 trades). The daily realized-equity drawdown estimate at zero slippage was 3.20% and 1.26%, respectively; maximum reserved stop risk was INR 4,143.50 and INR 2,087.80, each below the INR 10,000 daily budget.
+- Threshold comparison: The 60% run produced 9 trades, 2 winners (22.22%), gross P/L -INR 3,237.50, and estimated net P/L -INR 3,597.50 at zero slippage plus brokerage. Reducing the candle threshold admitted one additional October 7 trade, but worsened gross P/L by INR 258.75 and did not add a trade on October 8. Neither run was profitable in this sample.
+- Files:
+  - `paper_trading_data/backtests/kite_option_replay_2026-10-07_08.json` (added): Full per-session/per-threshold metrics, trade ledger, rejection counts, cost sensitivities, contract coverage, and caveats.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the complete replay outcome and limitations.
+- Limitations and decision: This is a two-session counterfactual, not actual historical bot trades or enough data to estimate strategy expectancy. Minute bars cannot reproduce tick order or executable bid/ask fills; historical option IV and spreads are unavailable, brokerage/tax estimates are incomplete, and the configured TATAMOTORS contracts were unavailable. Do not infer a durable edge or live readiness. Keep live orders disabled; review a longer sample before further strategy changes.
+- Validation: Confirmed the saved JSON parses and its four scenario trade counts, daily P/L, cost estimates, and contract-coverage caveats reconcile with the replay output.
+
+#### DLY-2026-10-09-02
+
+- Reason: The user requested monitoring today's paper session with the 60% candle-body threshold after the full-strategy two-session replay showed no benefit from 40%.
+- Change: Restored `kite_config.json` `paper_option_min_candle_body_ratio` from 0.40 to 0.60. Paper mode remains enabled and live orders remain disabled; no other strategy setting was changed.
+- Monitoring plan: Review October 9 paper decisions and trades after the session, including signal counts, each rejection reason, contracts, entry/exit times and prices, gross/net P/L, and risk/drawdown. Use that evidence to decide any further strategy change; do not infer performance from trade count alone.
+- Documentation: Updated `DAILY_WEEKLY_OPERATIONS.md` to identify 60% as the active threshold and explain the monitoring plan.
+- Validation: Active and example Kite JSON parsed; active threshold is 0.60, paper trading is enabled, and live orders are disabled. `git diff --check` passed.
