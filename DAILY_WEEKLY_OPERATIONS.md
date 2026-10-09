@@ -100,13 +100,15 @@ the record at its entry price as a zero-P&L estimate and labels the journal
 reason accordingly. Neither recovery value is guaranteed to be the exchange's
 official session-close price or actual realized performance.
 
-As a bounded paper-only frequency experiment, the active config permits a
-directional option signal candle body/range ratio of 40% (`paper_option_min_candle_body_ratio`);
-the default and live threshold remain 60%. This relaxes only that candle gate:
-signal direction, option quote/quality, entry validation, and risk limits still
-apply. It does not guarantee an entry or demonstrate an edge. Review the
-rejection counts and outcomes after each session and keep the setting at 60%
-unless the paper results justify continuing the experiment.
+The active paper config currently requires a directional option signal candle
+body/range ratio of 60% (`paper_option_min_candle_body_ratio`), matching the
+default and live threshold. A prior 40% paper-only trial was reverted after a
+two-session historical replay showed worse P/L and did not improve trade count
+on the second session. Monitor today's session at 60%, then review rejection
+counts, entries, exits, and P/L before deciding whether another strategy change
+is warranted. Signal direction, option quote/quality, entry validation, and
+risk limits continue to apply; the threshold does not guarantee an entry or
+demonstrate an edge.
 
 ### VPS systemd setup
 

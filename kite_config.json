@@ -4,7 +4,7 @@
   "trading_mode": "intraday_options",
   "paper_trading_enabled": true,
   "paper_allow_trend_continuation": true,
-  "paper_option_min_candle_body_ratio": 0.40,
+  "paper_option_min_candle_body_ratio": 0.60,
   "live_orders_enabled": false,
   "live_orders_confirmed": false,
   "market_close_time": "15:15",
