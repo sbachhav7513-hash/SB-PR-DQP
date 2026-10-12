@@ -1333,6 +1333,7 @@ class KiteTradingBot:
                 current_time=current_time,
                 hour=now.hour,
                 minute=now.minute,
+                record_entry=False,
                 min_score=position_minimum_score,
             )
             if not allowed:
@@ -1374,6 +1375,9 @@ class KiteTradingBot:
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
             outcome = "hold"
+
+        if outcome == "trade_opened":
+            self.accuracy_filters.record_entry(symbol, current_time)
 
         self._record_decision(
             symbol,

@@ -1152,11 +1152,20 @@ def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
 
 
 @pytest.mark.parametrize(
-    ("paper_trading_enabled", "live_orders_enabled"),
-    [(True, False), (False, True)],
+    (
+        "paper_trading_enabled",
+        "live_orders_enabled",
+        "buy_outcome",
+        "entry_recorded",
+    ),
+    [
+        (True, False, "trade_opened", True),
+        (True, False, "trade_blocked:consecutive_losses", False),
+        (False, True, "trade_opened", False),
+    ],
 )
 def test_option_entry_uses_one_strategy_in_both_modes(
-    paper_trading_enabled, live_orders_enabled
+    paper_trading_enabled, live_orders_enabled, buy_outcome, entry_recorded
 ):
     bot = object.__new__(KiteTradingBot)
     bot.config = {
@@ -1200,7 +1209,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     bot._has_option_candle_momentum = Mock(return_value=True)
     bot._option_quality_gate = Mock(return_value=(True, "OK"))
     bot._record_decision = Mock()
-    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    bot._handle_buy_signal = Mock(return_value=buy_outcome)
     bot.accuracy_filters = Mock()
     bot.accuracy_filters.min_score_floor = 70
     bot.accuracy_filters.validate_entry_with_reason.side_effect = (
@@ -1228,13 +1237,26 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "min_score"
     ] == (55 if paper_trading_enabled else 70)
+    assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+        "record_entry"
+    ] is False
     if paper_trading_enabled:
         bot._handle_buy_signal.assert_called_once()
         assert bot._handle_buy_signal.call_args.kwargs[
             "minimum_signal_score"
         ] == 55
+        if entry_recorded:
+            bot.accuracy_filters.record_entry.assert_called_once_with(
+                "NIFTY_CE",
+                bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+                    "current_time"
+                ],
+            )
+        else:
+            bot.accuracy_filters.record_entry.assert_not_called()
     else:
         bot._handle_buy_signal.assert_not_called()
+        bot.accuracy_filters.record_entry.assert_not_called()
         assert bot._record_decision.call_args.args[5] == (
             "accuracy_filter_rejected:score<70"
         )
