@@ -1,0 +1,1449 @@
+{
+  "title": "Previous-week paper options strategy proxy replay",
+  "created_at_ist": "2026-10-09T09:03:23.664240+05:30",
+  "source": "Kite historical minute OHLCV + OI; authenticated read-only; no orders placed",
+  "requested_period": "2026-09-28 through 2026-10-02",
+  "replayed_sessions": [
+    "2026-09-28",
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01"
+  ],
+  "non_session_note": "2026-10-02 had no trading bars in the available dataset and was excluded; the replay has 4 sessions.",
+  "strategy_threshold": 0.6,
+  "strategy_method": "Counterfactual replay of current full paper options gates at 60% candle ratio, current score_market with paper trend-continuation, paper score floor, option mapping and premium/volume/OI quality rules, accuracy confirmation/volatility/cooldown/time filters, one trade per option leg/session, current one-lot-premium risk ceiling and daily risk reservation, staged premium stops/targets, signal-health exits, timebox and 15:15 flatten. Option fills use signal-minute close.",
+  "trade_ledger_semantics": {
+    "signal": "Underlying market direction, not the option transaction side: BUY is upward and maps to CE; SELL is downward and maps to PE.",
+    "entry_action": "BUY-to-open the selected CE or PE option contract; all replayed option positions are long options, never short option positions.",
+    "exit_action": "SELL-to-close the long option position.",
+    "gross_pnl_calculation": "(option exit premium - option entry premium) * quantity, consistent with long-option positions."
+  },
+  "contract_selection_proxy": "At user direction, substitute the nearest expiry still listed in the current Kite NFO master (NIFTY Oct 13; others generally Oct 27) and reconstruct ATM strikes from each session previous close. These are not the exact nearest-expiry historical contracts the live provider would have selected that week; expired option series are missing from the current master.",
+  "active_config_snapshot": {
+    "trading_mode": "intraday_options",
+    "paper_trading_enabled": true,
+    "paper_allow_trend_continuation": true,
+    "paper_option_min_candle_body_ratio": 0.6,
+    "paper_min_entry_score": 55,
+    "account_size": 100000,
+    "daily_max_loss_pct": 10.0,
+    "option_max_risk_per_lot_pct": 10.0,
+    "option_premium_stop_pct": 0.1,
+    "option_min_premium": 12.0,
+    "option_max_premium": 800.0,
+    "option_min_volume": 200,
+    "option_min_oi": 400,
+    "min_entry_score": 70,
+    "min_volatility_pct": 0.05,
+    "max_volatility_pct": 5.0,
+    "option_milestone_pct": 0.1,
+    "option_weak_signal_lockin_pct": 0.05,
+    "option_milestone_window_minutes": 5,
+    "strong_option_milestone_window_minutes": 10,
+    "strong_signal_score": 82,
+    "live_orders_enabled": false
+  },
+  "underlying_coverage": {
+    "NIFTY": 1875,
+    "BANKNIFTY": 1875,
+    "RELIANCE": 1800,
+    "HDFCBANK": 1800,
+    "ICICIBANK": 1800,
+    "SBIN": 1800,
+    "INFY": 1800,
+    "TCS": 1800,
+    "LT": 1800
+  },
+  "selected_contracts": {
+    "2026-09-28:NIFTY_CE": {
+      "symbol": "NIFTY26O1323150CE",
+      "expiry": "2026-10-13",
+      "strike": 23150.0,
+      "lot_size": 65,
+      "token": 11429890,
+      "prior_close": 23140.5
+    },
+    "2026-09-28:NIFTY_PE": {
+      "symbol": "NIFTY26O1323150PE",
+      "expiry": "2026-10-13",
+      "strike": 23150.0,
+      "lot_size": 65,
+      "token": 11430146,
+      "prior_close": 23140.5
+    },
+    "2026-09-29:NIFTY_CE": {
+      "symbol": "NIFTY26O1322800CE",
+      "expiry": "2026-10-13",
+      "strike": 22800.0,
+      "lot_size": 65,
+      "token": 11423746,
+      "prior_close": 22780.25
+    },
+    "2026-09-29:NIFTY_PE": {
+      "symbol": "NIFTY26O1322800PE",
+      "expiry": "2026-10-13",
+      "strike": 22800.0,
+      "lot_size": 65,
+      "token": 11424002,
+      "prior_close": 22780.25
+    },
+    "2026-09-30:NIFTY_CE": {
+      "symbol": "NIFTY26O1322700CE",
+      "expiry": "2026-10-13",
+      "strike": 22700.0,
+      "lot_size": 65,
+      "token": 11422722,
+      "prior_close": 22716.2
+    },
+    "2026-09-30:NIFTY_PE": {
+      "symbol": "NIFTY26O1322700PE",
+      "expiry": "2026-10-13",
+      "strike": 22700.0,
+      "lot_size": 65,
+      "token": 11422978,
+      "prior_close": 22716.2
+    },
+    "2026-10-01:NIFTY_CE": {
+      "symbol": "NIFTY26O1322600CE",
+      "expiry": "2026-10-13",
+      "strike": 22600.0,
+      "lot_size": 65,
+      "token": 11421698,
+      "prior_close": 22620.45
+    },
+    "2026-10-01:NIFTY_PE": {
+      "symbol": "NIFTY26O1322600PE",
+      "expiry": "2026-10-13",
+      "strike": 22600.0,
+      "lot_size": 65,
+      "token": 11421954,
+      "prior_close": 22620.45
+    },
+    "2026-09-28:BANKNIFTY_CE": {
+      "symbol": "BANKNIFTY26OCT55600CE",
+      "expiry": "2026-10-27",
+      "strike": 55600.0,
+      "lot_size": 30,
+      "token": 12661506,
+      "prior_close": 55580.4
+    },
+    "2026-09-28:BANKNIFTY_PE": {
+      "symbol": "BANKNIFTY26OCT55600PE",
+      "expiry": "2026-10-27",
+      "strike": 55600.0,
+      "lot_size": 30,
+      "token": 12661762,
+      "prior_close": 55580.4
+    },
+    "2026-09-29:BANKNIFTY_CE": {
+      "symbol": "BANKNIFTY26OCT54500CE",
+      "expiry": "2026-10-27",
+      "strike": 54500.0,
+      "lot_size": 30,
+      "token": 12652802,
+      "prior_close": 54471.65
+    },
+    "2026-09-29:BANKNIFTY_PE": {
+      "symbol": "BANKNIFTY26OCT54500PE",
+      "expiry": "2026-10-27",
+      "strike": 54500.0,
+      "lot_size": 30,
+      "token": 12653058,
+      "prior_close": 54471.65
+    },
+    "2026-09-30:BANKNIFTY_CE": {
+      "symbol": "BANKNIFTY26OCT54300CE",
+      "expiry": "2026-10-27",
+      "strike": 54300.0,
+      "lot_size": 30,
+      "token": 12651778,
+      "prior_close": 54259.95
+    },
+    "2026-09-30:BANKNIFTY_PE": {
+      "symbol": "BANKNIFTY26OCT54300PE",
+      "expiry": "2026-10-27",
+      "strike": 54300.0,
+      "lot_size": 30,
+      "token": 12652034,
+      "prior_close": 54259.95
+    },
+    "2026-10-01:BANKNIFTY_CE": {
+      "symbol": "BANKNIFTY26OCT54600CE",
+      "expiry": "2026-10-27",
+      "strike": 54600.0,
+      "lot_size": 30,
+      "token": 12653314,
+      "prior_close": 54633.05
+    },
+    "2026-10-01:BANKNIFTY_PE": {
+      "symbol": "BANKNIFTY26OCT54600PE",
+      "expiry": "2026-10-27",
+      "strike": 54600.0,
+      "lot_size": 30,
+      "token": 12653570,
+      "prior_close": 54633.05
+    },
+    "2026-09-28:RELIANCE_CE": {
+      "symbol": "RELIANCE26OCT1220CE",
+      "expiry": "2026-10-27",
+      "strike": 1220.0,
+      "lot_size": 500,
+      "token": 27311362,
+      "prior_close": 1224.7
+    },
+    "2026-09-28:RELIANCE_PE": {
+      "symbol": "RELIANCE26OCT1220PE",
+      "expiry": "2026-10-27",
+      "strike": 1220.0,
+      "lot_size": 500,
+      "token": 27313922,
+      "prior_close": 1224.7
+    },
+    "2026-09-29:RELIANCE_CE": {
+      "symbol": "RELIANCE26OCT1200CE",
+      "expiry": "2026-10-27",
+      "strike": 1200.0,
+      "lot_size": 500,
+      "token": 27308802,
+      "prior_close": 1198.9
+    },
+    "2026-09-29:RELIANCE_PE": {
+      "symbol": "RELIANCE26OCT1200PE",
+      "expiry": "2026-10-27",
+      "strike": 1200.0,
+      "lot_size": 500,
+      "token": 27310082,
+      "prior_close": 1198.9
+    },
+    "2026-09-30:RELIANCE_CE": {
+      "symbol": "RELIANCE26OCT1190CE",
+      "expiry": "2026-10-27",
+      "strike": 1190.0,
+      "lot_size": 500,
+      "token": 32216834,
+      "prior_close": 1187.4
+    },
+    "2026-09-30:RELIANCE_PE": {
+      "symbol": "RELIANCE26OCT1190PE",
+      "expiry": "2026-10-27",
+      "strike": 1190.0,
+      "lot_size": 500,
+      "token": 32217090,
+      "prior_close": 1187.4
+    },
+    "2026-10-01:RELIANCE_CE": {
+      "symbol": "RELIANCE26OCT1190CE",
+      "expiry": "2026-10-27",
+      "strike": 1190.0,
+      "lot_size": 500,
+      "token": 32216834,
+      "prior_close": 1185.5
+    },
+    "2026-10-01:RELIANCE_PE": {
+      "symbol": "RELIANCE26OCT1190PE",
+      "expiry": "2026-10-27",
+      "strike": 1190.0,
+      "lot_size": 500,
+      "token": 32217090,
+      "prior_close": 1185.5
+    },
+    "2026-09-29:HDFCBANK_CE": {
+      "symbol": "HDFCBANK26OCT720CE",
+      "expiry": "2026-10-27",
+      "strike": 720.0,
+      "lot_size": 650,
+      "token": 20077058,
+      "prior_close": 719.0
+    },
+    "2026-09-29:HDFCBANK_PE": {
+      "symbol": "HDFCBANK26OCT720PE",
+      "expiry": "2026-10-27",
+      "strike": 720.0,
+      "lot_size": 650,
+      "token": 20077314,
+      "prior_close": 719.0
+    },
+    "2026-10-01:HDFCBANK_CE": {
+      "symbol": "HDFCBANK26OCT710CE",
+      "expiry": "2026-10-27",
+      "strike": 710.0,
+      "lot_size": 650,
+      "token": 24915714,
+      "prior_close": 713.4
+    },
+    "2026-10-01:HDFCBANK_PE": {
+      "symbol": "HDFCBANK26OCT710PE",
+      "expiry": "2026-10-27",
+      "strike": 710.0,
+      "lot_size": 650,
+      "token": 24915970,
+      "prior_close": 713.4
+    },
+    "2026-09-28:ICICIBANK_CE": {
+      "symbol": "ICICIBANK26OCT1330CE",
+      "expiry": "2026-10-27",
+      "strike": 1330.0,
+      "lot_size": 700,
+      "token": 25790466,
+      "prior_close": 1327.7
+    },
+    "2026-09-28:ICICIBANK_PE": {
+      "symbol": "ICICIBANK26OCT1330PE",
+      "expiry": "2026-10-27",
+      "strike": 1330.0,
+      "lot_size": 700,
+      "token": 25790722,
+      "prior_close": 1327.7
+    },
+    "2026-09-29:ICICIBANK_CE": {
+      "symbol": "ICICIBANK26OCT1300CE",
+      "expiry": "2026-10-27",
+      "strike": 1300.0,
+      "lot_size": 700,
+      "token": 20632322,
+      "prior_close": 1301.3
+    },
+    "2026-09-29:ICICIBANK_PE": {
+      "symbol": "ICICIBANK26OCT1300PE",
+      "expiry": "2026-10-27",
+      "strike": 1300.0,
+      "lot_size": 700,
+      "token": 20632578,
+      "prior_close": 1301.3
+    },
+    "2026-09-30:ICICIBANK_CE": {
+      "symbol": "ICICIBANK26OCT1300CE",
+      "expiry": "2026-10-27",
+      "strike": 1300.0,
+      "lot_size": 700,
+      "token": 20632322,
+      "prior_close": 1298.0
+    },
+    "2026-09-30:ICICIBANK_PE": {
+      "symbol": "ICICIBANK26OCT1300PE",
+      "expiry": "2026-10-27",
+      "strike": 1300.0,
+      "lot_size": 700,
+      "token": 20632578,
+      "prior_close": 1298.0
+    },
+    "2026-10-01:ICICIBANK_CE": {
+      "symbol": "ICICIBANK26OCT1320CE",
+      "expiry": "2026-10-27",
+      "strike": 1320.0,
+      "lot_size": 700,
+      "token": 20632834,
+      "prior_close": 1323.0
+    },
+    "2026-10-01:ICICIBANK_PE": {
+      "symbol": "ICICIBANK26OCT1320PE",
+      "expiry": "2026-10-27",
+      "strike": 1320.0,
+      "lot_size": 700,
+      "token": 20633090,
+      "prior_close": 1323.0
+    },
+    "2026-09-28:SBIN_CE": {
+      "symbol": "SBIN26OCT980CE",
+      "expiry": "2026-10-27",
+      "strike": 980.0,
+      "lot_size": 750,
+      "token": 27801346,
+      "prior_close": 981.8
+    },
+    "2026-09-28:SBIN_PE": {
+      "symbol": "SBIN26OCT980PE",
+      "expiry": "2026-10-27",
+      "strike": 980.0,
+      "lot_size": 750,
+      "token": 27801602,
+      "prior_close": 981.8
+    },
+    "2026-09-29:SBIN_CE": {
+      "symbol": "SBIN26OCT960CE",
+      "expiry": "2026-10-27",
+      "strike": 960.0,
+      "lot_size": 750,
+      "token": 27800834,
+      "prior_close": 962.0
+    },
+    "2026-09-29:SBIN_PE": {
+      "symbol": "SBIN26OCT960PE",
+      "expiry": "2026-10-27",
+      "strike": 960.0,
+      "lot_size": 750,
+      "token": 27801090,
+      "prior_close": 962.0
+    },
+    "2026-10-01:SBIN_CE": {
+      "symbol": "SBIN26OCT960CE",
+      "expiry": "2026-10-27",
+      "strike": 960.0,
+      "lot_size": 750,
+      "token": 27800834,
+      "prior_close": 963.0
+    },
+    "2026-10-01:SBIN_PE": {
+      "symbol": "SBIN26OCT960PE",
+      "expiry": "2026-10-27",
+      "strike": 960.0,
+      "lot_size": 750,
+      "token": 27801090,
+      "prior_close": 963.0
+    },
+    "2026-09-28:INFY_CE": {
+      "symbol": "INFY26OCT1000CE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21361922,
+      "prior_close": 998.8
+    },
+    "2026-09-28:INFY_PE": {
+      "symbol": "INFY26OCT1000PE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21362178,
+      "prior_close": 998.8
+    },
+    "2026-09-29:INFY_CE": {
+      "symbol": "INFY26OCT1000CE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21361922,
+      "prior_close": 1004.8
+    },
+    "2026-09-29:INFY_PE": {
+      "symbol": "INFY26OCT1000PE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21362178,
+      "prior_close": 1004.8
+    },
+    "2026-10-01:INFY_CE": {
+      "symbol": "INFY26OCT1000CE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21361922,
+      "prior_close": 995.3
+    },
+    "2026-10-01:INFY_PE": {
+      "symbol": "INFY26OCT1000PE",
+      "expiry": "2026-10-27",
+      "strike": 1000.0,
+      "lot_size": 400,
+      "token": 21362178,
+      "prior_close": 995.3
+    },
+    "2026-09-28:TCS_CE": {
+      "symbol": "TCS26OCT2080CE",
+      "expiry": "2026-10-27",
+      "strike": 2080.0,
+      "lot_size": 225,
+      "token": 28984578,
+      "prior_close": 2081.0
+    },
+    "2026-09-28:TCS_PE": {
+      "symbol": "TCS26OCT2080PE",
+      "expiry": "2026-10-27",
+      "strike": 2080.0,
+      "lot_size": 225,
+      "token": 28984834,
+      "prior_close": 2081.0
+    },
+    "2026-09-29:TCS_CE": {
+      "symbol": "TCS26OCT2080CE",
+      "expiry": "2026-10-27",
+      "strike": 2080.0,
+      "lot_size": 225,
+      "token": 28984578,
+      "prior_close": 2073.9
+    },
+    "2026-09-29:TCS_PE": {
+      "symbol": "TCS26OCT2080PE",
+      "expiry": "2026-10-27",
+      "strike": 2080.0,
+      "lot_size": 225,
+      "token": 28984834,
+      "prior_close": 2073.9
+    },
+    "2026-09-30:TCS_CE": {
+      "symbol": "TCS26OCT2040CE",
+      "expiry": "2026-10-27",
+      "strike": 2040.0,
+      "lot_size": 225,
+      "token": 28984066,
+      "prior_close": 2046.1
+    },
+    "2026-09-30:TCS_PE": {
+      "symbol": "TCS26OCT2040PE",
+      "expiry": "2026-10-27",
+      "strike": 2040.0,
+      "lot_size": 225,
+      "token": 28984322,
+      "prior_close": 2046.1
+    },
+    "2026-10-01:TCS_CE": {
+      "symbol": "TCS26OCT2060CE",
+      "expiry": "2026-10-27",
+      "strike": 2060.0,
+      "lot_size": 225,
+      "token": 33192706,
+      "prior_close": 2058.0
+    },
+    "2026-10-01:TCS_PE": {
+      "symbol": "TCS26OCT2060PE",
+      "expiry": "2026-10-27",
+      "strike": 2060.0,
+      "lot_size": 225,
+      "token": 33192962,
+      "prior_close": 2058.0
+    },
+    "2026-09-30:LT_CE": {
+      "symbol": "LT26OCT3750CE",
+      "expiry": "2026-10-27",
+      "strike": 3750.0,
+      "lot_size": 175,
+      "token": 28913410,
+      "prior_close": 3756.1
+    },
+    "2026-09-30:LT_PE": {
+      "symbol": "LT26OCT3750PE",
+      "expiry": "2026-10-27",
+      "strike": 3750.0,
+      "lot_size": 175,
+      "token": 28913666,
+      "prior_close": 3756.1
+    },
+    "2026-10-01:LT_CE": {
+      "symbol": "LT26OCT3750CE",
+      "expiry": "2026-10-27",
+      "strike": 3750.0,
+      "lot_size": 175,
+      "token": 28913410,
+      "prior_close": 3733.0
+    },
+    "2026-10-01:LT_PE": {
+      "symbol": "LT26OCT3750PE",
+      "expiry": "2026-10-27",
+      "strike": 3750.0,
+      "lot_size": 175,
+      "token": 28913666,
+      "prior_close": 3733.0
+    }
+  },
+  "aggregate": {
+    "trades": 14,
+    "gross_pnl_rupees": 760.0,
+    "winners": 8,
+    "losers": 6,
+    "win_rate_pct": 57.14,
+    "gross_profit_factor": 1.2734,
+    "trade_ledger_audit": {
+      "trade_count_reconciles": true,
+      "gross_pnl_reconciles_to_trade_rows": true,
+      "all_trade_pnl_values_reconcile_to_entry_exit_and_quantity": true,
+      "all_trades_are_one_lot": true,
+      "average_winner_rupees": 442.5,
+      "average_loser_rupees": -463.33,
+      "largest_winner_rupees": 1541.25,
+      "largest_loser_rupees": -1687.5,
+      "maximum_consecutive_losses": 2,
+      "starting_equity_rupees": 100000.0,
+      "gross_realized_max_drawdown_rupees": 1862.5,
+      "gross_realized_max_drawdown_pct_of_starting_equity": 1.8625,
+      "drawdown_method": "Peak-to-trough realized trade-close equity, ordered by exit timestamp; excludes unrealized intratrade drawdown and transaction costs.",
+      "daily_risk_budget_rupees": 10000.0,
+      "maximum_reserved_stop_risk_rupees": 3975.25
+    },
+    "estimated_net_scenarios": {
+      "0_bps_each_side_plus_40INR_brokerage_roundtrip": {
+        "estimated_cost_rupees": 560.0,
+        "net_pnl_rupees": 200.0
+      },
+      "5_bps_each_side_plus_40INR_brokerage_roundtrip": {
+        "estimated_cost_rupees": 836.61,
+        "net_pnl_rupees": -76.61
+      },
+      "10_bps_each_side_plus_40INR_brokerage_roundtrip": {
+        "estimated_cost_rupees": 1113.21,
+        "net_pnl_rupees": -353.21
+      },
+      "20_bps_each_side_plus_40INR_brokerage_roundtrip": {
+        "estimated_cost_rupees": 1666.42,
+        "net_pnl_rupees": -906.42
+      }
+    }
+  },
+  "results": [
+    {
+      "date": "2026-09-28",
+      "bars_evaluated": 3240,
+      "signal_counts": {
+        "BUY": 0,
+        "SELL": 14,
+        "HOLD": 3226
+      },
+      "directional_signal_evaluations": 14,
+      "opened_trades": 3,
+      "closed_trades": 3,
+      "gross_pnl_rupees": 0.0,
+      "gross_return_on_100k_pct": 0.0,
+      "gross_win_rate_pct": 33.33,
+      "gross_profit_factor": 1.0,
+      "max_open_positions": 1,
+      "max_reserved_stop_risk_rupees": 2975.0,
+      "daily_risk_budget_rupees": 10000.0,
+      "estimated_net_scenarios": {
+        "0_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 120.0,
+          "net_pnl_rupees": -120.0,
+          "win_rate_pct": 33.33
+        },
+        "5_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 184.67,
+          "net_pnl_rupees": -184.67,
+          "win_rate_pct": 33.33
+        },
+        "10_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 249.33,
+          "net_pnl_rupees": -249.33,
+          "win_rate_pct": 33.33
+        },
+        "20_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 378.66,
+          "net_pnl_rupees": -378.66,
+          "win_rate_pct": 33.33
+        }
+      },
+      "pipeline_rejections": {
+        "directional_signals": 14,
+        "weak_candle_momentum": 7,
+        "trades_opened": 3,
+        "one_trade_per_session": 3,
+        "contract_unavailable": 1
+      },
+      "trades": [
+        {
+          "symbol": "TCS_PE",
+          "contract": "TCS26OCT2080PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-28T09:46:00+05:30",
+          "entry": 83.0,
+          "exit_time": "2026-09-28T09:47:00+05:30",
+          "exit": 84.2,
+          "quantity": 225,
+          "lot_size": 225,
+          "gross_pnl_rupees": 270.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 1.0
+        },
+        {
+          "symbol": "ICICIBANK_PE",
+          "contract": "ICICIBANK26OCT1330PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-28T10:00:00+05:30",
+          "entry": 42.5,
+          "exit_time": "2026-09-28T10:02:00+05:30",
+          "exit": 42.4,
+          "quantity": 700,
+          "lot_size": 700,
+          "gross_pnl_rupees": -70.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 2.0
+        },
+        {
+          "symbol": "INFY_PE",
+          "contract": "INFY26OCT1000PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-28T10:41:00+05:30",
+          "entry": 40.6,
+          "exit_time": "2026-09-28T10:46:00+05:30",
+          "exit": 40.1,
+          "quantity": 400,
+          "lot_size": 400,
+          "gross_pnl_rupees": -200.0,
+          "exit_reason": "TIME_BOX",
+          "duration_minutes": 5.0
+        }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "bars_evaluated": 3240,
+      "signal_counts": {
+        "BUY": 13,
+        "SELL": 10,
+        "HOLD": 3217
+      },
+      "directional_signal_evaluations": 23,
+      "opened_trades": 2,
+      "closed_trades": 2,
+      "gross_pnl_rupees": 303.75,
+      "gross_return_on_100k_pct": 0.3037,
+      "gross_win_rate_pct": 100.0,
+      "gross_profit_factor": null,
+      "max_open_positions": 1,
+      "max_reserved_stop_risk_rupees": 2025.0,
+      "daily_risk_budget_rupees": 10000.0,
+      "estimated_net_scenarios": {
+        "0_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 80.0,
+          "net_pnl_rupees": 223.75,
+          "win_rate_pct": 100.0
+        },
+        "5_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 118.66,
+          "net_pnl_rupees": 185.09,
+          "win_rate_pct": 100.0
+        },
+        "10_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 157.33,
+          "net_pnl_rupees": 146.42,
+          "win_rate_pct": 50.0
+        },
+        "20_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 234.66,
+          "net_pnl_rupees": 69.09,
+          "win_rate_pct": 50.0
+        }
+      },
+      "pipeline_rejections": {
+        "directional_signals": 23,
+        "weak_candle_momentum": 6,
+        "contract_unavailable": 5,
+        "late_window": 6,
+        "trades_opened": 2,
+        "one_trade_per_session": 3,
+        "position_active": 1
+      },
+      "trades": [
+        {
+          "symbol": "TCS_PE",
+          "contract": "TCS26OCT2080PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-29T13:38:00+05:30",
+          "entry": 90.0,
+          "exit_time": "2026-09-29T13:39:00+05:30",
+          "exit": 90.35,
+          "quantity": 225,
+          "lot_size": 225,
+          "gross_pnl_rupees": 78.75,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 1.0
+        },
+        {
+          "symbol": "SBIN_CE",
+          "contract": "SBIN26OCT960CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-29T14:52:00+05:30",
+          "entry": 24.35,
+          "exit_time": "2026-09-29T14:54:00+05:30",
+          "exit": 24.65,
+          "quantity": 750,
+          "lot_size": 750,
+          "gross_pnl_rupees": 225.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 2.0
+        }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "bars_evaluated": 3240,
+      "signal_counts": {
+        "BUY": 26,
+        "SELL": 24,
+        "HOLD": 3190
+      },
+      "directional_signal_evaluations": 50,
+      "opened_trades": 3,
+      "closed_trades": 3,
+      "gross_pnl_rupees": 95.0,
+      "gross_return_on_100k_pct": 0.095,
+      "gross_win_rate_pct": 33.33,
+      "gross_profit_factor": 1.1467,
+      "max_open_positions": 1,
+      "max_reserved_stop_risk_rupees": 3129.0,
+      "daily_risk_budget_rupees": 10000.0,
+      "estimated_net_scenarios": {
+        "0_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 120.0,
+          "net_pnl_rupees": -25.0,
+          "win_rate_pct": 33.33
+        },
+        "5_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 187.2,
+          "net_pnl_rupees": -92.2,
+          "win_rate_pct": 33.33
+        },
+        "10_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 254.4,
+          "net_pnl_rupees": -159.4,
+          "win_rate_pct": 33.33
+        },
+        "20_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 388.8,
+          "net_pnl_rupees": -293.8,
+          "win_rate_pct": 33.33
+        }
+      },
+      "pipeline_rejections": {
+        "directional_signals": 50,
+        "weak_candle_momentum": 14,
+        "trades_opened": 3,
+        "contract_unavailable": 29,
+        "position_active": 1,
+        "late_window": 3
+      },
+      "trades": [
+        {
+          "symbol": "ICICIBANK_CE",
+          "contract": "ICICIBANK26OCT1300CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-30T09:55:00+05:30",
+          "entry": 44.7,
+          "exit_time": "2026-09-30T09:56:00+05:30",
+          "exit": 44.0,
+          "quantity": 700,
+          "lot_size": 700,
+          "gross_pnl_rupees": -490.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 1.0
+        },
+        {
+          "symbol": "TCS_CE",
+          "contract": "TCS26OCT2040CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 85,
+          "entry_time": "2026-09-30T10:08:00+05:30",
+          "entry": 99.0,
+          "exit_time": "2026-09-30T10:15:00+05:30",
+          "exit": 102.3,
+          "quantity": 225,
+          "lot_size": 225,
+          "gross_pnl_rupees": 742.5,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 7.0
+        },
+        {
+          "symbol": "LT_PE",
+          "contract": "LT26OCT3750PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-09-30T15:09:00+05:30",
+          "entry": 77.65,
+          "exit_time": "2026-09-30T15:11:00+05:30",
+          "exit": 76.75,
+          "quantity": 175,
+          "lot_size": 175,
+          "gross_pnl_rupees": -157.5,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 2.0
+        }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "bars_evaluated": 3240,
+      "signal_counts": {
+        "BUY": 31,
+        "SELL": 59,
+        "HOLD": 3150
+      },
+      "directional_signal_evaluations": 90,
+      "opened_trades": 6,
+      "closed_trades": 6,
+      "gross_pnl_rupees": 361.25,
+      "gross_return_on_100k_pct": 0.3612,
+      "gross_win_rate_pct": 66.67,
+      "gross_profit_factor": 1.194,
+      "max_open_positions": 2,
+      "max_reserved_stop_risk_rupees": 3975.25,
+      "daily_risk_budget_rupees": 10000.0,
+      "estimated_net_scenarios": {
+        "0_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 240.0,
+          "net_pnl_rupees": 121.25,
+          "win_rate_pct": 50.0
+        },
+        "5_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 346.07,
+          "net_pnl_rupees": 15.18,
+          "win_rate_pct": 50.0
+        },
+        "10_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 452.15,
+          "net_pnl_rupees": -90.9,
+          "win_rate_pct": 50.0
+        },
+        "20_bps_each_side_plus_40INR_brokerage_roundtrip": {
+          "estimated_cost_rupees": 664.3,
+          "net_pnl_rupees": -303.05,
+          "win_rate_pct": 50.0
+        }
+      },
+      "pipeline_rejections": {
+        "directional_signals": 90,
+        "weak_candle_momentum": 25,
+        "trades_opened": 6,
+        "position_active": 3,
+        "one_trade_per_session": 5,
+        "late_window": 51
+      },
+      "trades": [
+        {
+          "symbol": "TCS_CE",
+          "contract": "TCS26OCT2060CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 85,
+          "entry_time": "2026-10-01T10:04:00+05:30",
+          "entry": 79.9,
+          "exit_time": "2026-10-01T10:14:00+05:30",
+          "exit": 86.75,
+          "quantity": 225,
+          "lot_size": 225,
+          "gross_pnl_rupees": 1541.25,
+          "exit_reason": "TIME_BOX",
+          "duration_minutes": 10.0
+        },
+        {
+          "symbol": "INFY_CE",
+          "contract": "INFY26OCT1000CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 85,
+          "entry_time": "2026-10-01T10:09:00+05:30",
+          "entry": 50.25,
+          "exit_time": "2026-10-01T10:16:00+05:30",
+          "exit": 51.5,
+          "quantity": 400,
+          "lot_size": 400,
+          "gross_pnl_rupees": 500.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 7.0
+        },
+        {
+          "symbol": "RELIANCE_PE",
+          "contract": "RELIANCE26OCT1190PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-10-01T11:10:00+05:30",
+          "entry": 32.45,
+          "exit_time": "2026-10-01T11:15:00+05:30",
+          "exit": 32.5,
+          "quantity": 500,
+          "lot_size": 500,
+          "gross_pnl_rupees": 25.0,
+          "exit_reason": "TIME_BOX",
+          "duration_minutes": 5.0
+        },
+        {
+          "symbol": "ICICIBANK_PE",
+          "contract": "ICICIBANK26OCT1320PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-10-01T13:01:00+05:30",
+          "entry": 30.7,
+          "exit_time": "2026-10-01T13:02:00+05:30",
+          "exit": 30.45,
+          "quantity": 700,
+          "lot_size": 700,
+          "gross_pnl_rupees": -175.0,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 1.0
+        },
+        {
+          "symbol": "SBIN_PE",
+          "contract": "SBIN26OCT960PE",
+          "signal": "SELL",
+          "underlying_signal": "SELL",
+          "option_type": "PE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-10-01T13:01:00+05:30",
+          "entry": 24.35,
+          "exit_time": "2026-10-01T13:04:00+05:30",
+          "exit": 22.1,
+          "quantity": 750,
+          "lot_size": 750,
+          "gross_pnl_rupees": -1687.5,
+          "exit_reason": "SIGNAL_WEAKEN",
+          "duration_minutes": 3.0
+        },
+        {
+          "symbol": "LT_CE",
+          "contract": "LT26OCT3750CE",
+          "signal": "BUY",
+          "underlying_signal": "BUY",
+          "option_type": "CE",
+          "entry_action": "BUY",
+          "position_type": "LONG_OPTION",
+          "exit_action": "SELL",
+          "score": 65,
+          "entry_time": "2026-10-01T15:06:00+05:30",
+          "entry": 67.65,
+          "exit_time": "2026-10-01T15:11:00+05:30",
+          "exit": 68.55,
+          "quantity": 175,
+          "lot_size": 175,
+          "gross_pnl_rupees": 157.5,
+          "exit_reason": "TIME_BOX",
+          "duration_minutes": 5.0
+        }
+      ]
+    }
+  ],
+  "caveats": [
+    "This is a user-approved later-expiry proxy, not a faithful exact-contract historical backtest. Premium path, liquidity, greeks, and P/L may differ materially from the expired contracts the strategy would actually have selected.",
+    "Four completed sessions are too small to establish expectancy or robustness.",
+    "The reported maximum drawdown is based on realized trade-close P/L only; it excludes intratrade mark-to-market drawdown, transaction costs, and execution gaps.",
+    "Kite minute OHLC cannot resolve tick ordering; intrabar stop handling is adverse-first. Entry is approximated by option signal-minute close.",
+    "Historical bid/ask spreads and option IV are not available. The IV gate is skipped when historical IV is absent; cost sensitivity uses illustrative slippage and INR 40 round-trip brokerage only and excludes taxes/fees.",
+    "Current instrument master has no TATAMOTORS options; roots with no selected near-ATM option in this master are excluded for those days.",
+    "Scorer and option stream callbacks are synchronized on minute timestamps in replay; actual production callbacks can differ in order.",
+    "October 2 had no market bars and was not simulated.",
+    "Archived paper logs for Oct 1 are a different strategy variant (trend_shadow_paper) and are not combined with this counterfactual replay."
+  ],
+  "option_coverage": {
+    "2026-09-28": {
+      "NIFTY_CE": {
+        "symbol": "NIFTY26O1323150CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 148
+      },
+      "NIFTY_PE": {
+        "symbol": "NIFTY26O1323150PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 305
+      },
+      "BANKNIFTY_CE": {
+        "symbol": "BANKNIFTY26OCT55600CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 87
+      },
+      "BANKNIFTY_PE": {
+        "symbol": "BANKNIFTY26OCT55600PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 181
+      },
+      "RELIANCE_CE": {
+        "symbol": "RELIANCE26OCT1220CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 10
+      },
+      "RELIANCE_PE": {
+        "symbol": "RELIANCE26OCT1220PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 23
+      },
+      "ICICIBANK_CE": {
+        "symbol": "ICICIBANK26OCT1330CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 85
+      },
+      "ICICIBANK_PE": {
+        "symbol": "ICICIBANK26OCT1330PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 148
+      },
+      "SBIN_CE": {
+        "symbol": "SBIN26OCT980CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 47
+      },
+      "SBIN_PE": {
+        "symbol": "SBIN26OCT980PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 102
+      },
+      "INFY_CE": {
+        "symbol": "INFY26OCT1000CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 1
+      },
+      "INFY_PE": {
+        "symbol": "INFY26OCT1000PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 3
+      },
+      "TCS_CE": {
+        "symbol": "TCS26OCT2080CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 33
+      },
+      "TCS_PE": {
+        "symbol": "TCS26OCT2080PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 90
+      }
+    },
+    "2026-09-29": {
+      "NIFTY_CE": {
+        "symbol": "NIFTY26O1322800CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 1
+      },
+      "NIFTY_PE": {
+        "symbol": "NIFTY26O1322800PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 7
+      },
+      "BANKNIFTY_CE": {
+        "symbol": "BANKNIFTY26OCT54500CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "BANKNIFTY_PE": {
+        "symbol": "BANKNIFTY26OCT54500PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "RELIANCE_CE": {
+        "symbol": "RELIANCE26OCT1200CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "RELIANCE_PE": {
+        "symbol": "RELIANCE26OCT1200PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 2
+      },
+      "HDFCBANK_CE": {
+        "symbol": "HDFCBANK26OCT720CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "HDFCBANK_PE": {
+        "symbol": "HDFCBANK26OCT720PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 2
+      },
+      "ICICIBANK_CE": {
+        "symbol": "ICICIBANK26OCT1300CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 6
+      },
+      "ICICIBANK_PE": {
+        "symbol": "ICICIBANK26OCT1300PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 16
+      },
+      "SBIN_CE": {
+        "symbol": "SBIN26OCT960CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 4
+      },
+      "SBIN_PE": {
+        "symbol": "SBIN26OCT960PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 11
+      },
+      "INFY_CE": {
+        "symbol": "INFY26OCT1000CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 2
+      },
+      "INFY_PE": {
+        "symbol": "INFY26OCT1000PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 15
+      },
+      "TCS_CE": {
+        "symbol": "TCS26OCT2080CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 39
+      },
+      "TCS_PE": {
+        "symbol": "TCS26OCT2080PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 117
+      }
+    },
+    "2026-09-30": {
+      "NIFTY_CE": {
+        "symbol": "NIFTY26O1322700CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "NIFTY_PE": {
+        "symbol": "NIFTY26O1322700PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 0
+      },
+      "BANKNIFTY_CE": {
+        "symbol": "BANKNIFTY26OCT54300CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 73
+      },
+      "BANKNIFTY_PE": {
+        "symbol": "BANKNIFTY26OCT54300PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 2
+      },
+      "RELIANCE_CE": {
+        "symbol": "RELIANCE26OCT1190CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 27
+      },
+      "RELIANCE_PE": {
+        "symbol": "RELIANCE26OCT1190PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 29
+      },
+      "ICICIBANK_CE": {
+        "symbol": "ICICIBANK26OCT1300CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 52
+      },
+      "ICICIBANK_PE": {
+        "symbol": "ICICIBANK26OCT1300PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 18
+      },
+      "TCS_CE": {
+        "symbol": "TCS26OCT2040CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 116
+      },
+      "TCS_PE": {
+        "symbol": "TCS26OCT2040PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 81
+      },
+      "LT_CE": {
+        "symbol": "LT26OCT3750CE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 54
+      },
+      "LT_PE": {
+        "symbol": "LT26OCT3750PE",
+        "bars": 385,
+        "oi_coverage": 385,
+        "zero_volume_bars": 82
+      }
+    },
+    "2026-10-01": {
+      "NIFTY_CE": {
+        "symbol": "NIFTY26O1322600CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 0
+      },
+      "NIFTY_PE": {
+        "symbol": "NIFTY26O1322600PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 0
+      },
+      "BANKNIFTY_CE": {
+        "symbol": "BANKNIFTY26OCT54600CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 8
+      },
+      "BANKNIFTY_PE": {
+        "symbol": "BANKNIFTY26OCT54600PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 0
+      },
+      "RELIANCE_CE": {
+        "symbol": "RELIANCE26OCT1190CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 86
+      },
+      "RELIANCE_PE": {
+        "symbol": "RELIANCE26OCT1190PE",
+        "bars": 374,
+        "oi_coverage": 374,
+        "zero_volume_bars": 90
+      },
+      "HDFCBANK_CE": {
+        "symbol": "HDFCBANK26OCT710CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 3
+      },
+      "HDFCBANK_PE": {
+        "symbol": "HDFCBANK26OCT710PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 1
+      },
+      "ICICIBANK_CE": {
+        "symbol": "ICICIBANK26OCT1320CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 16
+      },
+      "ICICIBANK_PE": {
+        "symbol": "ICICIBANK26OCT1320PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 14
+      },
+      "SBIN_CE": {
+        "symbol": "SBIN26OCT960CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 7
+      },
+      "SBIN_PE": {
+        "symbol": "SBIN26OCT960PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 19
+      },
+      "INFY_CE": {
+        "symbol": "INFY26OCT1000CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 2
+      },
+      "INFY_PE": {
+        "symbol": "INFY26OCT1000PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 0
+      },
+      "TCS_CE": {
+        "symbol": "TCS26OCT2060CE",
+        "bars": 374,
+        "oi_coverage": 374,
+        "zero_volume_bars": 58
+      },
+      "TCS_PE": {
+        "symbol": "TCS26OCT2060PE",
+        "bars": 374,
+        "oi_coverage": 374,
+        "zero_volume_bars": 52
+      },
+      "LT_CE": {
+        "symbol": "LT26OCT3750CE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 38
+      },
+      "LT_PE": {
+        "symbol": "LT26OCT3750PE",
+        "bars": 376,
+        "oi_coverage": 376,
+        "zero_volume_bars": 103
+      }
+    }
+  }
+}
