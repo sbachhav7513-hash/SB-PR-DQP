@@ -145,9 +145,12 @@ breakeven for strong scores (82+), at +20% it locks +10%, and each later
 milestone advances the lock by another 10%. Valid but weaker scores tighten
 each lock by an additional 5 percentage points. The per-milestone decision
 window is 10 minutes for a strong entry score and 5 minutes otherwise; it
-restarts after each milestone. A weak score below the entry floor or an
-opposite directional signal closes the trade. The independent 15:15 forced
-exit remains in effect.
+restarts after each milestone. In paper mode, expiry is a checkpoint and
+extends the decision window rather than closing the trade; protective stops,
+signal-health exits, and the independent 15:15 forced exit remain in effect.
+Set `paper_extend_option_timebox` to `false` to retain the automatic time-box
+exit. This extension is paper-only; live mode continues to use the automatic
+time-box exit.
 
 Option sizing targets two lots and allows up to three only within the existing
 per-trade risk budget; if two lots exceed that budget, the entry is skipped.

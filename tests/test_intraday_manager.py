@@ -933,7 +933,7 @@ def test_milestone_timebox_uses_entry_score_and_restarts_after_milestone():
     )
 
 
-def test_tick_exit_closes_when_milestone_window_expires():
+def test_tick_exit_closes_when_milestone_window_expires_outside_paper_extension():
     manager = IntradayManager()
     entered_at = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
     manager.register_position(
@@ -952,12 +952,85 @@ def test_tick_exit_closes_when_milestone_window_expires():
     bot = object.__new__(KiteTradingBot)
     bot.intraday_manager = manager
     bot._close_position = Mock()
+    bot.paper_trading_enabled = False
 
     with patch("market_bot.intraday_manager.datetime") as clock:
         clock.now.return_value = entered_at.replace(minute=5)
         assert bot._check_position_exit("NIFTY_CE", 104.0) == "TIME_BOX"
 
     bot._close_position.assert_called_once_with("NIFTY_CE", 104.0, "TIME_BOX")
+
+
+def test_paper_timebox_expiry_extends_window_and_persists_checkpoint():
+    manager = IntradayManager()
+    entered_at = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=78,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+        entry_time=entered_at,
+        milestone_started_at=entered_at,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.paper_trading_enabled = True
+    bot.config = {"paper_extend_option_timebox": True}
+    bot.trade_journal = Mock()
+    bot.trade_journal.update_open_trade.return_value = True
+    bot._close_position = Mock()
+    checkpoint_time = entered_at.replace(minute=5)
+
+    with patch("market_bot.intraday_manager.datetime") as clock:
+        clock.now.return_value = checkpoint_time
+        assert bot._check_position_exit("NIFTY_CE", 104.0) == "TIME_BOX_EXTENDED"
+
+    assert manager.active_positions["NIFTY_CE"]["milestone_started_at"] == checkpoint_time
+    assert not manager.milestone_timebox_expired(
+        "NIFTY_CE", checkpoint_time + timedelta(minutes=4, seconds=59)
+    )
+    bot.trade_journal.update_open_trade.assert_called_once_with(
+        "NIFTY_CE",
+        {"milestone_started_at": checkpoint_time.isoformat()},
+        "BUY",
+    )
+    bot._close_position.assert_not_called()
+
+
+def test_paper_timebox_extension_does_not_override_stop_loss():
+    manager = IntradayManager()
+    entered_at = datetime(2026, 10, 2, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=78,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+        entry_time=entered_at,
+        milestone_started_at=entered_at,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.paper_trading_enabled = True
+    bot.config = {"paper_extend_option_timebox": True}
+    bot.trade_journal = Mock()
+    bot._close_position = Mock()
+
+    with patch("market_bot.intraday_manager.datetime") as clock:
+        clock.now.return_value = entered_at.replace(minute=5)
+        assert bot._check_position_exit("NIFTY_CE", 79.0) == "STOP_LOSS"
+
+    bot._close_position.assert_called_once_with("NIFTY_CE", 79.0, "STOP_LOSS")
+    bot.trade_journal.update_open_trade.assert_not_called()
 
 
 def test_option_signal_weakening_uses_adverse_premium_move_for_ce_and_pe_buys():

@@ -1413,6 +1413,31 @@ class KiteTradingBot:
             self._check_position_exit(symbol, tick.last_price)
         self.bar_builder.process_tick(tick)
 
+    def _extend_paper_option_timebox(self, symbol: str, position: dict) -> bool:
+        if (
+            not getattr(self, "paper_trading_enabled", False)
+            or not self.config.get("paper_extend_option_timebox", False)
+        ):
+            return False
+
+        extended_at = self.intraday_manager.extend_milestone_timebox(symbol)
+        if extended_at is None:
+            return False
+
+        persisted = self.trade_journal.update_open_trade(
+            symbol,
+            {"milestone_started_at": extended_at.isoformat()},
+            str(position["direction"]),
+        )
+        if not persisted:
+            logger.error("[%s] Could not persist paper time-box extension", symbol)
+        logger.info(
+            "[%s] Paper time-box checkpoint extended by %d minutes",
+            symbol,
+            int(position.get("decision_window_minutes", 5)),
+        )
+        return True
+
     def _check_position_exit(self, symbol: str, price: float) -> Optional[str]:
         position = self.intraday_manager.active_positions.get(symbol)
         if not position:
@@ -1436,6 +1461,8 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif self.intraday_manager.milestone_timebox_expired(symbol):
+                if self._extend_paper_option_timebox(symbol, position):
+                    return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
             else:
                 return None
@@ -1451,6 +1478,8 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif self.intraday_manager.milestone_timebox_expired(symbol):
+                if self._extend_paper_option_timebox(symbol, position):
+                    return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
             else:
                 return None
