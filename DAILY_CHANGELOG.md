@@ -519,3 +519,37 @@ Outcome / follow-up / rollback:
 - Monitoring plan: Review October 9 paper decisions and trades after the session, including signal counts, each rejection reason, contracts, entry/exit times and prices, gross/net P/L, and risk/drawdown. Use that evidence to decide any further strategy change; do not infer performance from trade count alone.
 - Documentation: Updated `DAILY_WEEKLY_OPERATIONS.md` to identify 60% as the active threshold and explain the monitoring plan.
 - Validation: Active and example Kite JSON parsed; active threshold is 0.60, paper trading is enabled, and live orders are disabled. `git diff --check` passed.
+
+#### DLY-2026-10-09-03
+
+- Reason: The user requested a thorough backtest of the full current paper options strategy on the previous completed week, not another isolated candle-threshold comparison.
+- Related prior entries checked: `DLY-2026-10-09-01` records the October 7-8 full-strategy comparison; `DLY-2026-10-09-02` records restoration of the active paper threshold to 60%.
+- Evaluation: Read-only Kite minute OHLCV/OI proxy replay for September 28-October 1, 2026, using the current 60% paper threshold and current paper scorer, option gates, accuracy/timing/cooldown filters, one-trade-per-leg/session control, risk sizing, and paper exits. Four sessions and nine underlying roots were replayed; October 2 had no bars in the available dataset. No orders were placed and no strategy/config behavior was changed.
+- Results: 14 closed one-lot trades, 8 winners and 6 losers (57.14%); gross P/L +INR 760. Session gross P/L: Sep 28 INR 0 (3 trades), Sep 29 +INR 303.75 (2), Sep 30 +INR 95 (3), and Oct 1 +INR 361.25 (6). Aggregate gross profit factor 1.2734; gross realized trade-close max drawdown INR 1,862.50 (1.8625% of the configured INR 100,000 account); longest losing streak 2. Estimated net P/L: +INR 200 with INR 40 round-trip brokerage and zero slippage; -INR 76.61 at 5 bps per side; -INR 353.21 at 10 bps; and -INR 906.42 at 20 bps. The result turns negative with modest illustrative slippage.
+- Risk and gate observations: Maximum reserved stop risk was INR 3,975.25 against the configured INR 10,000 daily budget. Reported gate counters include 52 weak-candle, 60 late-window, and 35 unavailable-contract rejections. The replay used 46 unique proxy option symbols; TATAMOTORS was excluded because matching options were absent from the current instrument master.
+- Files:
+  - `paper_trading_data/backtests/kite_option_proxy_replay_2026-09-28_10-01.json` (added): Full settings snapshot, selected later-expiry proxy contracts, daily results, trade ledger, rejection counters, cost scenarios, limitations, and independently reconciled ledger/drawdown audit.
+  - `DAILY_CHANGELOG.md` (modified): Recorded this evaluation and its caveats.
+  - `STRATEGY_CHANGELOG.md` (modified): Recorded the full-strategy proxy result as inconclusive evidence, not a strategy change.
+- Limitations and outcome: The user-approved later-expiry contracts are not the historical nearest-expiry contracts; premium path, liquidity, greeks, and P/L may differ materially. This is only four sessions, with no October 2 bars; minute OHLC approximates fills and cannot reproduce tick sequencing, historical spreads, IV, taxes, or all execution costs. The October 1 archived `trend_shadow_paper` trades are a different strategy and are not included. Do not infer a durable edge from this proxy; keep live orders disabled and make no new strategy changes based on this sample alone.
+- Validation: Parsed the JSON; independently reconciled all 14 trade rows to reported counts and gross P/L, checked each P/L against entry/exit/quantity and each quantity against its lot size, recomputed win rate/profit factor/drawdown/loss streak, reconciled transaction-cost scenarios, and confirmed reserved stop risk stayed below the daily budget. `git diff --check` passed.
+
+#### DLY-2026-10-09-04
+
+- Reason: The user correctly noted that the prior-week proxy trade ledger showed `signal: SELL` beside PE contracts without recording the option transaction side, making bearish underlying signals look like short option entries.
+- Related prior entry checked: `DLY-2026-10-09-03` records the replay and its original ledger. Production routing in `market_bot/kite_main.py` maps a bearish `SELL` signal to the PE leg and converts the option action to BUY; `tests/test_kite_provider.py` verifies PE+SELL maps to a BUY action.
+- Files:
+  - `paper_trading_data/backtests/kite_option_proxy_replay_2026-09-28_10-01.json` (modified): Added per-trade underlying signal, option type, BUY entry action, long-option position type, SELL exit action, and a root-level explanation. Existing `signal` fields and P/L were preserved.
+  - `DAILY_CHANGELOG.md` (modified): Recorded this report-clarity correction.
+  - `STRATEGY_CHANGELOG.md` (modified): Appended an auditability clarification without changing the strategy or replay metrics.
+- Validation: Verified all 14 rows map bearish SELL signals to PE and bullish BUY signals to CE, all use BUY entry / LONG_OPTION / SELL exit, and their existing P/L remains `(exit premium - entry premium) * quantity`. Parsed the JSON and ran `git diff --check`.
+- Outcome: No strategy or configuration behavior changed; live orders remain disabled.
+
+#### DLY-2026-10-12-01
+
+- Reason: The user asked whether the revised option signal-weakening rule would change the losing exits in Friday's October 9 paper session.
+- Evaluation: Read the five closed trades and archived one-minute option candles/signal scores from `paper_trading_data/2026-10/week_41/day_09`. Both recorded `SIGNAL_WEAKEN` exits (ICICIBANK_CE and RELIANCE_CE) remained above their 5%-below-entry adverse thresholds through their decision windows, so the revised rule would defer them to their existing 10-minute `TIME_BOX`. The TCS trailing-stop exit and INFY/HDFCBANK time-box exits are unchanged.
+- Counterfactual estimate: Using the closes of the one-minute candles containing the deferred deadlines gives approximately +INR 385 for ICICIBANK_CE and +INR 125 for RELIANCE_CE. Keeping the other three actual fills unchanged gives an estimated Friday total of +INR 272.50 versus the recorded -INR 142.50. The changed exits' full-candle OHLC bounds produce a combined day-P&L range of approximately -INR 122.50 to +INR 412.50.
+- Code correction: Treat deterioration according to position action, not CE/PE contract name. Both CE and PE trades are bought options, so a falling premium is adverse for either; added a regression covering a falling PE premium and a rising PE premium.
+- Limitations and decision: The archive contains minute OHLC, not the tick quote at each timer deadline or executable bid/ask fills. The counterfactual exit prices and P&L are estimates, not an exact tick replay or evidence of durable strategy improvement. This Friday sample contains CE trades only; PE behavior is unit-tested but not empirically covered by this session. Continue observing a larger paper sample and keep live orders disabled.
+- Validation: The focused `tests/test_intraday_manager.py` suite passed (60 tests). The full suite had 163 passes and 1 skip, with one separate `_on_tick` test failing because its fixture lacks `paper_trading_enabled`; the failing assertion does not invoke the edited exit rule.

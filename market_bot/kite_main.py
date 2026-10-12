@@ -1454,6 +1454,26 @@ class KiteTradingBot:
         self._close_position(symbol, price, reason)
         return reason
 
+    def _option_signal_exit_threshold(self, position: dict) -> Optional[float]:
+        """Percent-based deterioration threshold for option signal-health exits."""
+        try:
+            entry_price = float(position.get("entry_price", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(entry_price) or entry_price <= 0:
+            return None
+
+        lockin_pct = float(position.get("weak_signal_lockin_pct", 0.05))
+        if not math.isfinite(lockin_pct) or lockin_pct <= 0:
+            lockin_pct = 0.05
+
+        direction = str(position.get("direction", "")).upper()
+        if direction == "BUY":
+            return entry_price * (1.0 - lockin_pct)
+        if direction == "SELL":
+            return entry_price * (1.0 + lockin_pct)
+        return None
+
     def _check_option_signal_health(
         self,
         symbol: str,
@@ -1466,16 +1486,38 @@ class KiteTradingBot:
         if not position or not position.get("staged_targets_enabled"):
             return None
 
+        try:
+            current_price = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(current_price):
+            return None
+
         position["current_signal_score"] = int(score)
-        expected_signal = "BUY" if symbol.endswith("_CE") else "SELL"
+        expected_signal = "BUY" if symbol.endswith("_CE") else "SELL" if symbol.endswith("_PE") else None
+        threshold = self._option_signal_exit_threshold(position)
+        direction = str(position.get("direction", "")).upper()
+        adverse_price_move = (
+            current_price <= threshold
+            if threshold is not None and direction == "BUY"
+            else current_price >= threshold
+            if threshold is not None and direction == "SELL"
+            else False
+        )
+
         reason = None
-        if int(score) < minimum_signal_score:
+        if int(score) < minimum_signal_score and adverse_price_move:
             reason = "SIGNAL_WEAKEN"
-        elif signal in {"BUY", "SELL"} and signal != expected_signal:
+        elif (
+            signal in {"BUY", "SELL"}
+            and expected_signal is not None
+            and signal != expected_signal
+            and adverse_price_move
+        ):
             reason = "SIGNAL_WEAKEN"
 
         if reason:
-            self._close_position(symbol, price, reason)
+            self._close_position(symbol, current_price, reason)
         return reason
 
     def _live_entry_allowed(self, symbol: str) -> bool:

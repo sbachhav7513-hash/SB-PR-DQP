@@ -960,10 +960,22 @@ def test_tick_exit_closes_when_milestone_window_expires():
     bot._close_position.assert_called_once_with("NIFTY_CE", 104.0, "TIME_BOX")
 
 
-def test_option_signal_weakening_closes_at_option_quote():
+def test_option_signal_weakening_uses_adverse_premium_move_for_ce_and_pe_buys():
     manager = IntradayManager()
     manager.register_position(
         "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=80,
+        minimum_signal_score=70,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+    )
+    manager.register_position(
+        "BANKNIFTY_PE",
         "BUY",
         130,
         100.0,
@@ -978,8 +990,15 @@ def test_option_signal_weakening_closes_at_option_quote():
     bot.intraday_manager = manager
     bot._close_position = Mock()
 
-    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 108.0) == "SIGNAL_WEAKEN"
-    bot._close_position.assert_called_once_with("NIFTY_CE", 108.0, "SIGNAL_WEAKEN")
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 95.0, "SIGNAL_WEAKEN")
+
+    bot._close_position.reset_mock()
+    assert bot._check_option_signal_health("BANKNIFTY_PE", "HOLD", 69, 70, 105.0) is None
+    bot._close_position.assert_not_called()
+
+    assert bot._check_option_signal_health("BANKNIFTY_PE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
+    bot._close_position.assert_called_once_with("BANKNIFTY_PE", 95.0, "SIGNAL_WEAKEN")
 
 
 def test_live_milestone_moves_existing_broker_protective_stop():
