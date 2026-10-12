@@ -1,0 +1,162 @@
+{
+  "generated_at": "2026-10-09T15:47:39+05:30",
+  "session_timezone": "Asia/Kolkata",
+  "market_session_hours": {
+    "open": "09:15",
+    "close": "15:30"
+  },
+  "period_days": 7,
+  "closed_trades": 5,
+  "total_pnl": -142.5,
+  "winning_trades": 2,
+  "losing_trades": 3,
+  "win_rate": 40.0,
+  "average_win": 772.5,
+  "average_loss": -562.5,
+  "largest_win": 1125.0,
+  "largest_loss": -1200.0,
+  "profit_factor": 0.92,
+  "decisions_recorded": 47752,
+  "signal_counts": {
+    "BUY": 157,
+    "SELL": 272,
+    "HOLD": 44173,
+    "ERROR": 0
+  },
+  "outcome_counts": {
+    "operational": 22587,
+    "hold": 24987,
+    "option_filter": 106,
+    "risk_blocked": 56,
+    "accuracy_filter": 11,
+    "trade_opened": 5,
+    "execution_failed": 0
+  },
+  "market_session_counts": {
+    "before_open": 816,
+    "regular_session": 45573,
+    "after_close": 1363
+  },
+  "decision_reconciliation": {
+    "approved_entries": 5,
+    "classified_rejections": 173,
+    "non_entry_decisions": 47574,
+    "accounted_decisions": 47752,
+    "matches_decisions_recorded": true
+  },
+  "performance_by_symbol": {
+    "ICICIBANK_CE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 420.0
+    },
+    "TCS_CE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 1125.0
+    },
+    "INFY_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -1200.0
+    },
+    "RELIANCE_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -325.0
+    },
+    "HDFCBANK_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -162.5
+    }
+  },
+  "performance_by_hour": {
+    "9": {
+      "trades": 4,
+      "wins": 2,
+      "losses": 2,
+      "win_rate": 50.0,
+      "total_pnl": 20.0
+    },
+    "10": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -162.5
+    }
+  },
+  "performance_by_strategy_variant": {
+    "primary": {
+      "trades": 5,
+      "wins": 2,
+      "losses": 3,
+      "win_rate": 40.0,
+      "total_pnl": -142.5
+    }
+  },
+  "option_exit_comparison": {
+    "tiered_milestone": {
+      "trade_entries": 5,
+      "entries_per_day": 0.71,
+      "closed_trades": 5,
+      "average_pnl_per_trade": -28.5,
+      "total_pnl": -142.5
+    }
+  },
+  "filter_stats": {
+    "volatility_rejected": 0,
+    "confirmation_rejected": 0,
+    "cooldown_rejected": 9,
+    "hours_rejected": 2,
+    "threshold_rejected": 0,
+    "approved_entries": 5,
+    "option_rejected": 106,
+    "risk_rejected": 56,
+    "execution_failures": 0,
+    "total_rejected": 173
+  },
+  "news_summary": {
+    "risk_counts": {
+      "NORMAL": 0,
+      "ELEVATED": 0,
+      "HIGH": 0,
+      "UNKNOWN": 47752,
+      "DISABLED": 0
+    },
+    "suppressed_entries": 0
+  },
+  "best_observed_profiles": [],
+  "recommendation": "Not enough repeated closed trades to recommend a profile.",
+  "best_setup_windows": [
+    {
+      "label": "09:BUY",
+      "trades": 4,
+      "wins": 2,
+      "losses": 2,
+      "win_rate": 50.0,
+      "total_pnl": 20.0,
+      "average_pnl": 5.0
+    },
+    {
+      "label": "10:BUY",
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -162.5,
+      "average_pnl": -162.5
+    }
+  ]
+}
