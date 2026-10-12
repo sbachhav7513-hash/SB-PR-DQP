@@ -78,6 +78,7 @@
   "option_weak_signal_lockin_pct": 0.05,
   "option_milestone_window_minutes": 5,
   "strong_option_milestone_window_minutes": 10,
+  "paper_extend_option_timebox": true,
   "option_min_lots": 1,
   "option_max_lots": 3,
   "option_max_risk_per_lot_pct": 10.0,

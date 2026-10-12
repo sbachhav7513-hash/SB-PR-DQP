@@ -556,6 +556,18 @@ class IntradayManager:
         current_time = self._normalize_position_time(now)
         return current_time >= started_at + timedelta(minutes=window_minutes)
 
+    def extend_milestone_timebox(
+        self, symbol: str, now: Optional[datetime] = None
+    ) -> Optional[datetime]:
+        """Start another decision window for an open staged position."""
+        position = self.active_positions.get(symbol)
+        if not position or not position.get("staged_targets_enabled"):
+            return None
+
+        extended_at = self._normalize_position_time(now)
+        position["milestone_started_at"] = extended_at
+        return extended_at
+
     @staticmethod
     def _normalize_position_time(value: Optional[datetime]) -> datetime:
         current_time = value or datetime.now(IST)
