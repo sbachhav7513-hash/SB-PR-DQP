@@ -620,3 +620,62 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` (modified): Record the ignore rule and tracked-file handling.
 - Validation: `git check-ignore` confirms the current Kite and NSE upload files are ignored. Two previously tracked NSE metadata CSV/JSON files were removed from the Git index while preserved in the working directory.
 - Outcome / follow-up: Uploads remain available locally but will not be included in future commits. Existing history that was already pushed to earlier commits is not rewritten.
+
+#### DLY-2026-10-14-04
+
+- Reason: Provide a repeatable, exact-token Kite data capture workflow for building a forward options replay dataset.
+- Related entries checked: `DLY-2026-10-13-03` documents the general exact-token exporter; `DLY-2026-10-14-01` records the limited two-session recovered map; `DLY-2026-10-14-02` records that current replay evidence does not justify filter changes.
+- Files:
+  - `market_bot/kite_daily_research_export.py` (added): Add a two-stage daily collector that snapshots configured-root NFO option mappings before the session and exports underlying plus near-ATM selected-expiry minute OHLCV/OI candles after market close.
+  - `tests/test_kite_daily_research_export.py` (added): Cover nearest-expiry/strike selection, unavailable roots, dated snapshot round-trip, and snapshot date validation.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the pre-market snapshot and post-market export commands, stored files, selection scope, and minimum evidence caveats.
+  - `DAILY_CHANGELOG.md` (modified): Record this workflow.
+- Validation: `python -m pytest -q tests\test_kite_daily_research_export.py tests\test_kite_history_export.py` passed (13 tests); CLI `--help` succeeded; Pylance syntax checks and Problems reported no errors in the new module/tests; focused runtime selection returned both CE/PE contracts; `git diff --check` passed. Ran the pre-market snapshot command for 2026-10-14: saved 3,938 unique configured-root option mappings for nine roots (CE/PE) and confirmed the output is ignored by Git. The after-close historical-candle export remains to be run after the session.
+- Outcome / follow-up: The collector records a prior-close near-ATM proxy universe, not every runtime chain change; users should keep the bot's decision/trade archives alongside the candles and collect at least 30-60 sessions. Do not promote strategy filters from two weeks or a small trade count alone.
+
+#### DLY-2026-10-14-05
+
+- Reason: The user requested a paper-only implementation and same-day counterfactual replay of a delayed `SIGNAL_WEAKEN` exit against the four October 14 losses and exact-token option candles.
+- Related entries checked: `DLY-2026-10-12-01` / `EXP-2026-10-12-01` (adverse-premium gate counterfactual), `DLY-2026-10-14-02` (no entry/symbol filter promoted from small samples), and `DLY-2026-10-14-04` (daily exact-token candle export).
+- Files:
+  - `market_bot/kite_main.py` (modified): Require two consecutive weak-signal plus existing 5%-adverse checks in paper mode; keep live behavior unchanged and persist the check count.
+  - `market_bot/intraday_manager.py` (modified): Initialize and restore the confirmation count on a position.
+  - `market_bot/trade_journal.py` (modified): Include the confirmation count in paper trade records.
+  - `tests/test_intraday_manager.py` (modified): Verify paper confirmation, reset, live immediacy, and state restoration.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the paper-only exit confirmation and the inconclusive same-day result.
+  - `DAILY_CHANGELOG.md` (modified): Record this implementation and the measured replay outcome after validation.
+  - `STRATEGY_CHANGELOG.md` (modified): Record this single-variable paper experiment, baseline, and outcome after validation.
+- Validation: Focused `test_intraday_manager.py` and `test_paper_reporting.py` passed (72 tests); Pylance Problems reported no issues in the changed Python files; `git diff --check` passed. Replayed the patched production exit method against the archived October 14 score decisions and exact option contracts using only the last completed minute close at each event. All four two-check exits occurred without a candle touch of the recorded stop-loss or take-profit. Counterfactual gross P&L was -INR 5,074.50 versus the recorded -INR 3,853.25 (delta -INR 1,221.25).
+- Outcome / follow-up: None of the four trades became positive; all four counterfactual losses were larger. This is minute-close counterfactual evidence, not executable tick-fill evidence: historical bid/ask, within-minute sequencing, and costs are unavailable. Keep the change paper-only and live behavior unchanged; do not describe it as loss-minimizing or promote it from this four-trade sample. Gather forward paper evidence or revert if the user does not want to continue the experiment.
+
+#### DLY-2026-10-14-06
+
+- Reason: The user asked to test earlier premium-breakout entries after the ICICIBANK 1360 PE entered late, and approved a separate paper-only pilot for configured CE/PE legs.
+- Related entries checked: `DLY-2026-10-14-05` / `EXP-2026-10-14-02` (distinct two-check `SIGNAL_WEAKEN` exit experiment and negative four-trade result); `DLY-2026-10-14-04` (daily exact-token candle export).
+- Single experimental variant: Enter a configured option contract when a completed premium candle closes above the high of the previous 15 completed one-minute candles, independent of underlying score and the normal late-entry block. Keep normal quote-quality and aggregate/per-trade risk gates. Stop one tick below the range low; target 2R. Keep one trade per contract per session and use the existing shared daily risk budget across CE/PE contracts. Keep this separate from the existing exit-delay experiment.
+- Files:
+  - `market_bot/kite_main.py` (modified): Add the separately tagged paper-only entry path, dynamic range-based stop/2R target, and fixed-target exits; leave the legacy and live entry paths unchanged.
+  - `market_bot/intraday_manager.py` (modified): Store a per-position trailing override and exit variant so the pilot's target survives the global trailing policy and paper restart.
+  - `market_bot/trade_journal.py` (modified): Persist the exit policy and classify the pilot's decision outcomes.
+  - `kite_config.json` (modified): Enable the forward paper pilot with a 15-bar lookback and 2R target; live orders remain disabled.
+  - `kite_config.example.json` (modified): Keep the pilot disabled by default.
+  - `tests/test_intraday_manager.py` (modified): Cover breakout detection, range stop/2R sizing, fixed target handling, live-mode exclusion, and decision classification.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the pilot and the October 14 replay limits.
+- October 14 ICICIBANK 1360 PE counterfactual: Earlier breakouts at 09:39 and 09:41 exceed the configured one-lot premium-risk cap. First candle-volume/risk-qualified break is 10:01: close ₹26.20 above prior-15 high ₹26.00; prior-15 low ₹24.15 gives stop ₹24.10 and 2R target ₹30.40. The 13:03 candle reached ₹30.50. At the archived 700-unit lot, the target-touch estimate is +₹2,940 gross before costs. This is an OHLC estimate; quote freshness, spread, sequencing, and actual fill are unavailable.
+- Validation: Focused `test_intraday_manager.py` and `test_paper_reporting.py` passed (77 passed); changed Python files have no Pylance problems or syntax errors; active/example configuration JSON and `git diff --check` passed. The unfiltered suite reported 193 passed, 1 skipped, and 1 unrelated fixture failure in `test_on_tick_stores_timestamp_required_by_option_quality_gate` (`test_kite_provider.py`): its manually constructed bot omits `paper_trading_enabled`, which `_on_tick` reads. The suite excluding that test passed (193 passed, 1 skipped, 1 deselected).
+- Outcome / follow-up: The replay shows the rule could enter this one contract earlier and model a positive gross result, but one contract/session does not establish profitability. Continue a paper-only forward sample; live orders remain disabled.
+
+#### DLY-2026-10-14-07
+
+- Reason: Add a breakout-candle participation check to the separate paper-only 15-bar option breakout pilot after the historical replay showed failed breakouts on zero-volume candles.
+- Related entries checked: `DLY-2026-10-14-06` / `EXP-2026-10-14-03` (paper breakout pilot and single-contract counterfactual); `EXP-2026-10-14-04` (volume-confirmation experiment and replay results).
+- Change: Require the breakout candle to have positive volume at least equal to the mean volume of the preceding 15 completed candles. This applies only to the paper range-breakout path; entry trigger, contract selection, stop/target, sizing, legacy behavior, and live-order controls are unchanged. Invalid or negative volume data fails closed.
+- Files:
+  - `market_bot/kite_main.py` (modified): Apply the breakout-candle volume check and record a specific rejection reason.
+  - `tests/test_intraday_manager.py` (modified): Cover a passing candle at the prior-volume average and rejection of below-average and zero-volume breakouts.
+  - `BREAKOUT_HISTORICAL_REPLAY_REPORT.md` (added): Preserve the three-session baseline and end-to-end volume-filter replay, including per-session outcomes and methodology.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the controlled paper experiment, aggregate and per-session results, rollback, and limitations as `EXP-2026-10-14-04`.
+- Historical finding: Across October 7, 8, and 14, the end-to-end replay modeled gross P/L of +INR 7,873.00 with the filter versus +INR 1,436.75 baseline (40 versus 37 trades). The filtered result remained negative on October 7 (-INR 8,499.00); only three sessions were available.
+- Validation: Added focused breakout-volume acceptance/rejection cases; `git diff --check` passed.
+- Limitations / avoid: This is in-sample evidence from the same three sessions used to motivate the filter, not an independent test or proof of a durable edge. The replay uses candle OHLC, excludes fees, spread, slippage, latency, and partial fills, and cannot establish executable returns. Do not promote the filter beyond paper trading or infer profitability from the positive aggregate.
+- Follow-up: Keep live orders disabled. Track separately tagged paper breakout acceptances/rejections and closed trades over a predeclared, unseen forward sample; compare gross and cost-adjusted outcomes before reconsidering the rule.

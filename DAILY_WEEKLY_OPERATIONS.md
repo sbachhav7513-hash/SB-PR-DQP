@@ -45,8 +45,34 @@ NIFTY,NIFTY26OCT25000PE,2026-10-29,25000,PE,12345679,65,2026-10-01,2026-10-29
 
 Then add `--option-manifest data_uploads/kite_history/options.csv` to the command. Use a separate row for every contract/token and set `active_from`/`active_to` to the dates that contract should be exported; these two columns are optional. The exporter requests option OI and records returned coverage in `manifest.json`. Kite's current instrument list cannot reconstruct expired option tokens, so use a saved instrument-master/contract mapping for past expiries. The historical candle endpoint does not provide historical bid/ask or IV, and some old option contracts may not be retrievable; inspect the manifest and API errors rather than substituting a different contract. Existing output files are protected from accidental replacement; choose another directory or pass `--overwrite` deliberately.
 
+#### Daily option-history collection for paper strategy research
 
-Paper and live trading use the same signal strategy and entry filters. `paper_trading_enabled` and `live_orders_enabled` select execution mode only; they do not change signal thresholds, confirmation requirements, or option-quality checks. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.
+For each trading session, save the configured-underlying NFO contract snapshot before market open, then export candles after the market closes. Use the same session date in both commands; the snapshot is required because expired contract tokens may disappear from a later instrument master. Run these from the repository root on Windows, with a valid `KITE_API_KEY` and refreshed `KITE_ACCESS_TOKEN` in `.env`:
+
+```powershell
+$session = Get-Date -Format "yyyy-MM-dd"
+
+# Before market open: preserve date-correct option symbols, expiries, strikes,
+# tokens and lot sizes. Do not rerun this for an existing date.
+.\.venv\Scripts\python.exe -m market_bot.kite_daily_research_export `
+  --date $session `
+  --snapshot-only
+
+# After market close: export underlying and option minute OHLCV/OI.
+.\.venv\Scripts\python.exe -m market_bot.kite_daily_research_export `
+  --date $session
+```
+
+Each session is written under `data_uploads/kite_daily/YYYY-MM-DD/` and is ignored by Git. The collector uses the prior session close, the configured expiry mode/lookahead and strike steps, and exports the ATM strike plus all listed strikes within `option_max_strike_distance_pct` (currently 0.5%) for both CE and PE in the chosen expiry. It also stores the dated NFO option-master snapshot and a manifest of requested contracts and returned bars. If the session was a holiday or a configured root has no eligible contracts, check the manifest/output message rather than treating missing bars as zero-activity trades. Keep the daily bot decision/trade archives as well; candles alone do not capture every runtime rejection or actual paper fill.
+
+This is a forward data-collection set, not a shortcut to historical expired contracts. Two calendar weeks usually produce about ten market sessions and may not produce ten closed trades. Use it for an initial diagnostic only; continue collecting through at least 30-60 sessions and retain a separate chronological holdout before selecting or promoting a filter. Kite candles provide no historical bid/ask or IV, so replay costs must remain explicit estimates and positive modeled P&L is not confirmation of executable profitability. Keep all changes paper-only until the held-out sample and forward paper results support them.
+
+
+Paper and live trading use the same primary strategy, with separately attributed paper-only experiments. The `SIGNAL_WEAKEN` exit experiment requires two consecutive adverse-premium checks in paper mode; live mode retains the immediate check. That change worsened the October 14 four-trade counterfactual and is not a validated loss-reduction rule.
+
+The active `kite_config.json` additionally enables `paper_option_range_breakout_enabled`, a distinct paper-only option-premium entry variant. It checks the previous 15 completed one-minute candles for each configured CE/PE contract and enters on a completed close above that rolling high only when the breakout candle's volume is positive and at least the average volume of those preceding candles. It does not require an underlying directional score or use the normal 12:00–13:00 late-entry window. It still requires regular market hours, a fresh quote passing the existing option-quality gate, and normal position/risk limits. Stop is one contract tick below the prior range low; target is 2R from the entry-to-stop distance. Each option symbol remains limited to one trade per session, and all CE/PE entries share the configured daily risk budget. Pilot positions do not use staged targets, global trailing, the milestone timebox, or the signal-weakening exit; the fixed stop, 2R target, and market-close exit remain active. Trades and decisions are tagged `paper_option_range_breakout`. This switch is off in `kite_config.example.json`; keep `live_orders_enabled` false.
+
+On the October 14 ICICIBANK 1360 PE minute candles, the first range break with candle-volume and one-lot risk proxies passing those gates was 10:01: close ₹26.20, prior-15 high ₹26.00, prior-15 low ₹24.15, stop ₹24.10, and 2R target ₹30.40. The target was touched by the 13:03 candle (high ₹30.50), modeling ₹2,940 gross for the 700-unit lot before costs. This is a single-contract minute-OHLC counterfactual, not proof of a fresh live quote, executable fill, net profit, or durable edge; earlier breakout candidates failed the configured one-lot risk check. Keep the pilot paper-only and evaluate a larger chronological sample before changing or promoting it. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.
 
 For options-mode breakout confirmation, underlying OHLC/ATR remain the signal basis, but relative volume is read from the selected option contract and matched to each underlying bar within half the configured bar interval. Unmatched bars are not forward-filled and fail the volume check. Offline replay can use the same separation with `--volume-confirmation-data <option-bars.csv|parquet>`; its timestamps must exactly match the underlying signal candles. Option volume confirms activity in that contract, not market-wide underlying participation.
 

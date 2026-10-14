@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 OPTION_MIN_CANDLE_BODY_RATIO = 0.60
+PAPER_SIGNAL_WEAKEN_CONFIRMATIONS = 2
 
 
 def _aligned_option_volume_history(
@@ -188,6 +189,147 @@ class KiteTradingBot:
             return 0
         return min(risk_sized_lots, maximum_lots) * lot_size
 
+    def _try_paper_option_range_breakout(
+        self, symbol: str, bars: list[Bar]
+    ) -> Optional[str]:
+        """Open a paper-only long option after a confirmed premium range breakout."""
+        if (
+            not getattr(self, "paper_trading_enabled", False)
+            or getattr(self, "live_orders_enabled", False)
+            or not self.config.get("paper_option_range_breakout_enabled", False)
+            or not self._options_enabled()
+            or not symbol.endswith(("_CE", "_PE"))
+        ):
+            return None
+
+        try:
+            lookback = int(self.config.get("paper_option_range_lookback_bars", 15))
+            target_r = float(self.config.get("paper_option_range_target_r", 2.0))
+        except (TypeError, ValueError, OverflowError):
+            logger.error("[%s] Invalid paper option range-breakout settings", symbol)
+            return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
+        if lookback < 2 or not math.isfinite(target_r) or target_r <= 0:
+            logger.error("[%s] Invalid paper option range-breakout settings", symbol)
+            return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
+        if len(bars) < lookback + 1:
+            return None
+
+        prior_range = bars[-lookback - 1 : -1]
+        current_bar = bars[-1]
+        previous_bar = bars[-2]
+        range_high = max(item.high for item in prior_range)
+        range_low = min(item.low for item in prior_range)
+        if not (
+            math.isfinite(range_high)
+            and math.isfinite(range_low)
+            and current_bar.close > range_high
+            and previous_bar.close <= range_high
+        ):
+            return None
+
+        try:
+            breakout_volume = float(current_bar.volume)
+            prior_volumes = [float(item.volume) for item in prior_range]
+        except (TypeError, ValueError, OverflowError):
+            logger.error("[%s] Invalid volume in option range-breakout bars", symbol)
+            return "PAPER_RANGE_BREAKOUT_REJECTED:invalid_volume_data"
+        if (
+            not math.isfinite(breakout_volume)
+            or breakout_volume < 0
+            or any(not math.isfinite(volume) or volume < 0 for volume in prior_volumes)
+        ):
+            logger.error("[%s] Invalid volume in option range-breakout bars", symbol)
+            return "PAPER_RANGE_BREAKOUT_REJECTED:invalid_volume_data"
+        average_prior_volume = sum(prior_volumes) / lookback
+        if breakout_volume <= 0 or breakout_volume < average_prior_volume:
+            logger.info(
+                "[%s] Paper range breakout rejected by volume gate: "
+                "breakout=%.0f prior_%d_bar_average=%.0f",
+                symbol,
+                breakout_volume,
+                lookback,
+                average_prior_volume,
+            )
+            return (
+                "PAPER_RANGE_BREAKOUT_REJECTED:"
+                f"breakout_volume_below_{lookback}_bar_average"
+            )
+
+        session_state = market_session_state(
+            [item.to_dict() for item in bars], now=datetime.now(IST)
+        )
+        if session_state != "REGULAR_SESSION":
+            return "PAPER_RANGE_BREAKOUT_REJECTED:outside_regular_session"
+
+        manager = getattr(self, "intraday_manager", None)
+        if symbol in getattr(manager, "active_positions", {}):
+            return "PAPER_RANGE_BREAKOUT_REJECTED:position_already_open"
+
+        signal = "BUY" if symbol.endswith("_CE") else "SELL"
+        allowed, quality_reason = self._option_quality_gate(
+            symbol, signal, score=None
+        )
+        if not allowed:
+            logger.info(
+                "[%s] Paper option range breakout rejected by quote-quality gate: %s",
+                symbol,
+                quality_reason,
+            )
+            return f"PAPER_RANGE_BREAKOUT_REJECTED:{quality_reason}"
+
+        quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        raw_entry_price = quote.get("last_price", quote.get("premium"))
+        if raw_entry_price is None:
+            raw_entry_price = current_bar.close
+        try:
+            entry_price = float(raw_entry_price)
+        except (TypeError, ValueError, OverflowError):
+            return "PAPER_RANGE_BREAKOUT_REJECTED:invalid_quote_price"
+        if not math.isfinite(entry_price) or entry_price <= range_high:
+            return "PAPER_RANGE_BREAKOUT_REJECTED:price_retreated_below_range"
+
+        stream = getattr(self, "kite_stream", None)
+        try:
+            tick_size = float(
+                getattr(stream, "contract_tick_sizes", {}).get(symbol, 0.05) or 0.05
+            )
+        except (TypeError, ValueError, OverflowError):
+            tick_size = 0.05
+        if not math.isfinite(tick_size) or tick_size <= 0:
+            tick_size = 0.05
+        stop_price = range_low - tick_size
+        risk_per_unit = entry_price - stop_price
+        if (
+            not math.isfinite(stop_price)
+            or not math.isfinite(risk_per_unit)
+            or stop_price <= 0
+            or risk_per_unit <= 0
+        ):
+            logger.error("[%s] Invalid range-breakout stop calculation", symbol)
+            return "PAPER_RANGE_BREAKOUT_REJECTED:invalid_stop"
+
+        outcome = self._handle_buy_signal(
+            symbol,
+            entry_price,
+            0,
+            strategy_variant="paper_option_range_breakout",
+            minimum_signal_score=0,
+            paper_range_stop=stop_price,
+            paper_range_target_r=target_r,
+        )
+        logger.info(
+            "[%s] Paper range breakout: high=%.2f low=%.2f entry=%.2f "
+            "stop=%.2f target=%.2f outcome=%s",
+            symbol,
+            range_high,
+            range_low,
+            entry_price,
+            stop_price,
+            entry_price + risk_per_unit * target_r,
+            outcome,
+        )
+        return f"PAPER_RANGE_BREAKOUT_{outcome.upper()}"
+
     def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
         if lot_size <= 0:
@@ -226,6 +368,14 @@ class KiteTradingBot:
             logger.warning("Ignoring invalid journal timestamp %r", value)
             return None
         return timestamp.replace(tzinfo=IST) if timestamp.tzinfo is None else timestamp.astimezone(IST)
+
+    @staticmethod
+    def _journal_optional_bool(value) -> Optional[bool]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes"}
+        return bool(value)
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
@@ -482,6 +632,10 @@ class KiteTradingBot:
                     if trade.get("decision_window_minutes") is not None
                     else None
                 ),
+                trailing_enabled=self._journal_optional_bool(
+                    trade.get("trailing_enabled")
+                ),
+                exit_strategy=trade.get("exit_strategy"),
             )
 
         if self.intraday_manager.daily_risk_exceeded():
@@ -698,6 +852,10 @@ class KiteTradingBot:
             self.intraday_manager.register_position(
                 symbol, direction, quantity, entry_price, stop_loss, take_profit,
                 signal_score=entry_score,
+                trailing_enabled=self._journal_optional_bool(
+                    trade.get("trailing_enabled")
+                ),
+                exit_strategy=trade.get("exit_strategy"),
             )
             position = self.intraday_manager.active_positions[symbol]
             current_score_value = trade.get("current_signal_score")
@@ -745,6 +903,9 @@ class KiteTradingBot:
                         self.config.get("strong_option_milestone_window_minutes", 10)
                     ),
                     "decision_window_minutes": int(decision_window),
+                    "weak_signal_adverse_checks": int(
+                        trade.get("weak_signal_adverse_checks", 0) or 0
+                    ),
                     "target_stage": int(trade.get("target_stage", 0) or 0),
                     "milestone_reached_pct": float(
                         trade.get("milestone_reached_pct", 0.0) or 0.0
@@ -1032,6 +1193,20 @@ class KiteTradingBot:
 
         # Get last N bars for signal evaluation
         bars = self.bar_builder.get_bars(token, limit=50)
+        range_outcome = self._try_paper_option_range_breakout(symbol, bars)
+        if range_outcome is not None:
+            self._record_decision(
+                symbol,
+                bar,
+                bars,
+                None,
+                "BUY",
+                range_outcome,
+                strategy_variant="paper_option_range_breakout",
+            )
+            if range_outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
+                self.accuracy_filters.record_entry(symbol, time.time())
+                return
         if len(bars) < 30:
             logger.debug(f"[{symbol}] Not enough bars yet ({len(bars)}/30)")
             self._record_decision(
@@ -1170,19 +1345,20 @@ class KiteTradingBot:
             and symbol in active_positions
         ):
             position = active_positions[symbol]
-            minimum_signal_score = int(
-                position.get(
-                    "minimum_signal_score",
-                    self.accuracy_filters.min_score_floor,
+            if position.get("exit_strategy") != "paper_range_breakout_2r":
+                minimum_signal_score = int(
+                    position.get(
+                        "minimum_signal_score",
+                        self.accuracy_filters.min_score_floor,
+                    )
                 )
-            )
-            self._check_option_signal_health(
-                symbol,
-                market_score.signal,
-                market_score.score,
-                minimum_signal_score,
-                price=self.latest_prices.get(symbol, bar.close),
-            )
+                self._check_option_signal_health(
+                    symbol,
+                    market_score.signal,
+                    market_score.score,
+                    minimum_signal_score,
+                    price=self.latest_prices.get(symbol, bar.close),
+                )
 
         if session_state == "BEFORE_OPEN":
             logger.info(
@@ -1443,6 +1619,11 @@ class KiteTradingBot:
         if not position:
             return None
 
+        trailing_enabled = (
+            bool(position.get("trailing_enabled"))
+            if position.get("trailing_enabled") is not None
+            else self.intraday_manager.trailing_enabled
+        )
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
         if position.get("target_advanced"):
             if not self._publish_target_update(symbol, position, trailing_stop):
@@ -1455,12 +1636,15 @@ class KiteTradingBot:
             elif trailing_stop is not None and price <= trailing_stop:
                 reason = "TRAILING_STOP"
             elif (
-                not self.intraday_manager.trailing_enabled
+                not trailing_enabled
                 and not position.get("staged_targets_enabled")
                 and price >= position["take_profit"]
             ):
                 reason = "TAKE_PROFIT"
-            elif self.intraday_manager.milestone_timebox_expired(symbol):
+            elif (
+                position.get("exit_strategy") != "paper_range_breakout_2r"
+                and self.intraday_manager.milestone_timebox_expired(symbol)
+            ):
                 if self._extend_paper_option_timebox(symbol, position):
                     return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
@@ -1472,12 +1656,15 @@ class KiteTradingBot:
             elif trailing_stop is not None and price >= trailing_stop:
                 reason = "TRAILING_STOP"
             elif (
-                not self.intraday_manager.trailing_enabled
+                not trailing_enabled
                 and not position.get("staged_targets_enabled")
                 and price <= position["take_profit"]
             ):
                 reason = "TAKE_PROFIT"
-            elif self.intraday_manager.milestone_timebox_expired(symbol):
+            elif (
+                position.get("exit_strategy") != "paper_range_breakout_2r"
+                and self.intraday_manager.milestone_timebox_expired(symbol)
+            ):
                 if self._extend_paper_option_timebox(symbol, position):
                     return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
@@ -1539,14 +1726,39 @@ class KiteTradingBot:
         )
 
         reason = None
-        if int(score) < minimum_signal_score and adverse_price_move:
-            reason = "SIGNAL_WEAKEN"
-        elif (
+        weak_signal = int(score) < minimum_signal_score
+        reversed_signal = (
             signal in {"BUY", "SELL"}
             and expected_signal is not None
             and signal != expected_signal
-            and adverse_price_move
-        ):
+        )
+        exit_condition = adverse_price_move and (weak_signal or reversed_signal)
+
+        if getattr(self, "paper_trading_enabled", False):
+            previous_checks = int(
+                position.get("weak_signal_adverse_checks", 0) or 0
+            )
+            confirmation_checks = previous_checks + 1 if exit_condition else 0
+            position["weak_signal_adverse_checks"] = confirmation_checks
+            trade_journal = getattr(self, "trade_journal", None)
+            if trade_journal is None:
+                logger.error(
+                    "[%s] Cannot persist paper signal-exit confirmation state",
+                    symbol,
+                )
+            elif confirmation_checks != previous_checks:
+                if not trade_journal.update_open_trade(
+                    symbol,
+                    {"weak_signal_adverse_checks": confirmation_checks},
+                    str(position["direction"]),
+                ):
+                    logger.warning(
+                        "[%s] Could not persist paper signal-exit confirmation state",
+                        symbol,
+                    )
+            if confirmation_checks >= PAPER_SIGNAL_WEAKEN_CONFIRMATIONS:
+                reason = "SIGNAL_WEAKEN"
+        elif exit_condition:
             reason = "SIGNAL_WEAKEN"
 
         if reason:
@@ -1755,6 +1967,11 @@ class KiteTradingBot:
                     "current_signal_score": (
                         position.get("current_signal_score") if position else None
                     ),
+                    "weak_signal_adverse_checks": (
+                        position.get("weak_signal_adverse_checks", 0)
+                        if position
+                        else 0
+                    ),
                 },
                 action,
             )
@@ -1794,6 +2011,7 @@ class KiteTradingBot:
         signal: str,
         outcome: str,
         news_context=None,
+        strategy_variant: Optional[str] = None,
     ) -> None:
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
@@ -1810,7 +2028,9 @@ class KiteTradingBot:
                 "score": market_score.score if market_score else None,
                 "reasons": reasons,
                 "strategy_variant": (
-                    getattr(market_score, "strategy_variant", None) or "primary"
+                    strategy_variant
+                    or getattr(market_score, "strategy_variant", None)
+                    or "primary"
                 ),
                 "news_risk": news_context.risk_level if news_context else "DISABLED",
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
@@ -1825,6 +2045,8 @@ class KiteTradingBot:
         score: int,
         strategy_variant: Optional[str] = None,
         minimum_signal_score: Optional[int] = None,
+        paper_range_stop: Optional[float] = None,
+        paper_range_target_r: Optional[float] = None,
     ) -> str:
         """Handle a BUY signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
@@ -1846,7 +2068,23 @@ class KiteTradingBot:
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
-            staged_option_targets = self._staged_option_targets_enabled(symbol)
+            range_breakout_plan = (
+                paper_range_stop is not None or paper_range_target_r is not None
+            )
+            if range_breakout_plan and (
+                not getattr(self, "paper_trading_enabled", False)
+                or getattr(self, "live_orders_enabled", False)
+                or paper_range_stop is None
+                or paper_range_target_r is None
+                or not self._options_enabled()
+                or "_" not in symbol
+            ):
+                raise ValueError("Range-breakout exit plans are paper-options only")
+            staged_option_targets = (
+                False
+                if range_breakout_plan
+                else self._staged_option_targets_enabled(symbol)
+            )
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
                 premium_target_pct = self._option_entry_target_pct(
@@ -1854,8 +2092,24 @@ class KiteTradingBot:
                 )
                 premium = float(self.latest_prices.get(symbol, price))
                 price = premium
-                stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
-                take_profit = price * (1.0 + premium_target_pct)
+                if range_breakout_plan:
+                    stop_loss = float(paper_range_stop)
+                    if not math.isfinite(price) or price <= 0:
+                        return "invalid_risk"
+                    risk_per_unit = price - stop_loss
+                    if (
+                        not math.isfinite(stop_loss)
+                        or not math.isfinite(paper_range_target_r)
+                        or stop_loss <= 0
+                        or risk_per_unit <= 0
+                        or paper_range_target_r <= 0
+                    ):
+                        return "invalid_risk"
+                    premium_stop_pct = risk_per_unit / price
+                    take_profit = price + risk_per_unit * paper_range_target_r
+                else:
+                    stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
+                    take_profit = price * (1.0 + premium_target_pct)
                 quantity = self._calculate_option_quantity(
                     symbol, premium, premium_stop_pct
                 )
@@ -1924,6 +2178,10 @@ class KiteTradingBot:
                 weak_signal_lockin_pct=float(
                     self.config.get("option_weak_signal_lockin_pct", 0.05)
                 ),
+                trailing_enabled=False if range_breakout_plan else None,
+                exit_strategy=(
+                    "paper_range_breakout_2r" if range_breakout_plan else None
+                ),
                 milestone_window_minutes=int(
                     self.config.get("option_milestone_window_minutes", 5)
                 ),
@@ -1975,7 +2233,11 @@ class KiteTradingBot:
                 mode=mode,
                 option_leg=option_leg,
                 trading_symbol=trading_symbol,
-                trailing_enabled=self.intraday_manager.trailing_enabled,
+                trailing_enabled=(
+                    False
+                    if range_breakout_plan
+                    else self.intraday_manager.trailing_enabled
+                ),
             )
             alert["pnl"] = 0.0
             alert["status"] = "open"
@@ -1999,7 +2261,11 @@ class KiteTradingBot:
                     }
                 )
             elif self._options_enabled() and "_" in symbol:
-                alert["exit_strategy"] = "fixed_20pct"
+                if range_breakout_plan:
+                    alert["exit_strategy"] = "paper_range_breakout_2r"
+                    alert["trailing_enabled"] = False
+                else:
+                    alert["exit_strategy"] = "fixed_20pct"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(
