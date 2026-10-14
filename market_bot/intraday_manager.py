@@ -372,6 +372,9 @@ class IntradayManager:
         trailing_stop: Optional[float] = None,
         current_signal_score: Optional[int] = None,
         decision_window_minutes: Optional[int] = None,
+        weak_signal_adverse_checks: int = 0,
+        trailing_enabled: Optional[bool] = None,
+        exit_strategy: Optional[str] = None,
     ) -> None:
         """Register a new position."""
         target_distance = abs(take_profit - entry_price)
@@ -403,6 +406,9 @@ class IntradayManager:
             "minimum_signal_score": minimum_signal_score,
             "strong_signal_score": strong_threshold,
             "weak_signal_lockin_pct": max(float(weak_signal_lockin_pct), 0.0),
+            "weak_signal_adverse_checks": max(int(weak_signal_adverse_checks), 0),
+            "trailing_enabled": trailing_enabled,
+            "exit_strategy": exit_strategy,
             "milestone_window_minutes": max(int(milestone_window_minutes), 1),
             "strong_milestone_window_minutes": max(
                 int(strong_milestone_window_minutes), 1
@@ -431,8 +437,13 @@ class IntradayManager:
     ) -> Optional[float]:
         """Update and return a ratcheting stop after a favorable move."""
         position = self.active_positions.get(symbol)
+        trailing_enabled = (
+            bool(position.get("trailing_enabled"))
+            if position and position.get("trailing_enabled") is not None
+            else self.trailing_enabled
+        )
         if not position or (
-            not self.trailing_enabled and not position.get("staged_targets_enabled")
+            not trailing_enabled and not position.get("staged_targets_enabled")
         ):
             return None
 

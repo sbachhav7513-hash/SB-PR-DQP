@@ -10,7 +10,7 @@ from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.bar_builder import Bar
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
-from market_bot.trade_journal import TradeJournal
+from market_bot.trade_journal import TradeJournal, normalize_decision_outcome
 from market_bot.weekly_report import summarize_best_setup_windows
 
 
@@ -80,9 +80,212 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["stop_loss"] == pytest.approx(110.7)
 
 
+def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "paper_option_range_breakout_enabled": True,
+        "paper_option_range_lookback_bars": 15,
+        "paper_option_range_target_r": 2.0,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+    bot.option_quote_cache = {"NIFTY_CE": {"last_price": 28.25}}
+    bot.kite_stream = SimpleNamespace(
+        contract_tick_sizes={"NIFTY_CE": 0.05}
+    )
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={}, session_trade_symbols=set()
+    )
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    start = datetime(2026, 10, 14, 12, 38)
+    bars = [
+        Bar(start + timedelta(minutes=index), 27.0, 27.7, 26.55, 27.0, 1000)
+        for index in range(15)
+    ]
+    bars.append(
+        Bar(start + timedelta(minutes=15), 27.0, 27.7, 26.8, 27.0, 1000)
+    )
+    bars.append(
+        Bar(start + timedelta(minutes=16), 27.7, 28.3, 27.6, 28.25, 1000)
+    )
+
+    with patch(
+        "market_bot.kite_main.market_session_state",
+        return_value="REGULAR_SESSION",
+    ):
+        outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+
+    assert outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED"
+    bot._option_quality_gate.assert_called_once_with(
+        "NIFTY_CE", "BUY", score=None
+    )
+    assert bot._handle_buy_signal.call_args.args == ("NIFTY_CE", 28.25, 0)
+    assert bot._handle_buy_signal.call_args.kwargs["paper_range_stop"] == pytest.approx(
+        26.5
+    )
+    assert bot._handle_buy_signal.call_args.kwargs["paper_range_target_r"] == 2.0
+
+
+@pytest.mark.parametrize("breakout_volume", [0, 999])
+def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
+    breakout_volume,
+):
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "paper_option_range_breakout_enabled": True,
+        "paper_option_range_lookback_bars": 15,
+        "paper_option_range_target_r": 2.0,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    start = datetime(2026, 10, 14, 12, 38)
+    bars = [
+        Bar(start + timedelta(minutes=index), 27.0, 27.7, 26.55, 27.0, 1000)
+        for index in range(15)
+    ]
+    bars.append(
+        Bar(start + timedelta(minutes=15), 27.0, 27.7, 26.8, 27.0, 1000)
+    )
+    bars.append(
+        Bar(
+            start + timedelta(minutes=16),
+            27.7,
+            28.3,
+            27.6,
+            28.25,
+            breakout_volume,
+        )
+    )
+
+    outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+
+    assert (
+        outcome
+        == "PAPER_RANGE_BREAKOUT_REJECTED:"
+        "breakout_volume_below_15_bar_average"
+    )
+    bot._option_quality_gate.assert_not_called()
+    bot._handle_buy_signal.assert_not_called()
+
+
+def test_paper_range_breakout_exit_plan_sizes_by_range_risk_and_keeps_fixed_target():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "option_premium_stop_pct": 0.10,
+        "option_premium_target_pct": 0.20,
+        "option_max_risk_per_lot_pct": 10.0,
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+        "strong_signal_score": 82,
+        "option_milestone_pct": 0.10,
+    }
+    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = True
+    bot._options_enabled = Mock(return_value=True)
+    bot._live_entry_allowed = Mock(return_value=True)
+    bot._staged_option_targets_enabled = Mock(return_value=True)
+    bot.intraday_manager = IntradayManager(trailing_enabled=True)
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+    bot.intraday_manager.calculate_option_size = Mock(return_value=65)
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.return_value = None
+    bot.telegram_notifier = Mock()
+    bot.telegram_notifier.format_trade.return_value = {
+        "ticker": "NIFTY_CE",
+        "entry": 28.25,
+    }
+    bot.telegram_notifier.build_message.return_value = "paper trade"
+    bot.kite_stream = SimpleNamespace(contract_symbols={})
+    bot.latest_prices = {"NIFTY_CE": 28.25}
+    bot._persist_current_live_risk_state = Mock()
+
+    result = bot._handle_buy_signal(
+        "NIFTY_CE",
+        28.25,
+        0,
+        strategy_variant="paper_option_range_breakout",
+        minimum_signal_score=0,
+        paper_range_stop=26.5,
+        paper_range_target_r=2.0,
+    )
+
+    assert result == "trade_opened"
+    bot.intraday_manager.calculate_option_size.assert_called_once_with(
+        "NIFTY_CE",
+        premium=28.25,
+        max_risk_per_trade=pytest.approx(28.25 * 65 * 0.10),
+        premium_stop_pct=pytest.approx(1.75 / 28.25),
+    )
+    position = bot.intraday_manager.active_positions["NIFTY_CE"]
+    assert position["stop_loss"] == 26.5
+    assert position["take_profit"] == pytest.approx(31.75)
+    assert position["trailing_enabled"] is False
+    assert position["exit_strategy"] == "paper_range_breakout_2r"
+
+
+def test_paper_range_breakout_uses_per_position_target_instead_of_global_trailing():
+    manager = IntradayManager(trailing_enabled=True)
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        65,
+        28.25,
+        26.5,
+        31.75,
+        trailing_enabled=False,
+        exit_strategy="paper_range_breakout_2r",
+    )
+    manager.milestone_timebox_expired = Mock(return_value=True)
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    result = bot._check_position_exit("NIFTY_CE", 31.75)
+
+    assert result == "TAKE_PROFIT"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 31.75, "TAKE_PROFIT")
+    manager.milestone_timebox_expired.assert_not_called()
+
+
+def test_paper_range_breakout_never_runs_when_live_orders_are_enabled():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "paper_option_range_breakout_enabled": True,
+        "paper_option_range_lookback_bars": 15,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = True
+    bot._options_enabled = Mock(return_value=True)
+    bot._option_quality_gate = Mock()
+
+    assert bot._try_paper_option_range_breakout("NIFTY_CE", []) is None
+    bot._option_quality_gate.assert_not_called()
+
+
+def test_paper_range_breakout_outcomes_are_classified_in_daily_reports():
+    assert normalize_decision_outcome("PAPER_RANGE_BREAKOUT_TRADE_OPENED") == (
+        "trade_opened"
+    )
+    assert normalize_decision_outcome(
+        "PAPER_RANGE_BREAKOUT_REJECTED:option quote stale"
+    ) == "option_filter"
+
+
 def test_active_paper_config_sizes_options_within_remaining_daily_risk():
     with open("kite_config.json", encoding="utf-8") as config_file:
         config = json.load(config_file)
+    with open("kite_config.example.json", encoding="utf-8") as example_config_file:
+        example_config = json.load(example_config_file)
 
     manager = IntradayManager(
         account_size=config["account_size"],
@@ -110,6 +313,8 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
 
     assert config["paper_trading_enabled"] is True
     assert config["live_orders_enabled"] is False
+    assert config["paper_option_range_breakout_enabled"] is True
+    assert example_config["paper_option_range_breakout_enabled"] is False
     assert config["option_min_lots"] == 1
     assert config["max_risk_per_trade"] is None
     assert config["daily_max_loss_pct"] == 10.0
@@ -1063,16 +1268,66 @@ def test_option_signal_weakening_uses_adverse_premium_move_for_ce_and_pe_buys():
     bot = object.__new__(KiteTradingBot)
     bot.intraday_manager = manager
     bot._close_position = Mock()
+    bot.paper_trading_enabled = True
+    bot.trade_journal = Mock()
 
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) is None
+    assert manager.active_positions["NIFTY_CE"]["weak_signal_adverse_checks"] == 1
+    bot._close_position.assert_not_called()
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 70, 70, 95.0) is None
+    assert manager.active_positions["NIFTY_CE"]["weak_signal_adverse_checks"] == 0
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) is None
     assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
     bot._close_position.assert_called_once_with("NIFTY_CE", 95.0, "SIGNAL_WEAKEN")
 
     bot._close_position.reset_mock()
     assert bot._check_option_signal_health("BANKNIFTY_PE", "HOLD", 69, 70, 105.0) is None
+    assert manager.active_positions["BANKNIFTY_PE"]["weak_signal_adverse_checks"] == 0
     bot._close_position.assert_not_called()
 
+    assert bot._check_option_signal_health("BANKNIFTY_PE", "HOLD", 69, 70, 95.0) is None
     assert bot._check_option_signal_health("BANKNIFTY_PE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
     bot._close_position.assert_called_once_with("BANKNIFTY_PE", 95.0, "SIGNAL_WEAKEN")
+
+
+def test_live_option_signal_weakening_remains_immediate():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=80,
+        minimum_signal_score=70,
+        staged_targets_enabled=True,
+        target_increment_pct=0.10,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.paper_trading_enabled = False
+    bot._close_position = Mock()
+
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 95.0, "SIGNAL_WEAKEN")
+
+
+def test_option_signal_confirmation_count_is_restored_with_position():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        130,
+        100.0,
+        80.0,
+        110.0,
+        signal_score=80,
+        staged_targets_enabled=True,
+        weak_signal_adverse_checks=1,
+    )
+
+    assert manager.active_positions["NIFTY_CE"]["weak_signal_adverse_checks"] == 1
 
 
 def test_live_milestone_moves_existing_broker_protective_stop():

@@ -25,6 +25,19 @@ def normalize_decision_outcome(value: Any) -> str:
         "execution_failed", "premarket", "market_closed", "hold", "operational",
     }:
         return outcome
+    if outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
+        return "trade_opened"
+    if outcome.startswith("PAPER_RANGE_BREAKOUT_REJECTED:"):
+        return "option_filter"
+    if outcome.startswith("PAPER_RANGE_BREAKOUT_TRADE_BLOCKED:"):
+        return "risk_blocked"
+    if outcome.startswith(
+        (
+            "PAPER_RANGE_BREAKOUT_POSITION_SIZE_ZERO",
+            "PAPER_RANGE_BREAKOUT_INVALID_RISK",
+        )
+    ):
+        return "risk_blocked"
     if outcome == "trade_opened":
         return "trade_opened"
     if outcome.startswith("accuracy_filter_rejected:"):
@@ -67,6 +80,8 @@ class PaperTradingRecorder:
         "exit_reason_category", "entry_time", "milestone_started_at",
         "minimum_signal_score", "option_milestone_pct", "trailing_stop",
         "current_signal_score", "decision_window_minutes",
+        "weak_signal_adverse_checks",
+        "trailing_enabled",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
@@ -196,6 +211,8 @@ class DecisionJournal:
                 rejection_reason = detail.split(":", 1)[1]
             elif detail.startswith("OPTION_FILTER_"):
                 rejection_reason = detail.removeprefix("OPTION_FILTER_").lower().replace("_", " ")
+            elif detail.startswith("PAPER_RANGE_BREAKOUT_REJECTED:"):
+                rejection_reason = detail.split(":", 1)[1].replace("_", " ").lower()
             entry.setdefault("rejection_reason", rejection_reason)
         event_time = PaperTradingRecorder._event_datetime(entry["timestamp"])
         local_time = event_time.time()
