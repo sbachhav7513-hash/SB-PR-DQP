@@ -6,6 +6,8 @@ from market_bot.backtest import run_backtest
 from market_bot.engine import TradingScore
 from market_bot.replay import (
     _context_before,
+    _context_before_indexed,
+    _index_contexts,
     load_candles,
     prepare_production_candles,
     run_replay,
@@ -204,6 +206,62 @@ def test_replay_benchmark_context_matches_live_100_bar_limit():
     assert len(context["NIFTY"]) == 100
     assert context["NIFTY"][0]["close"] == 121
     assert context["NIFTY"][-1]["close"] == 220
+
+
+def test_indexed_replay_context_matches_reference_and_handles_unsorted_bars():
+    start = datetime(2026, 9, 28, 9, 15)
+    bars = [
+        {"time": start + timedelta(minutes=index), "close": 100 + index}
+        for index in range(150)
+    ]
+    unsorted_bars = bars[::2] + bars[1::2]
+    timestamp = bars[120]["time"]
+
+    actual = _context_before_indexed(
+        _index_contexts({"NIFTY": unsorted_bars}),
+        timestamp,
+    )
+
+    assert actual == _context_before({"NIFTY": bars}, timestamp)
+
+
+@pytest.mark.parametrize(
+    ("paper_enabled", "allow_continuation", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_replay_passes_paper_continuation_gate_as_live_strategy_does(
+    paper_enabled,
+    allow_continuation,
+    expected,
+):
+    history = [
+        {
+            **candle(100, 100.5, 99.5, 100, index),
+            "time": f"2026-09-28T10:0{index}:00+05:30",
+            "volume": 100,
+        }
+        for index in range(3)
+    ]
+    observed = []
+
+    def hold_signal(ticker, bars, **kwargs):
+        observed.append(kwargs["paper_allow_trend_continuation"])
+        return TradingScore(ticker, 0, "HOLD")
+
+    with patch("market_bot.replay.score_market", side_effect=hold_signal):
+        run_replay(
+            "TEST",
+            history,
+            {
+                "use_market_context": False,
+                "late_window_enabled": False,
+                "paper_trading_enabled": paper_enabled,
+                "paper_allow_trend_continuation": allow_continuation,
+            },
+        )
+
+    assert observed
+    assert set(observed) == {expected}
 
 
 def test_strategy_replay_reports_zero_trade_win_rate_as_unavailable():

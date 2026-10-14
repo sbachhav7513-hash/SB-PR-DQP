@@ -20,7 +20,30 @@ paper_trading_data/
         └── weekly_review_YYYY_MM_DD.md
 ```
 
-The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. After market close, the bot writes `daily_summary.parquet` and `daily_review.md`; the review reports closed-trade results, signal/outcome counts, HOLD reason mentions, filter rejections, and shadow-candidate rejections. On Friday, the bot creates the broader Markdown review in that week's folder.
+The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. After market close, the bot writes `daily_summary.parquet` and `daily_review.md`; the review reports closed-trade results, signal/outcome counts, HOLD reason mentions, filter rejections, and shadow-candidate rejections. Its learning-feedback section highlights repeated losing exit groups as review hypotheses, shows whether the 10-closed-trade minimum screening sample is met, and explicitly prevents automatic strategy/config changes. The weekly JSON and Markdown reviews use the same sample gate; low-sample “best profiles” are not promoted as recommendations. On Friday, the bot creates the broader Markdown review in that week's folder.
+
+Paper journal P&L is the recorded simulated result and does not deduct brokerage, taxes, or slippage. Use realistic non-zero costs in historical replay before considering a strategy change. The 10-trade threshold is only a minimum screen, not evidence of a durable edge; patterns in the reports are descriptive, not causal, and the feedback layer never changes trading or live-order settings.
+
+### Exporting Kite History for Offline Replay
+
+The read-only exporter writes minute candles and a coverage manifest to `data_uploads/kite_history`; it never places orders. It reads `KITE_API_KEY` and `KITE_ACCESS_TOKEN` from the process environment or the local, ignored `.env` file. Refresh the daily access token with `python run_kite_bot.py --authorize-only` if required, then run for the desired date range:
+
+```powershell
+.\.venv\Scripts\python.exe -m market_bot.kite_history_export `
+  --start-date 2026-08-01 `
+  --end-date 2026-10-09 `
+  --underlyings NIFTY BANKNIFTY RELIANCE HDFCBANK ICICIBANK SBIN INFY TCS LT
+```
+
+Underlying symbols default to the configured option roots and market benchmarks when `--underlyings` is omitted. To include options, create a CSV manifest containing the exact historical contract tokens:
+
+```csv
+underlying,tradingsymbol,expiry,strike,instrument_type,instrument_token,lot_size,active_from,active_to
+NIFTY,NIFTY26OCT25000CE,2026-10-29,25000,CE,12345678,65,2026-10-01,2026-10-29
+NIFTY,NIFTY26OCT25000PE,2026-10-29,25000,PE,12345679,65,2026-10-01,2026-10-29
+```
+
+Then add `--option-manifest data_uploads/kite_history/options.csv` to the command. Use a separate row for every contract/token and set `active_from`/`active_to` to the dates that contract should be exported; these two columns are optional. The exporter requests option OI and records returned coverage in `manifest.json`. Kite's current instrument list cannot reconstruct expired option tokens, so use a saved instrument-master/contract mapping for past expiries. The historical candle endpoint does not provide historical bid/ask or IV, and some old option contracts may not be retrievable; inspect the manifest and API errors rather than substituting a different contract. Existing output files are protected from accidental replacement; choose another directory or pass `--overwrite` deliberately.
 
 
 Paper and live trading use the same signal strategy and entry filters. `paper_trading_enabled` and `live_orders_enabled` select execution mode only; they do not change signal thresholds, confirmation requirements, or option-quality checks. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.

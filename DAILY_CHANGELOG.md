@@ -553,3 +553,70 @@ Outcome / follow-up / rollback:
 - Code correction: Treat deterioration according to position action, not CE/PE contract name. Both CE and PE trades are bought options, so a falling premium is adverse for either; added a regression covering a falling PE premium and a rising PE premium.
 - Limitations and decision: The archive contains minute OHLC, not the tick quote at each timer deadline or executable bid/ask fills. The counterfactual exit prices and P&L are estimates, not an exact tick replay or evidence of durable strategy improvement. This Friday sample contains CE trades only; PE behavior is unit-tested but not empirically covered by this session. Continue observing a larger paper sample and keep live orders disabled.
 - Validation: The focused `tests/test_intraday_manager.py` suite passed (60 tests). The full suite had 163 passes and 1 skip, with one separate `_on_tick` test failing because its fixture lacks `paper_trading_enabled`; the failing assertion does not invoke the edited exit rule.
+
+#### DLY-2026-10-13-01
+
+- Reason: The user requested checking prior change logs and testing the paper score floor change from 55 to 60 against historical trades, without changing the daily loss cap.
+- Related entries checked: `DLY-2026-10-08-02` / `EXP-2026-10-08-02` (paper entry floor 55), `DLY-2026-10-09-01` (October 7-8 historical replay), `DLY-2026-10-09-03` (September 28-October 1 proxy replay), and `EXP-2026-10-12-01` (option exit counterfactual method).
+- Files: `kite_config.json` remains at `paper_min_entry_score=60` and `daily_max_loss_pct=10.0`; no strategy code or risk-cap change was made. This entry records the historical evaluation.
+- Evaluation: October 13's 80 directional decision rows scored 65 or 85; all three opened trades scored 65. Across the 33 closed trades in the saved historical replay ledgers, scores were also only 65 or 85. No logged entry would be excluded by a 60 rather than 55 entry floor. Replaying the production option signal-health check over today's decision snapshots showed SBIN_CE and TCS_CE exit at the same event, while RELIANCE_CE would trigger earlier at floor 60 on the 09:37:46 IST score-55 / INR 25.95 bar-close snapshot. That mark estimates -INR 925 versus the recorded -INR 725 exit at floor 55; a same-method bar-close comparison estimates INR 100 additional loss.
+- Limitations and outcome: The score floor is shared by entry validation and signal-health exit logic, so it can change an already-open trade even when all entries remain eligible. Minute decision snapshots do not provide the exact tick quote or executable fill; this is a counterfactual estimate, not an exact replay. The saved older option replay ledgers lack their raw input bars for rerunning these exits. No orders were placed; the 10% daily loss cap was not changed.
+- Validation: Called the production `_check_option_signal_health` method for both floors on the archived October 13 trade intervals and checked every saved historical replay trade score. Results do not support claiming that floor 60 improves profitability.
+
+#### DLY-2026-10-13-02
+
+- Reason: The user requested a self-learning feedback loop after repeated strategy/filter changes failed to establish sustained improvement. Existing weekly reporting could identify a “best” profile after only two trades and suggested raising the score threshold for a sub-50% win rate, despite the strategy log requiring at least 10 closed trades before a strategy decision.
+- Related entries checked: `DLY-2026-10-09-01` / `EXP-2026-10-09-01` (negative two-session replay), `DLY-2026-10-09-03` / `EXP-2026-10-09-03` (four-session cost-sensitive proxy replay), `DLY-2026-10-12-01` / `EXP-2026-10-12-01` (estimated exit counterfactual), and `DLY-2026-10-13-01` / `EXP-2026-10-13-01` (score-floor evaluation).
+- Baseline: October 12-13 archives contain five closed paper trades, all losses, with recorded P&L of -INR 3,598.75 before separately modeled brokerage, taxes, or slippage. Three October 13 `SIGNAL_WEAKEN` exits total -INR 3,421.25. This is a descriptive two-session sample, not evidence that the exit reason caused the losses or that another rule would improve results.
+- Files:
+  - `market_bot/weekly_report.py` (modified): Add sample-gated learning feedback and repeated losing-exit summaries; remove low-sample profile selection and win-rate-based threshold-change advice; disclose that recorded paper P&L excludes unmodeled execution costs.
+  - `tests/test_weekly_report.py` (modified): Verify repeated-loss attribution is surfaced descriptively, recommendations remain blocked below the 10-trade screening floor, and only sufficiently repeated setup windows are shown.
+  - `tests/test_paper_reporting.py` (modified): Verify daily feedback, sample gating, and pre-cost P&L labeling.
+  - `tests/test_intraday_manager.py` (modified): Verify low-sample setup windows are withheld while preserving the pre-existing score-floor assertion.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the advisory-only feedback and evidence requirements.
+  - `DAILY_CHANGELOG.md` (modified): Record this work.
+- Validation: The focused reporting/setup-window tests passed (`10 passed, 66 deselected`). The full suite passed with the known unrelated `_on_tick` fixture test excluded (`169 passed, 1 skipped, 1 deselected`); an unfiltered run confirms that fixture still fails because it omits `paper_trading_enabled`. Pylance reported no diagnostics in `weekly_report.py`, `test_weekly_report.py`, or `test_paper_reporting.py`; the touched `test_intraday_manager.py` has two pre-existing unused-`limit` warnings. `git diff --check` passed. Running the feedback helper against the October 12-13 trade Parquet files returned 5/10 screening trades, recorded P&L -INR 3,598.75 before costs, and the two observed losing-exit groups; it recommended no strategy tuning.
+- Outcome / follow-up: No strategy, risk, or live-order setting is changed. The learning layer can surface review hypotheses but never edits config or auto-promotes a strategy. Keep live orders disabled and collect more paper data; reaching 10 trades is only a screening minimum, not proof of an edge.
+
+#### DLY-2026-10-13-03
+
+- Reason: The user asked for a local way to export Kite history for offline strategy replay.
+- Related entries checked: `DLY-2026-10-09-01` and `DLY-2026-10-09-03` document the limitations of current historical replay data and reconstructed option contracts.
+- Files:
+  - `market_bot/kite_history_export.py` (added): Add a read-only CLI for exporting configured underlying and exact-manifest option minute candles, retaining returned OI and writing a coverage/contract manifest. Credentials are read from environment or `.env`; output defaults to `data_uploads/kite_history`; existing files are protected unless `--overwrite` is passed.
+  - `tests/test_kite_history_export.py` (added): Cover date chunking, option manifest validation and expiry clipping, underlying-token resolution, timestamp/OI export, and overwrite protection.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the Windows command, exact option manifest columns, credential handling, and historical-data limitations.
+  - `DAILY_CHANGELOG.md` (modified): Record this exporter work.
+- Validation: `python -m pytest -q tests\test_kite_history_export.py` passed (9 tests); `python -m market_bot.kite_history_export --help` succeeded; Pylance reported no errors and the syntax check passed for the exporter. `git diff --check` passed. The adjacent combined Kite/provider test run reported 45 passed, 1 skipped, and one pre-existing `_on_tick` fixture failure because that test does not initialize `paper_trading_enabled`; exporter tests pass independently.
+- Outcome / follow-up: Exporter is ready for local use; no credentials were read into the report, no API export was executed, and no orders or strategy/config changes were made. Old option contracts still require their exact saved instrument tokens, and Kite historical candles do not provide bid/ask or IV.
+
+#### DLY-2026-10-14-01
+
+- Reason: Locate dated Kite option-token mappings after the user created an empty exporter manifest.
+- Related entries checked: `DLY-2026-10-09-01` records the October 7-8 whole-strategy replay and selected-contract metadata; `DLY-2026-10-13-03` documents the exporter and its exact-token requirement.
+- Files:
+  - `data_uploads/kite_history/options.csv` (modified): Populate 28 unique option contracts covering the 30 dated selections recorded in `paper_trading_data/backtests/kite_option_replay_2026-10-07_08.json`; combine the two unchanged BANKNIFTY tokens across October 7-8.
+  - `DAILY_CHANGELOG.md` (modified): Record the source, scope, and limitation of this recovered mapping.
+- Validation: The exporter's `_read_option_manifest` parsed all 28 rows for October 7-8 with 28 unique tokens across eight underlyings; PowerShell checks confirmed valid CE/PE types, positive tokens/lot sizes, and ordered active dates. `git diff --check` passed. The Kite API export was not run.
+- Outcome / follow-up: The report only records selected contracts for October 7-8, 2026. This is not an exhaustive contract universe or dated mapping for August-October and cannot support a full-period options replay; export only these two sessions with an output directory separate from the existing user export.
+
+#### DLY-2026-10-14-02
+
+- Reason: Screen additional entry/symbol filters against the available options replay ledgers at the user's request.
+- Related entries checked: `DLY-2026-10-09-01`, `DLY-2026-10-09-03`, `DLY-2026-10-14-01`, and `EXP-2026-10-13-01`; the user-requested active paper score floor remains 60.
+- Files:
+  - `STRATEGY_CHANGELOG.md` (modified): Record score-floor and symbol-exclusion sensitivities, costs, caveats, and the no-change decision as `EXP-2026-10-14-01`.
+  - `DAILY_CHANGELOG.md` (modified): Record this analysis and its outcome.
+- Validation: Recomputed the archived 60% candle-body trade subsets from both JSON ledgers. A post-hoc score floor of 80 was profitable only in the three-trade later-expiry proxy (+INR 2,540.26 net at 10 bps/side plus INR 40 brokerage) and lost on the later exact-contract sample (-INR 562.73 on four trades). Excluding SBIN and RELIANCE yielded only INR 17.72 estimated net on four hindsight-selected trades at the same costs. No strategy code or config changed; no orders were placed.
+- Outcome / follow-up: Findings are inconclusive and do not justify implementing a strategy filter. Keep the active score floor at 60 and live orders disabled. Reassess with a predeclared candidate and independent, adequately sized exact-contract holdout or forward paper sample.
+- Follow-up validation: Added preselected 09:30/10:00 entry-time sensitivity. 09:30 removed no trades; 10:00 still lost on the exact-contract sample (-INR 3,602.68 estimated net including assumed brokerage and 10 bps per-side slippage). The proxy's 10:00 slice was barely positive (+INR 46.50) and did not transfer. No candidate has repeatable positive net evidence.
+
+#### DLY-2026-10-14-03
+
+- Reason: Prevent local historical market-data uploads from being committed or pushed to the repository.
+- Related entries checked: `DLY-2026-10-14-01` records recovered option mappings and local history files; no existing rule ignored the full upload directory.
+- Files:
+  - `.gitignore` (modified): Ignore `/data_uploads/` at the repository root.
+  - `DAILY_CHANGELOG.md` (modified): Record the ignore rule and tracked-file handling.
+- Validation: `git check-ignore` confirms the current Kite and NSE upload files are ignored. Two previously tracked NSE metadata CSV/JSON files were removed from the Git index while preserved in the working directory.
+- Outcome / follow-up: Uploads remain available locally but will not be included in future commits. Existing history that was already pushed to earlier commits is not rewritten.

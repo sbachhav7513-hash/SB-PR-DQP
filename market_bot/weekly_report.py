@@ -13,6 +13,7 @@ from .trade_journal import PaperTradingRecorder, normalize_decision_outcome
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+MIN_CLOSED_TRADES_FOR_SCREENING = 10
 
 
 def _load_jsonl(path: Path, days: int) -> List[Dict[str, Any]]:
@@ -63,6 +64,80 @@ def _number(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _recorded_trade_pnl(trade: Dict[str, Any]) -> float:
+    value = trade.get("pnl_rupees")
+    if value in (None, ""):
+        value = trade.get("pnl", trade.get("profit", 0))
+    return _number(value)
+
+
+def _learning_feedback(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Summarize repeated realized loss patterns without changing strategy settings."""
+    grouped: Dict[str, List[float]] = defaultdict(list)
+    pnls = []
+    for trade in trades:
+        pnl = _recorded_trade_pnl(trade)
+        pnls.append(pnl)
+        reason = str(
+            trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
+        ).strip().upper()
+        grouped[reason or "UNKNOWN"].append(pnl)
+
+    loss_patterns = []
+    for reason, reason_pnls in grouped.items():
+        losses = sum(1 for pnl in reason_pnls if pnl < 0)
+        total_pnl = sum(reason_pnls)
+        if losses < 2 or total_pnl >= 0:
+            continue
+        loss_patterns.append(
+            {
+                "exit_reason": reason,
+                "trades": len(reason_pnls),
+                "losses": losses,
+                "recorded_pnl_before_costs": round(total_pnl, 2),
+                "average_recorded_pnl_before_costs": round(
+                    total_pnl / len(reason_pnls), 2
+                ),
+            }
+        )
+    loss_patterns.sort(key=lambda item: item["recorded_pnl_before_costs"])
+
+    trade_count = len(trades)
+    if trade_count == 0:
+        status = "no_closed_trades"
+        recommendation = (
+            "No closed-trade outcomes are available; keep collecting paper evidence. "
+            "No strategy settings are changed automatically."
+        )
+    elif trade_count < MIN_CLOSED_TRADES_FOR_SCREENING:
+        status = "collecting_evidence"
+        recommendation = (
+            f"{trade_count}/{MIN_CLOSED_TRADES_FOR_SCREENING} closed trades: "
+            "below the minimum screening sample. Treat loss patterns as review "
+            "hypotheses; do not tune strategy settings from this sample."
+        )
+    else:
+        status = "minimum_screening_sample_met"
+        recommendation = (
+            "The minimum screening count is met, not proof of an edge. Validate any "
+            "candidate change with walk-forward replay and realistic costs; no "
+            "strategy settings are changed automatically."
+        )
+
+    return {
+        "status": status,
+        "closed_trades": trade_count,
+        "minimum_closed_trades_for_screening": MIN_CLOSED_TRADES_FOR_SCREENING,
+        "recorded_pnl_before_costs": round(sum(pnls), 2),
+        "average_recorded_pnl_before_costs": (
+            round(sum(pnls) / trade_count, 2) if trade_count else 0.0
+        ),
+        "loss_patterns_for_review": loss_patterns,
+        "automatic_strategy_changes": False,
+        "recommendation": recommendation,
+    }
 
 
 def _recent_parquet_records(
@@ -150,7 +225,7 @@ def _performance_by_key(
         else:
             value = trade.get(key_name)
             key = str(value or ("primary" if key_name == "strategy_variant" else "UNKNOWN"))
-        grouped[key].append(_number(trade.get("pnl", trade.get("profit", 0))))
+        grouped[key].append(_recorded_trade_pnl(trade))
 
     performance: Dict[str, Dict[str, Any]] = {}
     for key, pnls in grouped.items():
@@ -273,7 +348,7 @@ def build_weekly_report(
         days,
         [
             "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
-            "strategy_variant", "exit_strategy",
+            "strategy_variant", "exit_strategy", "reason", "exit_reason_category",
         ],
     )
     trades = [trade for trade in trade_records if trade.get("status") == "closed"]
@@ -293,11 +368,11 @@ def build_weekly_report(
     grouped: Dict[str, List[float]] = defaultdict(list)
     for trade in trades:
         key = f"{trade.get('ticker', 'UNKNOWN')}:{trade.get('action', 'UNKNOWN')}"
-        grouped[key].append(_number(trade.get("pnl", trade.get("profit", 0))))
+        grouped[key].append(_recorded_trade_pnl(trade))
 
     profiles: List[Dict[str, Any]] = []
     for key, pnls in grouped.items():
-        if len(pnls) < 2:
+        if len(pnls) < MIN_CLOSED_TRADES_FOR_SCREENING:
             continue
         wins = sum(1 for pnl in pnls if pnl > 0)
         profiles.append({
@@ -309,7 +384,7 @@ def build_weekly_report(
         })
     profiles.sort(key=lambda item: item["average_pnl"], reverse=True)
 
-    pnl_values = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    pnl_values = [_recorded_trade_pnl(trade) for trade in trades]
     wins = [pnl for pnl in pnl_values if pnl > 0]
     losses = [pnl for pnl in pnl_values if pnl <= 0]
     total_loss = sum(losses)
@@ -338,6 +413,7 @@ def build_weekly_report(
         1 for item in decisions
         if any("news risk" in reason.lower() for reason in item.get("reasons", []))
     )
+    learning_feedback = _learning_feedback(trades)
     rejected_entries = sum(
         outcome_counts[name]
         for name in ("accuracy_filter", "option_filter", "risk_blocked", "execution_failed")
@@ -389,13 +465,9 @@ def build_weekly_report(
             "suppressed_entries": news_suppressed_entries,
         },
         "best_observed_profiles": profiles[:5],
-        "recommendation": (
-            f"Best observed profile: {profiles[0]['profile']} "
-            f"({profiles[0]['trades']} trades, {profiles[0]['win_rate']}% wins, "
-            f"average P&L {profiles[0]['average_pnl']:.2f})."
-            if profiles else
-            "Not enough repeated closed trades to recommend a profile."
-        ),
+        "pnl_basis": "Recorded paper P&L; brokerage, taxes, and slippage are not deducted.",
+        "learning_feedback": learning_feedback,
+        "recommendation": learning_feedback["recommendation"],
     }
 
 
@@ -414,7 +486,9 @@ def summarize_best_setup_windows(
             "trades.jsonl",
             "trades.parquet",
             days,
-            ["timestamp", "ticker", "action", "status", "pnl"],
+            [
+                "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
+            ],
         )
         if trade.get("status") == "closed"
     ]
@@ -429,13 +503,13 @@ def summarize_best_setup_windows(
             continue
         hour = stamp.hour
         label = f"{hour:02d}:{trade.get('action', 'UNKNOWN')}"
-        grouped[label].append(_number(trade.get("pnl", 0.0)))
+        grouped[label].append(_recorded_trade_pnl(trade))
 
     summaries: List[Dict[str, Any]] = []
     for label, pnls in grouped.items():
         wins = sum(1 for pnl in pnls if pnl > 0)
         total = sum(pnls)
-        if not pnls:
+        if len(pnls) < MIN_CLOSED_TRADES_FOR_SCREENING:
             continue
         summaries.append({
             "label": label,
@@ -490,8 +564,9 @@ def _date_records(
         days=3660,
         columns=(
             [
-                "timestamp", "status", "pnl", "reason", "ticker", "action",
-                "score", "strategy_variant",
+                "timestamp", "status", "pnl", "pnl_rupees", "reason",
+                "exit_reason_category", "ticker", "action", "score",
+                "strategy_variant",
             ]
             if parquet_name == "trades.parquet"
             else [
@@ -530,7 +605,7 @@ def write_daily_summary(
         "decisions.parquet",
         target_date,
     )
-    pnls = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    pnls = [_recorded_trade_pnl(trade) for trade in trades]
     values = {
         "date": target_date.isoformat(),
         "closed_trades": len(trades),
@@ -579,7 +654,7 @@ def write_daily_review(
         target_date,
     )
 
-    pnls = [_number(trade.get("pnl", trade.get("profit", 0))) for trade in trades]
+    pnls = [_recorded_trade_pnl(trade) for trade in trades]
     wins = sum(1 for pnl in pnls if pnl > 0)
     signal_counts: Dict[str, int] = defaultdict(int)
     outcome_counts: Dict[str, int] = defaultdict(int)
@@ -642,7 +717,7 @@ def write_daily_review(
         "## Results",
         f"- Closed trades: {len(trades)}",
         f"- Wins / losses: {wins} / {len(trades) - wins}",
-        f"- Net P&L: {sum(pnls):.2f}",
+        f"- Recorded P&L before unmodeled trading costs: {sum(pnls):.2f}",
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
         "",
@@ -659,7 +734,7 @@ def write_daily_review(
         *format_counts(outcome_counts),
         "",
         "## Closed Trades",
-        "| Symbol | Direction | Variant | Score | Milestone | Held (s) | P&L | Exit reason |",
+        "| Symbol | Direction | Variant | Score | Milestone | Held (s) | Recorded P&L | Exit reason |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
     ]
     if trades:
@@ -689,6 +764,32 @@ def write_daily_review(
         )
     else:
         lines.append("| No closed trades | - | - | - | - | - | 0.00 | - |")
+    learning_feedback = _learning_feedback(trades)
+    loss_patterns = learning_feedback["loss_patterns_for_review"]
+    lines.extend(
+        [
+            "",
+            "## Learning Feedback",
+            f"- Status: {learning_feedback['status']} "
+            f"({learning_feedback['closed_trades']}/"
+            f"{learning_feedback['minimum_closed_trades_for_screening']} closed trades "
+            "for the minimum screening sample).",
+            f"- {learning_feedback['recommendation']}",
+            (
+                "- Repeated losing exit patterns to review: "
+                + "; ".join(
+                    f"{item['exit_reason']} ({item['losses']} losses / "
+                    f"{item['trades']} trades, "
+                    f"{item['recorded_pnl_before_costs']:.2f} before costs)"
+                    for item in loss_patterns
+                )
+                if loss_patterns
+                else "- No repeated losing exit pattern (at least two losses) in this sample."
+            ),
+            "- These patterns are descriptive, not causal; paper P&L excludes unmodeled brokerage, taxes, and slippage.",
+            "- No strategy or configuration settings are changed automatically.",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -712,8 +813,16 @@ def write_daily_review(
             "",
             "## Review Notes",
             "- Reason counts are mentions; one decision may contain multiple reasons.",
-            "- With no closed trades, assess candidate and rejection flow only; do not infer strategy accuracy.",
-            "- Change one paper-only strategy/filter variable at a time and compare the next session.",
+            (
+                "- With no closed trades, assess candidate and rejection flow only; do not infer strategy accuracy."
+                if not trades
+                else f"- The {len(trades)} closed-trade daily sample is below the "
+                f"{MIN_CLOSED_TRADES_FOR_SCREENING}-trade screening minimum; do not "
+                "infer a durable edge."
+                if len(trades) < MIN_CLOSED_TRADES_FOR_SCREENING
+                else "- The daily screening count is met, but one session is not proof of a durable edge."
+            ),
+            "- Change at most one paper-only strategy/filter variable after a cost-aware, out-of-sample review.",
             "",
         ]
     )
@@ -735,32 +844,62 @@ def write_weekly_review(
     if report["closed_trades"] == 0:
         issues.append("No closed trades were recorded; paper-trading data is insufficient for strategy conclusions.")
         improvements.append("Continue paper trading and verify that entry and exit events are being recorded.")
+    elif report["closed_trades"] < MIN_CLOSED_TRADES_FOR_SCREENING:
+        issues.append(
+            f"Only {report['closed_trades']} closed trades were recorded; "
+            f"the {MIN_CLOSED_TRADES_FOR_SCREENING}-trade screening minimum is not met."
+        )
+        if report["total_pnl"] < 0:
+            issues.append(
+                "Recorded period P&L is negative before separately modeled trading costs."
+            )
+        improvements.append(
+            "Treat repeated losing patterns as review hypotheses, continue paper "
+            "trading, and do not tune thresholds from this sample."
+        )
     elif report["total_pnl"] < 0:
         issues.append(f"The period finished negative at {report['total_pnl']:.2f} P&L.")
-        improvements.append("Review losing trades by symbol, direction, signal score, and exit reason before changing parameters.")
+        improvements.append(
+            "Review losing trades and validate one candidate change in a walk-forward "
+            "replay with realistic costs before changing parameters."
+        )
     if report["closed_trades"] and report["win_rate"] < 50:
-        issues.append(f"Win rate was {report['win_rate']:.2f}%, below the 50% baseline.")
-        improvements.append("Raise the entry-quality threshold or add confirmation rather than increasing trade frequency.")
+        issues.append(
+            f"Win rate was {report['win_rate']:.2f}%; inspect loss clusters, "
+            "not win rate alone."
+        )
+        improvements.append(
+            "Compare expectancy and loss size after realistic costs; do not raise "
+            "the score threshold from win rate alone."
+        )
     if report["signal_counts"].get("ERROR", 0):
         issues.append(f"Strategy evaluation errors occurred {report['signal_counts']['ERROR']} times.")
         improvements.append("Investigate every strategy error before relying on live alerts.")
     if not issues:
         issues.append("No major negative pattern was detected by the current automated checks.")
-        improvements.append("Keep collecting paper-trading data and validate whether the strongest profiles repeat.")
+        improvements.append(
+            "Keep collecting paper-trading data; do not treat the highest observed "
+            "profile as a strategy recommendation."
+        )
 
     lines = [
         f"# Paper Trading Review - {now:%Y-%m-%d}",
         "",
         "## Observed Results",
         f"- Closed trades: {report['closed_trades']}",
-        f"- Total P&L: {report['total_pnl']:.2f}",
+        f"- Recorded P&L before unmodeled trading costs: {report['total_pnl']:.2f}",
         f"- Win rate: {report['win_rate']:.2f}%",
         f"- Decisions recorded: {report['decisions_recorded']}",
         f"- High-news-risk decisions: {report['news_summary']['risk_counts'].get('HIGH', 0)}",
         f"- Entries suppressed by news filter: {report['news_summary']['suppressed_entries']}",
+        f"- Learning feedback: {report['learning_feedback']['status']} "
+        f"({report['learning_feedback']['closed_trades']}/"
+        f"{report['learning_feedback']['minimum_closed_trades_for_screening']} trades)",
+        f"- Feedback: {report['learning_feedback']['recommendation']}",
+        "- Recorded paper P&L does not deduct brokerage, taxes, or slippage.",
         "",
         "## Option Exit Strategy Comparison",
-        "| Strategy | Entries | Entries/day | Closed trades | Average P&L/closed trade | Total P&L |",
+        "| Strategy | Entries | Entries/day | Closed trades | Average recorded P&L/closed trade | Total recorded P&L |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
         *(
             [
@@ -783,7 +922,8 @@ def write_weekly_review(
         "## Review Before Changing",
         "- Compare the daily trades.parquet files for the week, not just the aggregate P&L.",
         "- Check whether losses cluster by symbol, BUY/SELL direction, time, or exit reason.",
-        "- Change one strategy or risk parameter at a time and continue paper trading.",
+        "- Do not change a strategy or risk parameter from low-sample patterns; paper P&L is pre-cost.",
+        "- No parameter or live-order setting is changed automatically by learning feedback.",
         "",
     ]
     destination.write_text("\n".join(lines), encoding="utf-8")

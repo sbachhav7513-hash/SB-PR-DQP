@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import json
 import math
 from dataclasses import asdict
@@ -213,6 +214,38 @@ def _context_before(
     return available
 
 
+def _index_contexts(
+    contexts: Dict[str, List[Dict]],
+) -> Dict[str, tuple[List[float], List[Dict]]]:
+    indexed = {}
+    for symbol, bars in contexts.items():
+        dated_bars = []
+        for bar in bars:
+            bar_time = _as_ist(bar.get("time", bar.get("date")))
+            if bar_time is not None:
+                dated_bars.append((bar_time.timestamp(), bar))
+        dated_bars.sort(key=lambda item: item[0])
+        indexed[symbol] = (
+            [timestamp for timestamp, _ in dated_bars],
+            [bar for _, bar in dated_bars],
+        )
+    return indexed
+
+
+def _context_before_indexed(
+    contexts: Dict[str, tuple[List[float], List[Dict]]],
+    signal_time: Optional[datetime],
+) -> Dict[str, List[Dict]]:
+    if signal_time is None:
+        return {}
+    timestamp = signal_time.timestamp()
+    available = {}
+    for symbol, (timestamps, bars) in contexts.items():
+        end = bisect_right(timestamps, timestamp)
+        available[symbol] = bars[max(0, end - 100):end]
+    return available
+
+
 def _aligned_volume_history(
     signal_history: List[Dict], volume_candles: List[Dict]
 ) -> List[Dict]:
@@ -250,6 +283,7 @@ def run_replay(
         raise ValueError("volume confirmation data must contain at least one candle")
     contexts = context_histories or {}
     use_context = bool(config.get("use_market_context", True))
+    indexed_contexts = _index_contexts(contexts) if use_context else {}
     accuracy_filters = AccuracyFilters(
         min_entry_score=int(config.get("min_entry_score", 70)),
         min_volatility_pct=float(config.get("min_volatility_pct", 0.05)),
@@ -261,7 +295,11 @@ def run_replay(
         score_function = signal_fn or score_market
         if signal_fn is not None:
             return score_function(symbol, history)
-        available_contexts = _context_before(contexts, signal_time) if use_context else {}
+        available_contexts = (
+            _context_before_indexed(indexed_contexts, signal_time)
+            if use_context
+            else {}
+        )
         available_contexts = {
             name: bars
             for name, bars in available_contexts.items()
@@ -287,6 +325,10 @@ def run_replay(
                 _aligned_volume_history(history, volume_confirmation_candles)
                 if volume_confirmation_candles is not None
                 else None
+            ),
+            paper_allow_trend_continuation=(
+                bool(config.get("paper_trading_enabled", False))
+                and bool(config.get("paper_allow_trend_continuation", False))
             ),
         )
 
