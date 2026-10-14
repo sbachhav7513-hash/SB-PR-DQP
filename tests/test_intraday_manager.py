@@ -113,6 +113,7 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
     assert config["option_min_lots"] == 1
     assert config["max_risk_per_trade"] is None
     assert config["daily_max_loss_pct"] == 10.0
+    assert config["paper_min_entry_score"] == 60
     assert config["option_max_risk_per_lot_pct"] == 10.0
     assert manager.daily_max_loss == 10_000.0
     assert manager.max_risk_per_trade == 10_000.0
@@ -1535,7 +1536,7 @@ def test_symbol_win_rate_cap_blocks_weak_symbols():
     assert "win-rate cap" in reason.lower()
 
 
-def test_best_setup_windows_summary_prefers_high_win_rate_periods(tmp_path):
+def test_best_setup_windows_are_withheld_below_screening_sample(tmp_path):
     trades_path = tmp_path / "trades.jsonl"
     trades_path.write_text(
         "\n".join(
@@ -1552,6 +1553,4 @@ def test_best_setup_windows_summary_prefers_high_win_rate_periods(tmp_path):
 
     windows = summarize_best_setup_windows(str(tmp_path), days=7)
 
-    assert windows
-    assert windows[0]["label"] == "09:BUY"
-    assert windows[0]["win_rate"] >= 50.0
+    assert windows == []

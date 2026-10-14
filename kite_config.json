@@ -68,7 +68,7 @@
   "ema_slow": 21,
   "rsi_period": 14,
   "min_entry_score": 70,
-  "paper_min_entry_score": 55,
+  "paper_min_entry_score": 60,
   "min_volatility_pct": 0.05,
   "max_volatility_pct": 5.0,
   "alert_rsi_low": 30,

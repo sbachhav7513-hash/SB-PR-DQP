@@ -72,7 +72,12 @@ def test_daily_and_weekly_documents_are_written(tmp_path):
 
     assert summary.name == "daily_summary.parquet"
     assert review.name.startswith("weekly_review_")
-    assert "negative" in review.read_text(encoding="utf-8")
+    review_content = review.read_text(encoding="utf-8")
+    assert "negative" in review_content
+    assert "Recorded P&L before unmodeled trading costs" in review_content
+    assert "do not tune thresholds from this sample" in review_content
+    assert "do not raise the score threshold from win rate alone" in review_content
+    assert "No parameter or live-order setting is changed automatically" in review_content
 
 
 def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path):
@@ -127,7 +132,9 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
 
     assert review.name == "daily_review.md"
     assert "Closed trades: 1" in content
-    assert "Net P&L: -10.00" in content
+    assert "Recorded P&L before unmodeled trading costs: -10.00" in content
+    assert "Status: collecting_evidence (1/10 closed trades" in content
+    assert "No strategy or configuration settings are changed automatically." in content
     assert (
         "| NIFTY | BUY | trend_shadow_paper | 60 | N/A | N/A | -10.00 | STOP_LOSS |"
         in content

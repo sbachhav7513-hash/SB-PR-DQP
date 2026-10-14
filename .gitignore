@@ -38,7 +38,7 @@ Thumbs.db
 *.jsonl
 paper_trading_data/**/decisions.csv
 /backtest_artifacts/
-/data_uploads/nse_eod/daily_contract_rows/*.csv.gz
+/data_uploads/
 
 # Testing
 .pytest_cache/
