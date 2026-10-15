@@ -1,8 +1,15 @@
 # Week 2 Implementation Guide - Stability & Execution Quality
 
+> **Evidence warning (2026-10-15):** Any trade statistics and performance
+> conclusions in this historical guide are preliminary, not proof of a durable
+> edge. A small sample cannot validate profitability or justify live trading.
+> See [README_RELIABILITY.md](README_RELIABILITY.md) for the current deployment
+> verdict.
+
 ## Summary of Changes
 
-Week 2 focuses on turning a profitable but fragile setup into a more stable and repeatable trading system.
+Week 2 proposes execution and reporting changes for paper evaluation. This guide
+does not establish that the strategy is profitable or that the changes improve it.
 
 The objective is not to chase more trades - it is to improve trade quality, reduce avoidable losses, and make the strategy more robust across symbols and market conditions.
 
@@ -15,7 +22,9 @@ The weekly report shows:
 - Average loss: ₹-595.00
 - Profit factor: 1.99
 
-This is a solid start, but the sample size is too small to call the edge fully validated. The implementation goal for Week 2 is to stabilize execution and increase consistency without harming the existing positive profit profile.
+This four-trade snapshot is descriptive only. Its sample size is too small to
+validate an edge or establish a positive profit profile. Changes in this guide
+must be evaluated prospectively with realistic costs before drawing conclusions.
 
 ---
 
@@ -33,7 +42,8 @@ This is a solid start, but the sample size is too small to call the edge fully v
 
 **Total changes:** ~120 lines of logic + reporting improvements  
 **Time to implement:** 2-4 hours  
-**Expected result:** better quality trades, lower churn, more stable weekly performance
+**Hypothesis:** these changes may affect trade quality or churn; the effect is
+unknown until independently evaluated.
 
 ---
 
@@ -41,7 +51,9 @@ This is a solid start, but the sample size is too small to call the edge fully v
 
 ### Step 1: Add stricter symbol-level controls
 
-The report shows symbol quality is uneven. LT_CE and LT_PE performed well, while INFY_PE turned negative. Week 2 should add a symbol-level risk gate to avoid repeated bad entries.
+The historical report contains symbol-level differences, but its small sample
+does not establish persistent symbol quality. Any symbol-level gate is a paper
+experiment, not evidence of improved profitability.
 
 Add a tracker in the strategy or decision journal:
 
@@ -100,7 +112,8 @@ The goal is not to remove these checks. The goal is to use them more effectively
 
 ### Step 4: Add regime-aware timing checks
 
-The reward profile is strongest in a narrow execution window. The report shows profitable hours 3 and 4, but the strategy still needs more deliberate timing logic.
+The historical report showed different results by hour, but that small-sample
+pattern is not validated and should not be treated as a reliable timing edge.
 
 Add a rule such as:
 
@@ -141,18 +154,14 @@ This helps answer the real question: are we stopping bad trades, or are we missi
 
 ---
 
-## Expected Improvements
+## Outcomes to Measure — Not Forecasts
 
 ### Trade Count Impact
 
-Before Week 2: the system is profitable but too few trades exist to trust the edge.
+The existing sample is too small to establish profitability or an edge.
 
-Expected after improvements:
-
-```
-Before: 4 trades/week
-After: 6-10 quality trades/week
-```
+Do not target a specific trade count. Record accepted and rejected signals and
+compare the changes on unseen sessions.
 
 Reason:
 - Better filtering of low-quality setups
@@ -162,42 +171,40 @@ Reason:
 
 ### Win Rate Impact
 
-The current win rate is exactly 50%. This is not bad, but it is not yet strong enough to scale with confidence.
-
-Improved target:
+The current win rate has not been independently validated. Do not use the
+historical percentage below as a live-trading or scaling threshold.
 
 ```
-Before: 50% win rate
-After: 55% to 65% win rate
+Performance before/after: Not established
 ```
 
-The improvement is not from taking more trades; it is from taking better trades.
+Whether fewer or better trades result is not established.
 
 ### Profit Factor Impact
 
-Profit factor is currently 1.99, which is healthy.
+The historical profit-factor figure is based on a small sample and is not
+independently validated.
 
-Target improvement:
+No target improvement is established:
 
 ```
-Before: 1.99
-After: 2.2 to 2.8
+Historical figure: 1.99 (four-trade snapshot; descriptive only)
+Forward target: none established
 ```
 
-This would mean that the winning trades remain strong while the losing trades are better prevented.
+Do not treat this value as a validated edge or use it to scale.
 
 ### Daily P&L Impact
 
-The system is already positive in the sample, but to scale, the aim is to reduce the occasional drawdown caused by weak entries.
-
-Target:
+The historical sample is small and does not establish a positive expectation or
+support scaling.
 
 ```
-Current weekly P&L: +₹1,181.25
-Week 2 target: +₹1,500 to +₹3,000
+Historical weekly P&L: +₹1,181.25 (four-trade snapshot; descriptive only)
+Forward target: none established
 ```
 
-This is realistic if the system improves selectivity without over-optimizing away valid entries.
+Do not extrapolate this snapshot or tune to the same sample.
 
 ---
 
@@ -216,8 +223,7 @@ INFY_PE loses once
 Next INFY_PE entry within same session → rejected
 ```
 
-**Loss reduction**: -25% to -35%  
-**Win rate improvement**: +3% to +5%
+**Measured performance effect**: Not established
 
 ---
 
@@ -235,8 +241,7 @@ New trade attempt = 3rd trade
 Rejected
 ```
 
-**Churn reduction**: -40%  
-**Win rate improvement**: +2% to +4%
+**Measured performance effect**: Not established
 
 ---
 
@@ -253,8 +258,7 @@ Premium = ₹18.5 -> rejected
 Volume = 420 -> rejected
 ```
 
-**False signal reduction**: -20%  
-**Win rate improvement**: +2% to +3%
+**Measured performance effect**: Not established
 
 ---
 
@@ -272,8 +276,7 @@ Volume = 420 -> rejected
 09:45 trade -> accepted
 ```
 
-**Loss avoidance**: -15% to -25%  
-**Win rate improvement**: +3% to +5%
+**Measured performance effect**: Not established
 
 ---
 
@@ -326,14 +329,16 @@ Instead, it should aim for:
 - better risk control
 - stronger repeatability
 
-The goal is to maintain profitability while reducing the randomness that still exists in the current system.
+Do not assume profitability. Measure risk and operational outcomes without
+extrapolating from a small sample.
 
 ---
 
 ## Final Conclusion
 
-The report shows a profitable structure, but not yet a fully stable one. That is normal at this stage. The core issue is not the strategy concept; it is the quality of execution and the discipline around when to participate.
+The available small-sample report does not establish a profitable structure or
+durable edge. Week 2 changes are experiments only; evaluate them on unseen
+paper sessions with realistic costs before making any live-trading decision.
 
-Week 2 implementation should focus on reducing weak entries, improving decision quality, and tightening the operational rules around symbols, session behavior, and market timing.
-
-The result should be a cleaner and more scalable trading system that can convert a small positive result into a reliable edge.
+These changes do not guarantee a cleaner, more scalable, or profitable system.
+Keep them in paper evaluation until independently reviewed.

@@ -150,7 +150,7 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert "confirmation: 1" in content
 
 
-def test_weekly_report_compares_tiered_option_exits_to_legacy_fixed_target(tmp_path):
+def test_weekly_report_groups_option_exit_strategies_separately(tmp_path):
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     trades_path = tmp_path / "trades.jsonl"
     trades_path.write_text(
@@ -181,6 +181,14 @@ def test_weekly_report_compares_tiered_option_exits_to_legacy_fixed_target(tmp_p
                     "pnl": 0.0,
                     "exit_strategy": "tiered_milestone",
                 },
+                {
+                    "timestamp": timestamp,
+                    "ticker": "INFY_CE",
+                    "action": "BUY",
+                    "status": "closed",
+                    "pnl_rupees": 45.0,
+                    "exit_strategy": "paper_option_2r_trail_runner",
+                },
             )
         )
         + "\n",
@@ -204,6 +212,12 @@ def test_weekly_report_compares_tiered_option_exits_to_legacy_fixed_target(tmp_p
     assert report["option_exit_comparison"]["tiered_milestone"][
         "trade_entries"
     ] == 2
+    assert report["option_exit_comparison"]["paper_option_2r_trail_runner"][
+        "closed_trades"
+    ] == 1
+    assert report["option_exit_comparison"]["paper_option_2r_trail_runner"][
+        "average_pnl_per_trade"
+    ] == 45.0
 
 
 def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatch):

@@ -564,3 +564,19 @@ No completed experiments recorded yet.
 - Validation: Added positive/equality and below-average/zero-volume tests; run focused strategy tests and `git diff --check`.
 - Rollback: Remove the breakout-volume condition in `_try_paper_option_range_breakout`; do not change the separate breakout enable switch or live-order controls.
 - Follow-up: Treat as a forward paper experiment, record accepted/rejected breakouts, and evaluate a predeclared unseen sample with estimated transaction costs before adoption beyond paper trading.
+
+#### EXP-2026-10-15-01 — Paper option R-based trailing exit
+
+- Status: implemented for paper option entries; outcome not yet measured.
+- Problem and evidence: The earlier `EXP-2026-10-14-03` breakout pilot used a fixed 2R exit plan. A separate exit policy is now being tested to allow favorable premium moves to continue while retaining the original stop as a hard floor. Prior breakout entry/volume replay results do not measure this exit policy.
+- Prior related entries checked: `EXP-2026-10-14-03` (paper option range-breakout entry and exit pilot) and `EXP-2026-10-14-04` (breakout-candle volume filter).
+- Hypothesis: For paper CE/PE trades, activating a trailing stop after a favorable 1R move and maintaining a 2R gap from the best premium reached may capture further favorable movement while retaining the initial stop as the maximum-risk floor.
+- Single variable being changed: Paper option exit policy. Entry signals, sizing, and initial stop rules remain as before; runner positions do not use staged targets, the reference take-profit/timebox, or signal-reversal exits. The market-close exit remains in force.
+- Code/config before: Paper options used their existing staged-target or configured fixed-target exit behavior. Existing runner parameters are now set to `paper_option_trail_activation_r: 1.0` and `paper_option_trail_gap_r: 2.0`; runner behavior is gated to paper trading with live orders disabled.
+- Baseline period and metrics: No comparable closed-trade baseline for this specific runner policy was computed when recorded. Do not use the earlier breakout entry/volume replay P&L as its baseline or outcome.
+- Test method and fixed evaluation period/sample: No historical exit replay has yet been run. Evaluate separately tagged forward paper runner trades against the prior exit policy on comparable trades, including costs where available; collect at least 10 closed paper trades as the minimum screening sample, not as proof of an edge.
+- Change made: Paper option positions track favorable high/low-water marks; the trailing state activates at the configured R threshold and ratchets at the configured R gap without crossing the initial stop. State is persisted for reporting/recovery. Live-order behavior is unchanged.
+- Results: None available yet. No profitability, loss-reduction, or expectancy claim is made.
+- Decision and evidence: Keep as a paper-only experiment while collecting prospective evidence. The policy changes exit behavior beyond the previous breakout-only context, so keep runner trades separately identifiable and do not combine their results with the prior breakout-volume experiment.
+- Rollback: Restore the previous paper option exit selection in `_handle_buy_signal` and `_handle_sell_signal`; leave entry filters, sizing, and live-order controls unchanged.
+- Follow-up: Review separately tagged closed runner trades and compare exit prices/P&L against the prior exit policy under the same sample and cost assumptions. Reconsider only after recording the sample size, gross and cost-adjusted metrics, and any adverse cases.

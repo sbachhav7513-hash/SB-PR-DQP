@@ -82,6 +82,11 @@ class PaperTradingRecorder:
         "current_signal_score", "decision_window_minutes",
         "weak_signal_adverse_checks",
         "trailing_enabled",
+        "runner_activation_r",
+        "runner_gap_r",
+        "highest_price",
+        "lowest_price",
+        "trailing_active",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",

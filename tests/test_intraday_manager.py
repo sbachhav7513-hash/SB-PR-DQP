@@ -78,6 +78,12 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     position = bot.intraday_manager.active_positions["NIFTY_CE"]
     assert position["entry_price"] == 123.0
     assert position["stop_loss"] == pytest.approx(110.7)
+    assert position["take_profit"] == pytest.approx(147.6)
+    assert position["staged_targets_enabled"] is False
+    assert position["trailing_enabled"] is True
+    assert position["exit_strategy"] == "paper_option_2r_trail_runner"
+    assert position["runner_activation_r"] == 1.0
+    assert position["runner_gap_r"] == 2.0
 
 
 def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
@@ -175,7 +181,7 @@ def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
     bot._handle_buy_signal.assert_not_called()
 
 
-def test_paper_range_breakout_exit_plan_sizes_by_range_risk_and_keeps_fixed_target():
+def test_paper_range_breakout_uses_2r_trail_runner_with_range_risk_sizing():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
@@ -229,11 +235,14 @@ def test_paper_range_breakout_exit_plan_sizes_by_range_risk_and_keeps_fixed_targ
     position = bot.intraday_manager.active_positions["NIFTY_CE"]
     assert position["stop_loss"] == 26.5
     assert position["take_profit"] == pytest.approx(31.75)
-    assert position["trailing_enabled"] is False
-    assert position["exit_strategy"] == "paper_range_breakout_2r"
+    assert position["trailing_enabled"] is True
+    assert position["staged_targets_enabled"] is False
+    assert position["exit_strategy"] == "paper_option_2r_trail_runner"
+    assert position["runner_activation_r"] == 1.0
+    assert position["runner_gap_r"] == 2.0
 
 
-def test_paper_range_breakout_uses_per_position_target_instead_of_global_trailing():
+def test_option_trail_runner_ignores_reference_target_and_timebox():
     manager = IntradayManager(trailing_enabled=True)
     manager.register_position(
         "NIFTY_CE",
@@ -242,8 +251,8 @@ def test_paper_range_breakout_uses_per_position_target_instead_of_global_trailin
         28.25,
         26.5,
         31.75,
-        trailing_enabled=False,
-        exit_strategy="paper_range_breakout_2r",
+        trailing_enabled=True,
+        exit_strategy="paper_option_2r_trail_runner",
     )
     manager.milestone_timebox_expired = Mock(return_value=True)
     bot = object.__new__(KiteTradingBot)
@@ -252,9 +261,123 @@ def test_paper_range_breakout_uses_per_position_target_instead_of_global_trailin
 
     result = bot._check_position_exit("NIFTY_CE", 31.75)
 
-    assert result == "TAKE_PROFIT"
-    bot._close_position.assert_called_once_with("NIFTY_CE", 31.75, "TAKE_PROFIT")
+    assert result is None
+    bot._close_position.assert_not_called()
     manager.milestone_timebox_expired.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("direction", "entry", "stop", "reference", "activation_price", "high_or_low", "expected_stop"),
+    [
+        ("BUY", 100.0, 90.0, 120.0, 110.0, 130.0, 110.0),
+        ("SELL", 100.0, 110.0, 80.0, 90.0, 70.0, 90.0),
+    ],
+)
+def test_option_trail_runner_activates_at_1r_and_ratchets_at_2r_gap(
+    direction, entry, stop, reference, activation_price, high_or_low, expected_stop
+):
+    manager = IntradayManager(trailing_enabled=False)
+    manager.register_position(
+        "NIFTY_CE",
+        direction,
+        1,
+        entry,
+        stop,
+        reference,
+        trailing_enabled=True,
+        exit_strategy="paper_option_2r_trail_runner",
+    )
+
+    assert manager.update_trailing_stop("NIFTY_CE", activation_price) == stop
+    assert manager.active_positions["NIFTY_CE"]["trailing_active"] is True
+    assert manager.update_trailing_stop("NIFTY_CE", high_or_low) == expected_stop
+
+
+def test_option_trail_runner_keeps_initial_stop_as_floor_and_stop_reason():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_2r_trail_runner",
+    )
+    manager.update_trailing_stop("NIFTY_CE", 110.0)
+    assert manager.active_positions["NIFTY_CE"]["trailing_stop"] == 90.0
+
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY_CE", 89.0) == "STOP_LOSS"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 89.0, "STOP_LOSS")
+
+
+def test_option_trail_runner_state_is_persisted_when_high_water_changes():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_2r_trail_runner",
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.trade_journal = Mock()
+    bot.trade_journal.update_open_trade.return_value = True
+
+    assert bot._check_position_exit("NIFTY_CE", 110.0) is None
+
+    bot.trade_journal.update_open_trade.assert_called_once()
+    args = bot.trade_journal.update_open_trade.call_args.args
+    assert args[0] == "NIFTY_CE"
+    assert args[1]["highest_price"] == 110.0
+    assert args[1]["trailing_active"] is True
+    assert args[1]["trailing_stop"] == 90.0
+    assert args[2] == "BUY"
+    assert manager.active_positions["NIFTY_CE"]["runner_persistence_pending"] is False
+
+
+def test_option_trail_runner_ignores_opposite_signal_until_exit_rule_triggers():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"trading_mode": "intraday_options"}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={
+            "NIFTY_CE": {"direction": "BUY", "exit_strategy": "paper_option_2r_trail_runner"}
+        }
+    )
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.side_effect = [None, {"action": "BUY"}]
+    bot._close_position = Mock()
+
+    assert bot._handle_sell_signal("NIFTY_CE", 105.0, 80) == "runner_position_active"
+    bot._close_position.assert_not_called()
+
+
+def test_option_trail_runner_is_forced_out_by_market_close():
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = SimpleNamespace(
+        get_all_open_positions=Mock(
+            return_value={"NIFTY_CE": {"entry_price": 100.0}}
+        )
+    )
+    bot.latest_prices = {"NIFTY_CE": 115.0}
+    bot._close_position = Mock()
+
+    bot._handle_market_close_exit()
+
+    bot._close_position.assert_called_once_with(
+        "NIFTY_CE", 115.0, "MARKET_CLOSE_FORCED_EXIT"
+    )
 
 
 def test_paper_range_breakout_never_runs_when_live_orders_are_enabled():
@@ -647,6 +770,47 @@ def test_paper_open_position_restore_reserves_daily_risk():
 
     assert set(bot.intraday_manager.active_positions) == {"NIFTY_CE"}
     assert bot.intraday_manager.available_daily_risk() == pytest.approx(38.0)
+
+
+def test_paper_runner_restore_reinstates_trailing_state():
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_milestone_pct": 0.10, "strong_signal_score": 82}
+    bot.intraday_manager = IntradayManager()
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    bot._restore_paper_positions(
+        [
+            {
+                "ticker": "NIFTY_CE",
+                "action": "BUY",
+                "quantity": 65,
+                "entry": 100.0,
+                "stop_loss": 90.0,
+                "take_profit": 120.0,
+                "status": "open",
+                "timestamp": now.isoformat(),
+                "exit_strategy": "paper_option_2r_trail_runner",
+                "trailing_enabled": True,
+                "runner_activation_r": 1.0,
+                "runner_gap_r": 2.0,
+                "highest_price": 135.0,
+                "lowest_price": 100.0,
+                "trailing_stop": 115.0,
+                "trailing_active": True,
+            }
+        ]
+    )
+
+    position = bot.intraday_manager.active_positions["NIFTY_CE"]
+    assert position["highest_price"] == 135.0
+    assert position["lowest_price"] == 100.0
+    assert position["trailing_stop"] == 115.0
+    assert position["trailing_active"] is True
+    assert position["runner_activation_r"] == 1.0
+    assert position["runner_gap_r"] == 2.0
 
 
 def test_paper_trade_mark_is_persisted_and_throttled(tmp_path):
@@ -1375,6 +1539,7 @@ def test_option_sizing_requires_two_risk_qualified_lots_and_caps_at_three():
 def test_option_trade_risk_is_capped_at_one_lot_premium_value():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
+        "trading_mode": "intraday_options",
         "option_min_lots": 1,
         "option_max_lots": 3,
         "option_max_risk_per_lot_pct": 20.0,

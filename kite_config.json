@@ -6,6 +6,8 @@
   "paper_option_range_breakout_enabled": true,
   "paper_option_range_lookback_bars": 15,
   "paper_option_range_target_r": 2.0,
+  "paper_option_trail_activation_r": 1.0,
+  "paper_option_trail_gap_r": 2.0,
   "paper_allow_trend_continuation": true,
   "paper_option_min_candle_body_ratio": 0.60,
   "live_orders_enabled": false,
@@ -34,7 +36,7 @@
     "LT": 5,
     "TATAMOTORS": 5
   },
-  "option_max_strike_distance_pct": 0.5,
+  "option_max_strike_distance_pct": 1.0,
   "auto_discover_futures": false,
   "max_futures": 10,
   "min_futures_volume": 0,

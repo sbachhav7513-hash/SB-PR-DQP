@@ -1,5 +1,12 @@
 # Trading Accuracy & Reliability Analysis
 
+> **Evidence warning (2026-10-15):** This is a historical analysis draft, not
+> validated strategy research. Its win-rate, confidence, risk, and profit
+> estimates are not supported by reproducible out-of-sample or forward results;
+> treat them as unverified, not as current measurements or live-trading
+> guidance. See [README_RELIABILITY.md](README_RELIABILITY.md) for the current
+> deployment verdict.
+
 ## Paper-only trend continuation experiment
 
 `kite_config.json` enables `paper_allow_trend_continuation` for paper trading.
@@ -16,19 +23,20 @@ next daily review before making any further changes.
 
 ### 🔴 **WARNING: NOT YET PRODUCTION-READY**
 
-The current bot has **good fundamentals but needs accuracy improvements** before live trading.
+The current bot's live readiness and strategy performance have not been
+established by the figures in this draft.
 
 ---
 
 ## Reliability Scoring
 
-| Component | Reliability | Risk Level | Notes |
+| Component | Evidence | Risk Level | Notes |
 |-----------|-------------|-----------|-------|
-| **Signal Generation** | ⭐⭐⭐ (60%) | HIGH | Too many false signals |
-| **Risk Management** | ⭐⭐⭐⭐ (80%) | MEDIUM | Good SL/TP, but timing issues |
-| **Entry Accuracy** | ⭐⭐⭐ (65%) | HIGH | Whipsaws common |
-| **Exit Logic** | ⭐⭐⭐ (70%) | MEDIUM | Auto close works, but timing late |
-| **Overall** | ⭐⭐⭐ (65%) | HIGH | Needs improvements |
+| **Signal Generation** | Not measured | Unknown | Requires out-of-sample evaluation |
+| **Risk Management** | Not independently validated | Unknown | Unit tests do not validate broker execution |
+| **Entry Accuracy** | Not measured | Unknown | Requires forward paper-trade evidence |
+| **Exit Logic** | Not independently validated | Unknown | Requires execution and recovery testing |
+| **Overall** | Not established | Unknown | Not approved for live trading |
 
 ---
 
@@ -66,7 +74,7 @@ Current Score Weights:
 Problem:
 - Heavily favors momentum continuation
 - Doesn't adapt to range-bound markets
-- High false signal rate in sideways markets (~70%)
+- False-signal rate in sideways markets has not been measured
 ```
 
 **Solution**: Add volatility-based signal filters
@@ -81,8 +89,8 @@ Current: Always tries to trade
 - Does NOT adjust for liquidity conditions
 
 Risk:
-- Trades heavily during opening hour (high volatility, low accuracy)
-- Trades during closing hour (forced exits, slippage)
+- May trade during opening or closing periods; the effect on accuracy and
+  execution costs must be measured
 - Misses best trading conditions (9:30-3:00 PM)
 ```
 
@@ -97,12 +105,8 @@ Current Thresholds:
 - HOLD below that
 
 Problem:
-Score 85 = ~70% confidence, not 95%
-
-Test Results (estimated):
-Score 85: ~45% win rate (bad)
-Score 90: ~65% win rate (better)
-Score 95: ~80% win rate (good)
+The strategy score is not a calibrated probability. No verified mapping from
+score thresholds to win rate is available.
 ```
 
 **Solution**: Increase threshold to 90, add confirmation filters
@@ -121,43 +125,18 @@ Solution:
 5-min candle: Must also be in uptrend
 15-min candle: Must not be overbought
 
-Result: 40% fewer false signals
+Result: Unknown; test as a hypothesis on unseen data
 ```
 
 ---
 
-## Win Rate Analysis
+## Performance Evidence
 
-### Current Expected Performance (Estimated)
-
-```
-Assumptions:
-- Entry at signal (best case)
-- Exit at TP or SL
-- Account: ₹100,000
-- Risk per trade: 1%
-- 10 trades per day (intraday)
-
-Scenario 1: 50% Win Rate (CURRENT)
-Average win: +₹1,000
-Average loss: -₹1,000
-Daily P&L: (5 wins - 5 losses) = ₹0 (break even)
-Monthly: ₹0 - commissions = -₹5,000 (loss)
-
-Scenario 2: 60% Win Rate (WITH IMPROVEMENTS)
-Average win: +₹1,000
-Average loss: -₹1,000
-Daily P&L: (6 wins - 4 losses) = +₹2,000
-Monthly: +₹40,000 (profit)
-Yearly: +₹480,000 (excellent)
-
-Scenario 3: 55% Win Rate (REALISTIC SHORT TERM)
-Daily P&L: (5.5 wins - 4.5 losses) = +₹1,000
-Monthly: +₹20,000
-Yearly: +₹240,000 (good)
-```
-
-**Current Issue**: ~50% win rate = break even after commissions ❌
+No verified current win rate, expectancy, or cost-adjusted P&L is established
+here. The scenario figures previously in this section were assumptions, not
+measured results, and have been removed. Measure each strategy variant on
+unseen paper sessions and account for fees, spread, slippage, partial fills,
+and drawdown before drawing conclusions.
 
 ---
 
@@ -193,7 +172,7 @@ if volatility > 0.05:  # Market is wild (> 5% movement)
 # Only trade when 1% < volatility < 5% ✅
 ```
 
-**Expected Improvement**: 40% fewer false signals ⬆️
+**Measured performance effect**: Not established
 
 ---
 
@@ -227,7 +206,7 @@ class TradeManager:
         return True
 ```
 
-**Expected Improvement**: Reduces whipsaws by 60% ⬆️
+**Measured performance effect**: Not established
 
 ---
 
@@ -260,7 +239,7 @@ def validate_entry(self, signal, current_bar, previous_bar):
     return False
 ```
 
-**Expected Improvement**: Eliminates 20% bad entries ⬆️
+**Measured performance effect**: Not established
 
 ---
 
@@ -295,7 +274,7 @@ if signal == "SELL":
         confidence += 15  # Increase if overbought (pullback expected)
 ```
 
-**Expected Improvement**: 25% better accuracy ⬆️
+**Measured performance effect**: Not established
 
 ---
 
@@ -305,19 +284,19 @@ if signal == "SELL":
 
 1. **Add Volatility Filter**
    - Skip trades when ATR/price < 1% or > 5%
-   - Expected improvement: -40% false signals
+   - Performance effect: unknown until independently evaluated
 
 2. **Increase Score Threshold**
    - Change from 85 to 90+ for entry
-   - Expected improvement: +15% win rate
+   - Performance effect: unknown until independently evaluated
 
 3. **Add Confirmation Candle**
    - Wait for next bar to confirm direction
-   - Expected improvement: -20% bad entries
+   - Performance effect: unknown until independently evaluated
 
 4. **Add Cooldown Period**
    - 5-minute wait between entries (same symbol)
-   - Expected improvement: -60% whipsaws
+   - Performance effect: unknown until independently evaluated
 
 ---
 
@@ -325,20 +304,20 @@ if signal == "SELL":
 
 1. **Add Multiple Timeframe Confirmation**
    - 1-min + 5-min + 15-min alignment
-   - Expected improvement: +20% accuracy
+   - Performance effect: unknown until independently evaluated
 
 2. **Fix RSI Direction Logic**
    - Use different thresholds for BUY vs SELL
-   - Expected improvement: +15% accuracy
+   - Performance effect: unknown until independently evaluated
 
 3. **Add Time-Based Filters**
    - Avoid 9:15-9:30 (opening volatility)
    - Avoid 3:15-3:30 (closing volatility)
-   - Expected improvement: -50% opening/closing losses
+   - Performance effect: unknown until independently evaluated
 
 4. **Add Liquidity Check**
    - Skip illiquid symbols (BANKNIFTY after 3 PM)
-   - Expected improvement: -30% slippage issues
+   - Performance effect: unknown until independently evaluated
 
 ---
 
@@ -346,11 +325,11 @@ if signal == "SELL":
 
 1. **Machine Learning Signal Enhancement**
    - Combine with technical indicators
-   - Expected improvement: +10-15% accuracy
+   - Performance effect: unknown until independently evaluated
 
 2. **Sentiment Analysis**
    - Combine with market news/social signals
-   - Expected improvement: +5% accuracy
+   - Performance effect: unknown until independently evaluated
 
 3. **Trade Statistics Dashboard**
    - Real-time win rate monitoring
@@ -358,107 +337,13 @@ if signal == "SELL":
 
 ---
 
-## 🎯 Accuracy Improvement Roadmap
+## Evaluation Roadmap
 
-### **Week 1: Quick Fixes** (Easy, High Impact)
-```
-Estimated Win Rate: 50% → 60%
-Required Changes: 4 code edits
-Time: 2-3 hours
-
-Changes:
-1. Add ATR-based volatility filter
-2. Increase score threshold to 90
-3. Add confirmation candle check
-4. Add 5-minute cooldown
-```
-
-### **Week 2: Medium Fixes** (Medium, Medium Impact)
-```
-Estimated Win Rate: 60% → 70%
-Required Changes: 6 code edits
-Time: 4-5 hours
-
-Changes:
-1. Multi-timeframe confirmation
-2. Fix RSI direction logic
-3. Add time-based filters
-4. Liquidity checks
-5. Market condition detection
-6. Better SL placement
-```
-
-### **Week 3: Advanced Fixes** (Hard, Lower Impact)
-```
-Estimated Win Rate: 70% → 75%
-Required Changes: Machine learning models
-Time: 10+ hours
-
-Changes:
-1. ML signal enhancement
-2. Pattern recognition
-3. Advanced risk management
-```
-
----
-
-## 📊 Expected Performance After Improvements
-
-### Before Improvements (Current)
-```
-Win Rate: ~50%
-Avg Win: ₹1,000
-Avg Loss: -₹1,000
-Monthly P&L: -₹5,000 (loss)
-Win/Loss Ratio: 1:1
-
-Issues:
-- 50% chance of losing money
-- Commissions make it worse
-- NOT suitable for live trading
-```
-
-### After Week 1 Fixes
-```
-Win Rate: ~60%
-Avg Win: ₹1,100 (better entries)
-Avg Loss: -₹800 (earlier SL)
-Monthly P&L: +₹20,000 (profit)
-Win/Loss Ratio: 1.5:1
-
-Improvements:
-- 60% profitable trades
-- Covers commissions
-- Suitable for LIVE trading with caution
-```
-
-### After Week 2 Fixes
-```
-Win Rate: ~70%
-Avg Win: ₹1,200
-Avg Loss: -₹600
-Monthly P&L: +₹48,000 (strong profit)
-Win/Loss Ratio: 2:1
-
-Status:
-- Consistent profits
-- Low risk of drawdown
-- Suitable for CONFIDENT LIVE trading
-```
-
-### After Week 3 Fixes
-```
-Win Rate: ~75%
-Avg Win: ₹1,300
-Avg Loss: -₹500
-Monthly P&L: +₹80,000 (excellent)
-Win/Loss Ratio: 2.6:1
-
-Status:
-- Highly reliable
-- Professional-grade
-- Ready for scaling
-```
+Treat each proposed filter or strategy change as an experiment. Change one
+variable at a time, preserve an untouched evaluation period, report sample
+size and uncertainty, and include realistic trading costs and adverse
+execution. No particular win rate, profit, or timeline is forecast by this
+guide.
 
 ---
 
@@ -488,17 +373,11 @@ python backtest.py --symbol NIFTY --date 2024-01-15 --hours 3
 - Sharpe ratio
 ```
 
-### Test 3: Small Live Trading (₹10,000 account)
-```bash
-# Trade 1 lot per signal
-# Risk only ₹100-₹200 per trade
-# Run for 2-4 weeks
+### Test 3: Live trading
 
-# Minimum requirement for larger capital:
-- 60%+ win rate
-- Positive Sharpe ratio
-- < 15% max drawdown
-```
+Live trading is not approved by this guide. Do not enable live orders based on
+the scenarios or thresholds below. See
+[README_RELIABILITY.md](README_RELIABILITY.md) for the current deployment gate.
 
 ---
 
@@ -506,13 +385,15 @@ python backtest.py --symbol NIFTY --date 2024-01-15 --hours 3
 
 ### ✅ Required:
 1. **Backtesting Results**
-   - 55%+ win rate on 100+ trades
-   - Positive expectancy (avg win > avg loss)
+   - Use a predeclared, unseen evaluation sample and realistic fees, spread,
+     slippage, and partial-fill assumptions
+   - Report expectancy, drawdown, sample size, and uncertainty; no win-rate
+     threshold by itself proves profitability
 
 2. **Paper Trading**
    - 2+ weeks of testing
-   - Win rate > 50%
-   - No major drawdown events
+   - Review cost-adjusted results, drawdown, operational failures, and sample
+     size; do not treat a short paper run as proof of an edge
 
 3. **Code Review**
    - All risk management in place
@@ -535,12 +416,8 @@ python backtest.py --symbol NIFTY --date 2024-01-15 --hours 3
 ## 🛡️ Risk Mitigation Strategies
 
 ### Strategy 1: Start Small
-```
-Week 1: 1 lot per signal (minimum size)
-Week 2: If profitable, increase to 2 lots
-Week 3: If still profitable, increase to 3 lots
-Week 4: Scale as comfortable
-```
+Keep position sizing within the independently approved per-trade and daily risk
+limits. Do not increase size based on a short profitable period or this guide.
 
 ### Strategy 2: Trade Only High-Liquidity Symbols
 ```
@@ -568,7 +445,8 @@ Prevents cascading losses
 ## 📋 Checklist Before Going Live
 
 - [ ] Implement Week 1 fixes (volatility filter, cooldown, threshold)
-- [ ] Run 100+ trade backtest (achieve 55%+ win rate)
+- [ ] Run an out-of-sample backtest with costs; report results without treating
+      a threshold as proof of profitability
 - [ ] Paper trade for 2 weeks (confirm signals)
 - [ ] Setup daily monitoring & alerts
 - [ ] Risk management configured (1% per trade)
@@ -584,11 +462,11 @@ Prevents cascading losses
 
 | Aspect | Status | Action |
 |--------|--------|--------|
-| **Current Accuracy** | 50% win rate | ❌ NOT ready |
-| **After Week 1 Fixes** | 60% win rate | ⚠️ READY with caution |
-| **After Week 2 Fixes** | 70% win rate | ✅ READY for live |
-| **After Week 3 Fixes** | 75% win rate | ✅ PROFESSIONAL-GRADE |
+| **Strategy performance** | Not established | No profitability claim |
+| **Automated test suite** | Does not validate live execution | Paper-only until further review |
 
-**Recommendation**: Implement **Week 1 fixes FIRST** (2-3 hours) before ANY live trading. This will give you 60%+ win rate which covers commissions.
+**Recommendation**: Do not enable live orders based on this guide or a win-rate
+threshold. See [README_RELIABILITY.md](README_RELIABILITY.md) for the current
+NO-GO verdict and remaining validation gates.
 
 Do you want me to implement these improvements? Start with Week 1 fixes?

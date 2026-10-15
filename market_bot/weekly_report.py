@@ -249,7 +249,10 @@ def _option_exit_comparison(
         if not ticker.endswith(("_CE", "_PE")):
             continue
         strategy = trade.get("exit_strategy")
-        if strategy != "tiered_milestone":
+        if strategy not in {
+            "tiered_milestone",
+            "paper_option_2r_trail_runner",
+        }:
             strategy = "fixed_20pct_baseline"
         grouped[strategy].append(trade)
 
