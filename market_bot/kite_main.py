@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from .accuracy_filters import AccuracyFilters
 from .bar_builder import BarBuilder, Bar
 from .engine import market_session_state, score_market
-from .intraday_manager import IntradayManager
+from .intraday_manager import IntradayManager, PAPER_OPTION_TRAIL_RUNNER
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
 from .risk_manager import build_risk_plan
@@ -97,6 +97,32 @@ class KiteTradingBot:
 
     def _options_enabled(self) -> bool:
         return self.config.get("trading_mode") in {"intraday_options", "intraday_both"}
+
+    def _paper_option_trail_runner_enabled(self, symbol: str) -> bool:
+        return (
+            bool(getattr(self, "paper_trading_enabled", False))
+            and not bool(getattr(self, "live_orders_enabled", False))
+            and self._options_enabled()
+            and symbol.endswith(("_CE", "_PE"))
+        )
+
+    def _paper_option_trail_runner_r_values(self) -> tuple[float, float]:
+        activation_r = float(self.config.get("paper_option_trail_activation_r", 1.0))
+        gap_r = float(self.config.get("paper_option_trail_gap_r", 2.0))
+        if (
+            not math.isfinite(activation_r)
+            or activation_r <= 0
+            or not math.isfinite(gap_r)
+            or gap_r <= 0
+        ):
+            raise ValueError(
+                "paper option trail activation and gap R values must be positive"
+            )
+        return activation_r, gap_r
+
+    @staticmethod
+    def _is_paper_option_trail_runner(position: Optional[dict]) -> bool:
+        return bool(position) and position.get("exit_strategy") == PAPER_OPTION_TRAIL_RUNNER
 
     def _option_target_increment(self) -> float:
         """Return the fixed option-premium milestone size as a fraction."""
@@ -636,6 +662,29 @@ class KiteTradingBot:
                     trade.get("trailing_enabled")
                 ),
                 exit_strategy=trade.get("exit_strategy"),
+                runner_activation_r=(
+                    float(trade["runner_activation_r"])
+                    if trade.get("runner_activation_r") is not None
+                    else None
+                ),
+                runner_gap_r=(
+                    float(trade["runner_gap_r"])
+                    if trade.get("runner_gap_r") is not None
+                    else None
+                ),
+                highest_price=(
+                    float(trade["highest_price"])
+                    if trade.get("highest_price") is not None
+                    else None
+                ),
+                lowest_price=(
+                    float(trade["lowest_price"])
+                    if trade.get("lowest_price") is not None
+                    else None
+                ),
+                trailing_active=bool(
+                    self._journal_optional_bool(trade.get("trailing_active"))
+                ),
             )
 
         if self.intraday_manager.daily_risk_exceeded():
@@ -1345,7 +1394,10 @@ class KiteTradingBot:
             and symbol in active_positions
         ):
             position = active_positions[symbol]
-            if position.get("exit_strategy") != "paper_range_breakout_2r":
+            if position.get("exit_strategy") not in {
+                PAPER_OPTION_TRAIL_RUNNER,
+                "paper_range_breakout_2r",
+            }:
                 minimum_signal_score = int(
                     position.get(
                         "minimum_signal_score",
@@ -1619,12 +1671,32 @@ class KiteTradingBot:
         if not position:
             return None
 
+        runner_state_before = None
+        if self._is_paper_option_trail_runner(position):
+            runner_state_before = (
+                position.get("highest_price"),
+                position.get("lowest_price"),
+                position.get("trailing_stop"),
+                position.get("trailing_active"),
+            )
         trailing_enabled = (
             bool(position.get("trailing_enabled"))
             if position.get("trailing_enabled") is not None
             else self.intraday_manager.trailing_enabled
         )
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
+        if runner_state_before is not None:
+            runner_state_after = (
+                position.get("highest_price"),
+                position.get("lowest_price"),
+                position.get("trailing_stop"),
+                position.get("trailing_active"),
+            )
+            if (
+                runner_state_before != runner_state_after
+                or position.get("runner_persistence_pending")
+            ):
+                self._persist_paper_option_runner_state(symbol, position)
         if position.get("target_advanced"):
             if not self._publish_target_update(symbol, position, trailing_stop):
                 self._close_position(symbol, price, "TRAILING_STOP_UPDATE_FAILED")
@@ -1642,7 +1714,8 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif (
-                position.get("exit_strategy") != "paper_range_breakout_2r"
+                not self._is_paper_option_trail_runner(position)
+                and position.get("exit_strategy") != "paper_range_breakout_2r"
                 and self.intraday_manager.milestone_timebox_expired(symbol)
             ):
                 if self._extend_paper_option_timebox(symbol, position):
@@ -1662,7 +1735,8 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif (
-                position.get("exit_strategy") != "paper_range_breakout_2r"
+                not self._is_paper_option_trail_runner(position)
+                and position.get("exit_strategy") != "paper_range_breakout_2r"
                 and self.intraday_manager.milestone_timebox_expired(symbol)
             ):
                 if self._extend_paper_option_timebox(symbol, position):
@@ -1673,6 +1747,44 @@ class KiteTradingBot:
 
         self._close_position(symbol, price, reason)
         return reason
+
+    def _persist_paper_option_runner_state(
+        self, symbol: str, position: dict
+    ) -> None:
+        journal = getattr(self, "trade_journal", None)
+        fields = {
+            "runner_activation_r": position["runner_activation_r"],
+            "runner_gap_r": position["runner_gap_r"],
+            "highest_price": position["highest_price"],
+            "lowest_price": position["lowest_price"],
+            "trailing_stop": position["trailing_stop"],
+            "trailing_active": position["trailing_active"],
+            "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        persisted = bool(
+            journal
+            and journal.update_open_trade(
+                symbol, fields, str(position["direction"])
+            )
+        )
+        if not persisted:
+            position["runner_persistence_pending"] = True
+            logger.error(
+                "[%s] Could not persist paper option runner state; retrying on next tick",
+                symbol,
+            )
+            if not position.get("runner_persistence_alerted"):
+                notifier = getattr(self, "telegram_notifier", None)
+                if notifier:
+                    notifier.send_message(
+                        f"WARNING: {symbol} paper runner state could not be saved; "
+                        "restart recovery may lose its trailing state."
+                    )
+                position["runner_persistence_alerted"] = True
+            return
+
+        position["runner_persistence_pending"] = False
+        position["runner_persistence_alerted"] = False
 
     def _option_signal_exit_threshold(self, position: dict) -> Optional[float]:
         """Percent-based deterioration threshold for option signal-health exits."""
@@ -2055,6 +2167,9 @@ class KiteTradingBot:
             symbol in self.intraday_manager.active_positions
             and self.intraday_manager.active_positions[symbol]["direction"] == "SELL"
         ):
+            opposite_position = self.intraday_manager.active_positions.get(symbol)
+            if self._is_paper_option_trail_runner(opposite_position):
+                return "runner_position_active"
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
             if (
                 symbol in self.intraday_manager.active_positions
@@ -2080,9 +2195,20 @@ class KiteTradingBot:
                 or "_" not in symbol
             ):
                 raise ValueError("Range-breakout exit plans are paper-options only")
+            paper_option_runner = self._paper_option_trail_runner_enabled(symbol)
+            runner_activation_r = None
+            runner_gap_r = None
+            if paper_option_runner:
+                try:
+                    runner_activation_r, runner_gap_r = (
+                        self._paper_option_trail_runner_r_values()
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    logger.exception("[%s] Invalid paper option trail-runner settings", symbol)
+                    return "invalid_option_trail_runner_config"
             staged_option_targets = (
                 False
-                if range_breakout_plan
+                if range_breakout_plan or paper_option_runner
                 else self._staged_option_targets_enabled(symbol)
             )
             if self._options_enabled() and "_" in symbol:
@@ -2106,10 +2232,19 @@ class KiteTradingBot:
                     ):
                         return "invalid_risk"
                     premium_stop_pct = risk_per_unit / price
-                    take_profit = price + risk_per_unit * paper_range_target_r
+                    take_profit = price + risk_per_unit * (
+                        float(runner_gap_r)
+                        if paper_option_runner
+                        else paper_range_target_r
+                    )
                 else:
                     stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
-                    take_profit = price * (1.0 + premium_target_pct)
+                    risk_per_unit = price - stop_loss
+                    take_profit = (
+                        price + risk_per_unit * float(runner_gap_r)
+                        if paper_option_runner
+                        else price * (1.0 + premium_target_pct)
+                    )
                 quantity = self._calculate_option_quantity(
                     symbol, premium, premium_stop_pct
                 )
@@ -2178,10 +2313,18 @@ class KiteTradingBot:
                 weak_signal_lockin_pct=float(
                     self.config.get("option_weak_signal_lockin_pct", 0.05)
                 ),
-                trailing_enabled=False if range_breakout_plan else None,
-                exit_strategy=(
-                    "paper_range_breakout_2r" if range_breakout_plan else None
+                trailing_enabled=(
+                    True if paper_option_runner
+                    else False if range_breakout_plan
+                    else None
                 ),
+                exit_strategy=(
+                    PAPER_OPTION_TRAIL_RUNNER if paper_option_runner
+                    else "paper_range_breakout_2r" if range_breakout_plan
+                    else None
+                ),
+                runner_activation_r=runner_activation_r,
+                runner_gap_r=runner_gap_r,
                 milestone_window_minutes=int(
                     self.config.get("option_milestone_window_minutes", 5)
                 ),
@@ -2234,7 +2377,9 @@ class KiteTradingBot:
                 option_leg=option_leg,
                 trading_symbol=trading_symbol,
                 trailing_enabled=(
-                    False
+                    True
+                    if paper_option_runner
+                    else False
                     if range_breakout_plan
                     else self.intraday_manager.trailing_enabled
                 ),
@@ -2261,7 +2406,10 @@ class KiteTradingBot:
                     }
                 )
             elif self._options_enabled() and "_" in symbol:
-                if range_breakout_plan:
+                if paper_option_runner:
+                    alert["exit_strategy"] = PAPER_OPTION_TRAIL_RUNNER
+                    alert["trailing_enabled"] = True
+                elif range_breakout_plan:
                     alert["exit_strategy"] = "paper_range_breakout_2r"
                     alert["trailing_enabled"] = False
                 else:
@@ -2274,11 +2422,25 @@ class KiteTradingBot:
             if protection_order_id:
                 alert["protection_order_id"] = protection_order_id
 
+            if paper_option_runner:
+                position = self.intraday_manager.active_positions[symbol]
+                alert.update(
+                    {
+                        "runner_activation_r": position["runner_activation_r"],
+                        "runner_gap_r": position["runner_gap_r"],
+                        "highest_price": position["highest_price"],
+                        "lowest_price": position["lowest_price"],
+                        "trailing_active": position["trailing_active"],
+                        "trailing_stop": position["trailing_stop"],
+                    }
+                )
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
+            target_label = "trail_ref" if paper_option_runner else "TP"
             logger.info(
                 f"[{symbol}] BUY ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
-                f"SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}"
+                f"SL={alert['stop_loss']:.2f}, "
+                f"{target_label}={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
             self.telegram_notifier.send_trade_alert(alert)
@@ -2302,6 +2464,9 @@ class KiteTradingBot:
             symbol in self.intraday_manager.active_positions
             and self.intraday_manager.active_positions[symbol]["direction"] == "BUY"
         ):
+            opposite_position = self.intraday_manager.active_positions.get(symbol)
+            if self._is_paper_option_trail_runner(opposite_position):
+                return "runner_position_active"
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
             if (
                 symbol in self.intraday_manager.active_positions
@@ -2315,7 +2480,22 @@ class KiteTradingBot:
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
-            staged_option_targets = self._staged_option_targets_enabled(symbol)
+            paper_option_runner = self._paper_option_trail_runner_enabled(symbol)
+            runner_activation_r = None
+            runner_gap_r = None
+            if paper_option_runner:
+                try:
+                    runner_activation_r, runner_gap_r = (
+                        self._paper_option_trail_runner_r_values()
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    logger.exception("[%s] Invalid paper option trail-runner settings", symbol)
+                    return "invalid_option_trail_runner_config"
+            staged_option_targets = (
+                False
+                if paper_option_runner
+                else self._staged_option_targets_enabled(symbol)
+            )
             if self._options_enabled() and "_" in symbol:
                 premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
                 premium_target_pct = self._option_entry_target_pct(
@@ -2324,7 +2504,12 @@ class KiteTradingBot:
                 premium = float(self.latest_prices.get(symbol, price))
                 price = premium
                 stop_loss = min(price * (1.0 + premium_stop_pct), 1e9)
-                take_profit = max(price * (1.0 - premium_target_pct), 0.01)
+                risk_per_unit = stop_loss - price
+                take_profit = (
+                    max(price - risk_per_unit * float(runner_gap_r), 0.01)
+                    if paper_option_runner
+                    else max(price * (1.0 - premium_target_pct), 0.01)
+                )
                 quantity = self._calculate_option_quantity(
                     symbol, premium, premium_stop_pct
                 )
@@ -2393,6 +2578,12 @@ class KiteTradingBot:
                 weak_signal_lockin_pct=float(
                     self.config.get("option_weak_signal_lockin_pct", 0.05)
                 ),
+                trailing_enabled=True if paper_option_runner else None,
+                exit_strategy=(
+                    PAPER_OPTION_TRAIL_RUNNER if paper_option_runner else None
+                ),
+                runner_activation_r=runner_activation_r,
+                runner_gap_r=runner_gap_r,
                 milestone_window_minutes=int(
                     self.config.get("option_milestone_window_minutes", 5)
                 ),
@@ -2444,7 +2635,11 @@ class KiteTradingBot:
                 mode=mode,
                 option_leg=option_leg,
                 trading_symbol=trading_symbol,
-                trailing_enabled=self.intraday_manager.trailing_enabled,
+                trailing_enabled=(
+                    True
+                    if paper_option_runner
+                    else self.intraday_manager.trailing_enabled
+                ),
             )
             alert["pnl"] = 0.0
             alert["status"] = "open"
@@ -2468,7 +2663,11 @@ class KiteTradingBot:
                     }
                 )
             elif self._options_enabled() and "_" in symbol:
-                alert["exit_strategy"] = "fixed_20pct"
+                if paper_option_runner:
+                    alert["exit_strategy"] = PAPER_OPTION_TRAIL_RUNNER
+                    alert["trailing_enabled"] = True
+                else:
+                    alert["exit_strategy"] = "fixed_20pct"
             if order_id:
                 alert["order_id"] = order_id
             protection_order_id = self.intraday_manager.active_positions[symbol].get(
@@ -2477,11 +2676,25 @@ class KiteTradingBot:
             if protection_order_id:
                 alert["protection_order_id"] = protection_order_id
 
+            if paper_option_runner:
+                position = self.intraday_manager.active_positions[symbol]
+                alert.update(
+                    {
+                        "runner_activation_r": position["runner_activation_r"],
+                        "runner_gap_r": position["runner_gap_r"],
+                        "highest_price": position["highest_price"],
+                        "lowest_price": position["lowest_price"],
+                        "trailing_active": position["trailing_active"],
+                        "trailing_stop": position["trailing_stop"],
+                    }
+                )
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
+            target_label = "trail_ref" if paper_option_runner else "TP"
             logger.info(
                 f"[{symbol}] SELL ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
-                f"SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}"
+                f"SL={alert['stop_loss']:.2f}, "
+                f"{target_label}={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
             self.telegram_notifier.send_trade_alert(alert)

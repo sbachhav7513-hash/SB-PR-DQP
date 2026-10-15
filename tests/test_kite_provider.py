@@ -546,6 +546,7 @@ def test_option_quality_gate_rejects_invalid_or_unavailable_quotes():
 def test_on_tick_stores_timestamp_required_by_option_quality_gate():
     bot = object.__new__(KiteTradingBot)
     bot.config = {"trading_mode": "intraday_options"}
+    bot.paper_trading_enabled = False
     bot.symbol_map = {101: "NIFTY_CE"}
     bot.latest_prices = {}
     bot.option_quote_cache = {}

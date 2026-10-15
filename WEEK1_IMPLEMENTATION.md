@@ -1,8 +1,15 @@
 # Week 1 Implementation Guide - Accuracy Improvements
 
+> **Evidence warning (2026-10-15):** This is a historical proposal, not a
+> measured performance report. All win-rate, accuracy, trade-count, and rupee
+> impact figures below are unsupported estimates and must not be treated as
+> expected results or a live-trading approval. The current live-trading status
+> is recorded in [README_RELIABILITY.md](README_RELIABILITY.md).
+
 ## Summary of Changes
 
-Quick fixes to improve win rate from **50% → 60%** (break-even → profitable)
+Proposed filters for paper evaluation. Their effect on win rate and profitability
+has not been established.
 
 ---
 
@@ -90,48 +97,11 @@ def on_bar_complete(self, token_str: str, bar: Bar) -> None:
 
 ---
 
-## Expected Improvements
+## Hypotheses to Measure — Not Performance Expectations
 
-### Trade Count Impact
-
-```
-Before: 20 trades per day
-After: 12 trades per day (-40%)
-
-Reason:
-- Removed low-confidence signals
-- Added cooldown periods
-- Skipped choppy/volatile periods
-```
-
-### Win Rate Impact
-
-```
-Before: 50% (10 wins, 10 losses)
-After: 60% (7-8 wins, 4-5 losses)
-
-Why 60%?
-- Filter 1 (Volatility): +5%
-- Filter 2 (Confirmation): +3%
-- Filter 3 (Threshold): +2%
-Total: +10% improvement
-```
-
-### Daily P&L Impact
-
-```
-Before:
-- 20 trades × 50% win = 10 wins, 10 losses
-- P&L: (10 × ₹1,000) - (10 × ₹1,000) = ₹0
-- After commissions: -₹300 LOSS
-
-After:
-- 12 trades × 60% win = 7-8 wins, 4-5 losses
-- P&L: (8 × ₹1,000) - (4 × ₹1,000) = ₹4,000
-- After commissions: ₹3,800 PROFIT ✅
-
-Monthly: ₹3,800 × 22 = ₹83,600 profit
-```
+The filters may reduce the number of entries, but the magnitude and effect on
+returns are unknown. Record accepted and rejected signals and evaluate them on
+unseen paper sessions with fees, spread, and slippage included.
 
 ---
 
@@ -161,8 +131,7 @@ Too high (dangerous):
 - Skipped ❌
 ```
 
-**False signal reduction**: -40%
-**Win rate improvement**: +5%
+**Measured performance effect**: Not established
 
 ---
 
@@ -189,8 +158,7 @@ Alternative:
 - Signal rejected (false alarm avoided)
 ```
 
-**False signal reduction**: -20%
-**Win rate improvement**: +3%
+**Measured performance effect**: Not established
 
 ---
 
@@ -198,20 +166,18 @@ Alternative:
 
 **What it does**:
 - Raises entry threshold from 85 to 90
-- Only high-confidence signals get entries
+- Only signals meeting the configured score threshold are considered
 
 **Example**:
 ```
-Score 85 = "maybe could work" (bad, 45% win rate)
-Score 90 = "definitely should work" (good, 65% win rate)
-Score 95 = "very strong signal" (excellent, 80% win rate)
+The score is not a calibrated probability; no verified mapping from score to
+win rate is available.
 
 Change: Only accept 90+
 Result: Better signals, fewer false entries
 ```
 
-**False signal reduction**: -15%
-**Win rate improvement**: +2%
+**Measured performance effect**: Not established
 
 ---
 
@@ -233,8 +199,7 @@ Result: Better signals, fewer false entries
         BUY signal (entry #2 allowed) ✅
 ```
 
-**Whipsaw reduction**: -60%
-**Win rate improvement**: +2%
+**Measured performance effect**: Not established
 
 ---
 
@@ -257,8 +222,7 @@ Result: Better signals, fewer false entries
       (Closing hour rush)
 ```
 
-**Loss avoidance**: -25%
-**Win rate improvement**: +1%
+**Measured performance effect**: Not established
 
 ---
 
@@ -287,18 +251,17 @@ if not can_trade:
 ### Phase 3: Test with Paper Trading (1+ week)
 ```bash
 # Run bot on paper trading account
-# Track metrics:
-- Trade count (expect -40%)
-- Win rate (expect +10%)
-- P&L (expect profit instead of loss)
+# Track trade count, win rate, costs, drawdown, and rejected signals against a
+# predeclared baseline. No improvement is assumed.
 ```
 
-### Phase 4: Go Live (after confirming 60%+ win rate)
-```bash
-# Start with 1 lot minimum
-# Monitor closely for first week
-# Scale if profitable
-```
+### Phase 4: Live-trading decision
+
+Do not use a win-rate threshold alone to authorize live orders. The figures in
+this historical guide are not validated. Live use requires independent review
+of cost-adjusted forward results, risk limits, broker execution and recovery,
+and an explicit operator decision. See
+[README_RELIABILITY.md](README_RELIABILITY.md); the current verdict is NO-GO.
 
 ---
 
@@ -312,7 +275,7 @@ if not can_trade:
 - [ ] Time extraction added
 - [ ] Filters properly reject weak signals
 - [ ] Paper trading run for 3+ days
-- [ ] Win rate improved to 55%+ minimum
+- [ ] Record performance and costs without treating a minimum win rate as proof
 - [ ] Trade journal shows expected pattern
 - [ ] All features working without errors
 
@@ -323,8 +286,8 @@ if not can_trade:
 ### Daily Checks
 ```
 1. Open bot logs
-2. Count trades (should be -40% fewer)
-3. Check P&L (should be positive)
+2. Count trades and compare with the predeclared baseline
+3. Review cost-adjusted P&L; do not assume it will be positive
 4. Verify filters working (see reject messages)
 ```
 
@@ -344,7 +307,7 @@ with open('trades.jsonl') as f:
             losses += 1
 
 win_rate = wins / (wins + losses) * 100
-print(f"Win rate: {win_rate:.1f}%")  # Should be 55-60%+
+print(f"Win rate: {win_rate:.1f}%")  # Descriptive metric, not a go-live gate
 ```
 
 ### Monthly Analysis
@@ -371,13 +334,12 @@ Fix: Adjust thresholds:
 - Reduce cooldown to 300 seconds (already minimum)
 ```
 
-### Issue: Still Low Win Rate (<55%)
+### Issue: No measurable performance improvement
+
 ```
-Cause: Filters not helping enough
-Fix: Add Week 2 improvements:
-- Multi-timeframe confirmation
-- Better RSI logic
-- Volume-based filters
+Cause: The filter hypothesis was not supported by the observed sample
+Fix: Preserve the result, check data quality and costs, and avoid tuning on the
+same evaluation sessions
 ```
 
 ### Issue: Missing Good Trades
@@ -422,7 +384,8 @@ python run_kite_bot.py
 1. **After Week 1 (Today)**
    - Implement these 5 filters
    - Run paper trading 3+ days
-   - Confirm 55%+ win rate
+   - Record costs, drawdown, sample size, and outcomes; do not use one win-rate
+     threshold as proof of profitability or live-trading approval
 
 2. **After Week 2**
    - Add multi-timeframe confirmation
@@ -437,7 +400,7 @@ python run_kite_bot.py
 ---
 
 **Estimated time to implement: 2-3 hours**
-**Expected improvement: 50% → 60% win rate (+₹3,800/day profit)**
+**Measured performance effect: none established**
 **Difficulty: Easy to Medium**
 
 Ready to implement? This is the critical first step! 🚀

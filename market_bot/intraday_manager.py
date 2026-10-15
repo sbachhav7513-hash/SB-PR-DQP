@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+PAPER_OPTION_TRAIL_RUNNER = "paper_option_2r_trail_runner"
 
 
 class IntradayManager:
@@ -375,9 +376,29 @@ class IntradayManager:
         weak_signal_adverse_checks: int = 0,
         trailing_enabled: Optional[bool] = None,
         exit_strategy: Optional[str] = None,
+        runner_activation_r: Optional[float] = None,
+        runner_gap_r: Optional[float] = None,
+        highest_price: Optional[float] = None,
+        lowest_price: Optional[float] = None,
+        trailing_active: bool = False,
     ) -> None:
         """Register a new position."""
         target_distance = abs(take_profit - entry_price)
+        initial_risk_distance = abs(entry_price - stop_loss)
+        if exit_strategy == PAPER_OPTION_TRAIL_RUNNER:
+            runner_activation_r = float(
+                1.0 if runner_activation_r is None else runner_activation_r
+            )
+            runner_gap_r = float(2.0 if runner_gap_r is None else runner_gap_r)
+            if (
+                not math.isfinite(runner_activation_r)
+                or runner_activation_r <= 0
+                or not math.isfinite(runner_gap_r)
+                or runner_gap_r <= 0
+                or not math.isfinite(initial_risk_distance)
+                or initial_risk_distance <= 0
+            ):
+                raise ValueError("Invalid risk or R multiple for option trail runner")
         registered_at = self._normalize_position_time(entry_time)
         strong_threshold = int(strong_signal_score)
         entry_score = int(signal_score) if signal_score is not None else None
@@ -395,6 +416,7 @@ class IntradayManager:
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "initial_target_distance": target_distance,
+            "initial_risk_distance": initial_risk_distance,
             "signal_score": entry_score,
             "current_signal_score": (
                 int(current_signal_score)
@@ -409,6 +431,8 @@ class IntradayManager:
             "weak_signal_adverse_checks": max(int(weak_signal_adverse_checks), 0),
             "trailing_enabled": trailing_enabled,
             "exit_strategy": exit_strategy,
+            "runner_activation_r": runner_activation_r,
+            "runner_gap_r": runner_gap_r,
             "milestone_window_minutes": max(int(milestone_window_minutes), 1),
             "strong_milestone_window_minutes": max(
                 int(strong_milestone_window_minutes), 1
@@ -418,10 +442,14 @@ class IntradayManager:
             "milestone_reached_pct": max(int(target_stage), 0)
             * max(float(target_increment_pct), 0.0)
             * 100.0,
-            "highest_price": entry_price,
-            "lowest_price": entry_price,
+            "highest_price": (
+                entry_price if highest_price is None else float(highest_price)
+            ),
+            "lowest_price": (
+                entry_price if lowest_price is None else float(lowest_price)
+            ),
             "trailing_stop": trailing_stop,
-            "trailing_active": False,
+            "trailing_active": bool(trailing_active),
             "entry_time": registered_at,
             "milestone_started_at": self._normalize_position_time(
                 milestone_started_at or registered_at
@@ -448,10 +476,58 @@ class IntradayManager:
             return None
 
         position["target_advanced"] = False
-        if position.get("staged_targets_enabled"):
+        if (
+            position.get("staged_targets_enabled")
+            and position.get("exit_strategy") != PAPER_OPTION_TRAIL_RUNNER
+        ):
             return self._update_milestone_stop(position, price, now)
 
         entry_price = float(position["entry_price"])
+        if position.get("exit_strategy") == PAPER_OPTION_TRAIL_RUNNER:
+            risk_distance = float(position["initial_risk_distance"])
+            activation_distance = (
+                risk_distance * float(position["runner_activation_r"])
+            )
+            trailing_distance = risk_distance * float(position["runner_gap_r"])
+
+            if position["direction"] == "BUY":
+                position["highest_price"] = max(
+                    float(position["highest_price"]), price
+                )
+                if position["highest_price"] - entry_price >= activation_distance:
+                    position["trailing_active"] = True
+                if not position["trailing_active"]:
+                    return None
+                candidate = max(
+                    float(position["stop_loss"]),
+                    position["highest_price"] - trailing_distance,
+                )
+                previous = position["trailing_stop"]
+                position["trailing_stop"] = (
+                    candidate
+                    if previous is None
+                    else max(float(previous), candidate)
+                )
+            else:
+                position["lowest_price"] = min(
+                    float(position["lowest_price"]), price
+                )
+                if entry_price - position["lowest_price"] >= activation_distance:
+                    position["trailing_active"] = True
+                if not position["trailing_active"]:
+                    return None
+                candidate = min(
+                    float(position["stop_loss"]),
+                    position["lowest_price"] + trailing_distance,
+                )
+                previous = position["trailing_stop"]
+                position["trailing_stop"] = (
+                    candidate
+                    if previous is None
+                    else min(float(previous), candidate)
+                )
+            return float(position["trailing_stop"])
+
         take_profit = float(position["take_profit"])
         target_distance = float(position.get("initial_target_distance", 0.0))
         if target_distance <= 0:

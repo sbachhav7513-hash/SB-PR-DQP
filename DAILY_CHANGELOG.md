@@ -679,3 +679,18 @@ Outcome / follow-up / rollback:
 - Validation: Added focused breakout-volume acceptance/rejection cases; `git diff --check` passed.
 - Limitations / avoid: This is in-sample evidence from the same three sessions used to motivate the filter, not an independent test or proof of a durable edge. The replay uses candle OHLC, excludes fees, spread, slippage, latency, and partial fills, and cannot establish executable returns. Do not promote the filter beyond paper trading or infer profitability from the positive aggregate.
 - Follow-up: Keep live orders disabled. Track separately tagged paper breakout acceptances/rejections and closed trades over a predeclared, unseen forward sample; compare gross and cost-adjusted outcomes before reconsidering the rule.
+
+#### DLY-2026-10-15-01
+
+- Reason: Add an R-based trailing exit policy for paper option trades, building on the separate range-breakout pilot's need for exits that can follow favorable premium moves.
+- Related entries checked: `DLY-2026-10-14-06` / `EXP-2026-10-14-03` (paper option range-breakout pilot); `DLY-2026-10-14-07` / `EXP-2026-10-14-04` (breakout-candle volume confirmation). Their replay results are not evidence for this distinct exit policy.
+- Files:
+  - `market_bot/intraday_manager.py` (modified): Track runner activation and high/low-water state; activate after a favorable 1R move and ratchet the stop at a 2R gap, never loosening past the initial stop.
+  - `market_bot/kite_main.py` (modified): Apply the runner to paper CE/PE entries only when paper trading is active and live orders are disabled; bypass staged targets, the reference target/timebox, and reversal exits for runner positions. The normal market-close exit remains.
+  - `market_bot/trade_journal.py` (modified): Persist runner state with open paper trades.
+  - `market_bot/weekly_report.py` (modified): Report closed-trade results grouped by the runner exit strategy.
+  - `kite_config.json` and `kite_config.example.json` (modified): Set runner activation to 1R and trailing gap to 2R.
+  - `tests/test_intraday_manager.py` and `tests/test_paper_reporting.py` (modified): Cover runner activation, ratcheting, persistence, exit handling, and report grouping.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this change and its evidence status.
+- Validation: The focused VS Code test runner first returned “No tests found”; rerunning through the project venv with `python -m pytest -q tests\test_intraday_manager.py tests\test_paper_reporting.py` passed (86 tests). `git diff --check` passed before this log entry was added.
+- Outcome / follow-up: This is an implemented paper-only exit experiment, not a measured improvement. No historical replay or prospective closed-trade outcome for this exit policy is recorded yet. Keep live orders disabled; track runner trades separately and evaluate at least the existing 10-closed-paper-trade screening minimum, with transaction costs where available.
