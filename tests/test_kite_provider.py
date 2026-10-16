@@ -185,6 +185,34 @@ def test_on_ticks_drops_non_positive_prices_before_callback():
     callback.assert_not_called()
 
 
+def test_on_ticks_extracts_best_bid_and_ask_from_kite_depth():
+    callback = Mock()
+    with patch("market_bot.kite_provider.KiteConnect"), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(api_key="key", access_token="token"),
+            on_tick_callback=callback,
+        )
+
+    stream.on_ticks(
+        None,
+        [{
+            "instrument_token": 100,
+            "timestamp": 1700000000,
+            "last_price": 100.0,
+            "depth": {
+                "buy": [{"price": 99.95, "quantity": 10, "orders": 1}],
+                "sell": [{"price": 100.05, "quantity": 12, "orders": 1}],
+            },
+        }],
+    )
+
+    tick = callback.call_args.args[0]
+    assert tick.bid == pytest.approx(99.95)
+    assert tick.ask == pytest.approx(100.05)
+
+
 def test_refresh_instrument_tokens_combines_futures_and_options():
     kite = Mock()
 

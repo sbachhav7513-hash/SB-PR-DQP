@@ -694,3 +694,16 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this change and its evidence status.
 - Validation: The focused VS Code test runner first returned “No tests found”; rerunning through the project venv with `python -m pytest -q tests\test_intraday_manager.py tests\test_paper_reporting.py` passed (86 tests). `git diff --check` passed before this log entry was added.
 - Outcome / follow-up: This is an implemented paper-only exit experiment, not a measured improvement. No historical replay or prospective closed-trade outcome for this exit policy is recorded yet. Keep live orders disabled; track runner trades separately and evaluate at least the existing 10-closed-paper-trade screening minimum, with transaction costs where available.
+
+### 2026-10-16
+
+#### DLY-2026-10-16-01
+
+- Reason: Record the completed breakout-confirmation replay of recorded and hypothetical entries, and preserve its evidence limits for future strategy decisions.
+- Related prior entries checked: `DLY-2026-10-14-06` / `EXP-2026-10-14-03` (paper range-breakout pilot); `DLY-2026-10-14-07` / `EXP-2026-10-14-04` (breakout volume confirmation); `DLY-2026-10-15-01` / `EXP-2026-10-15-01` (paper trailing-exit experiment).
+- Files:
+  - `DAILY_CHANGELOG.md` (modified): Record replay method, results, and caveats.
+  - `STRATEGY_CHANGELOG.md` (modified): Add the breakout confirmation replay as an inconclusive experiment.
+- Replay results: For Oct 15–16, the direction-confirmation scenario returned ₹5,534.75 gross and the direction-plus-delayed-close scenario returned ₹8,134.00 gross; cutoff-matched recorded P&L was ₹4,183.75 and existing-path candle replay was ₹4,018.50. Both proposed scenarios selected 14 entries and Oct 16 remained negative. Hypothetical entries contributed -₹404.75 and -₹992.25, respectively.
+- Validation: Confirmed candidate-level CSV exists and checked replay totals against the recorded summary. No code or configuration behavior changed.
+- Outcome / follow-up / rollback: Exploratory two-session replay only, not a validated edge. Results exclude fees, spread, slippage, portfolio concurrency, and recalculated circuit-breaker state. Continue paper observation with realistic costs and a larger out-of-sample period; do not enable the filters based on this replay alone. Detailed rows and rejection reasons are in `paper_trading_data/backtests/breakout_filters_all_logged_candidates_2026-10-14_to_2026-10-16.csv`.

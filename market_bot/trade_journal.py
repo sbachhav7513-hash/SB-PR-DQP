@@ -23,6 +23,7 @@ def normalize_decision_outcome(value: Any) -> str:
     if outcome in {
         "trade_opened", "accuracy_filter", "option_filter", "risk_blocked",
         "execution_failed", "premarket", "market_closed", "hold", "operational",
+        "paper_entry_cutoff", "paper_risk_cap",
     }:
         return outcome
     if outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
@@ -31,6 +32,10 @@ def normalize_decision_outcome(value: Any) -> str:
         return "option_filter"
     if outcome.startswith("PAPER_RANGE_BREAKOUT_TRADE_BLOCKED:"):
         return "risk_blocked"
+    if outcome == "PAPER_RANGE_BREAKOUT_PAPER_ENTRY_CUTOFF_BLOCKED":
+        return "paper_entry_cutoff"
+    if outcome == "PAPER_RANGE_BREAKOUT_PAPER_RISK_CAP_BLOCKED":
+        return "paper_risk_cap"
     if outcome.startswith(
         (
             "PAPER_RANGE_BREAKOUT_POSITION_SIZE_ZERO",
@@ -49,6 +54,10 @@ def normalize_decision_outcome(value: Any) -> str:
         "late_window_blocked",
     } or outcome.startswith(("trade_blocked:", "risk_blocked:")):
         return "risk_blocked"
+    if outcome.startswith("paper_entry_cutoff_blocked"):
+        return "paper_entry_cutoff"
+    if outcome.startswith("paper_risk_cap_blocked"):
+        return "paper_risk_cap"
     if outcome in {
         "live_order_failed", "protective_stop_failed", "reversal_close_failed",
         "execution_failed",
@@ -84,15 +93,32 @@ class PaperTradingRecorder:
         "trailing_enabled",
         "runner_activation_r",
         "runner_gap_r",
+        "adaptive_breakeven_r",
+        "adaptive_trail_activation_r",
+        "adaptive_trail_gap_r",
+        "adaptive_runner_activation_r",
+        "adaptive_runner_gap_r",
+        "adaptive_exit_mode",
+        "max_favorable_r",
         "highest_price",
         "lowest_price",
         "trailing_active",
+        "paper_entry_ltp",
+        "paper_entry_bid",
+        "paper_entry_ask",
+        "paper_entry_quote_is_fresh",
+        "paper_entry_risk_rupees",
+        "paper_risk_cap_rupees",
+        "paper_exit_ltp",
+        "paper_exit_bid",
+        "paper_exit_ask",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
+        "entry_evaluation",
     ]
 
     def __init__(self, root: str = "paper_trading_data") -> None:
@@ -208,6 +234,7 @@ class DecisionJournal:
         entry["outcome"] = normalize_decision_outcome(detail)
         if entry["outcome"] in {
             "accuracy_filter", "option_filter", "risk_blocked", "execution_failed",
+            "paper_entry_cutoff", "paper_risk_cap",
         }:
             rejection_reason = detail
             if detail.startswith("accuracy_filter_rejected:"):
@@ -218,6 +245,14 @@ class DecisionJournal:
                 rejection_reason = detail.removeprefix("OPTION_FILTER_").lower().replace("_", " ")
             elif detail.startswith("PAPER_RANGE_BREAKOUT_REJECTED:"):
                 rejection_reason = detail.split(":", 1)[1].replace("_", " ").lower()
+            elif detail.startswith("paper_entry_cutoff_blocked:"):
+                rejection_reason = detail.split(":", 1)[1].replace("_", " ")
+            elif detail.startswith("paper_risk_cap_blocked:"):
+                rejection_reason = detail.split(":", 1)[1].replace("_", " ")
+            elif detail == "PAPER_RANGE_BREAKOUT_PAPER_ENTRY_CUTOFF_BLOCKED":
+                rejection_reason = "paper entry cutoff"
+            elif detail == "PAPER_RANGE_BREAKOUT_PAPER_RISK_CAP_BLOCKED":
+                rejection_reason = "paper per-trade risk cap"
             entry.setdefault("rejection_reason", rejection_reason)
         event_time = PaperTradingRecorder._event_datetime(entry["timestamp"])
         local_time = event_time.time()
@@ -238,6 +273,79 @@ class DecisionJournal:
         except (OSError, TypeError, ValueError):
             # Observability must never interrupt live order handling.
             logger.exception("Could not write decision audit record to %s", self.path)
+
+
+class PaperShadowExitJournal:
+    """Persist snapshots of independent paper exit experiments."""
+
+    def __init__(self, path: str) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.latest: Dict[str, Dict[str, Any]] = {}
+        if not self.path.exists():
+            return
+
+        with self.path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Skipping invalid shadow-exit journal line %s", line_number
+                    )
+                    continue
+                trade_id = str(record.get("trade_id", ""))
+                if trade_id:
+                    self.latest[trade_id] = record
+
+    def _append(self, record: Dict[str, Any]) -> None:
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+        self.latest[str(record["trade_id"])] = dict(record)
+
+    def start(self, record: Dict[str, Any]) -> None:
+        entry = dict(record)
+        entry["status"] = "open"
+        entry["event"] = "opened"
+        self._append(entry)
+
+    def update(self, trade_id: str, fields: Dict[str, Any]) -> bool:
+        current = self.latest.get(str(trade_id))
+        if current is None or current.get("status") != "open":
+            return False
+        updated = {**current, **fields, "event": "updated"}
+        self._append(updated)
+        return True
+
+    def close(self, trade_id: str, fields: Dict[str, Any]) -> bool:
+        current = self.latest.get(str(trade_id))
+        if current is None or current.get("status") != "open":
+            return False
+        closed = {
+            **current,
+            **fields,
+            "status": "closed",
+            "event": "closed",
+        }
+        self._append(closed)
+        return True
+
+    def annotate_actual_exit(self, trade_id: str, fields: Dict[str, Any]) -> bool:
+        current = self.latest.get(str(trade_id))
+        if current is None:
+            return False
+        updated = {**current, **fields, "event": "actual_exit_recorded"}
+        self._append(updated)
+        return True
+
+    def get_open_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        open_records = [
+            record for record in self.latest.values()
+            if record.get("ticker") == symbol and record.get("status") == "open"
+        ]
+        if not open_records:
+            return None
+        return max(open_records, key=lambda record: str(record.get("entry_time", "")))
 
 
 class TradeJournal:

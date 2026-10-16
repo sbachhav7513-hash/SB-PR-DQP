@@ -298,6 +298,49 @@ Reject reason: same symbol repeat loss
 
 ---
 
+## Paper-Only Risk and Exit Experiment
+
+The bot now supports a forward paper experiment for the controls reviewed in
+October. These controls do not alter live orders:
+
+- Paper entries are capped at ₹1,000 initial stop risk. If one complete option
+  lot exceeds the cap, the candidate is rejected rather than rounded up.
+- A common paper-entry cutoff rejects new positions from 14:45 IST onward
+  (45 minutes before the 15:30 regular market close). Existing positions can
+  still be managed and exited.
+- Candidate decisions, accepted entries, and rejection reasons are written to
+  the decision journal. The paper risk evaluation records lot size, risk per
+  lot, proposed quantity, risk budget, and cap rejection reason.
+- New paper option positions use a path-dependent adaptive exit; live-order
+  exits are unchanged. The initial hard stop remains in place until the trade
+  reaches +0.5R, when the stop moves to breakeven. At +1R, the stop trails the
+  best price by 0.5R; after +2R, it uses a 1R gap. The stop only ratchets
+  toward profit and never loosens. The selected mode, maximum favorable R,
+  and stop are persisted for restart recovery and audit.
+- The 1R-activation / 1R-gap runner is still recorded independently in
+  `paper_trading_data/shadow_runner_1r.jsonl` for comparison; it does not
+  control the primary adaptive paper exit.
+- Recent ledger outcomes varied by session: Oct 14 was -₹1,264 across 7
+  trades, Oct 15 was +₹7,079.50 across 10 trades, and Oct 16 was -₹2,690.75
+  across 14 trades, before unmodeled costs. This 31-trade, three-session
+  sample is too small and regime-dependent to establish an optimal exit. The
+  adaptive thresholds are a conservative paper experiment, not a learned or
+  proven profitable policy.
+- The shadow runner records paper LTP references and observed best bid/ask.
+  It estimates a marketable entry at ask and exit at bid when valid quotes are
+  available, falling back to LTP when quotes are missing. The comparison also
+  records gross P&L, fees, additional slippage assumption, and estimated net
+  P&L. Configure `paper_shadow_fee_per_order`,
+  `paper_shadow_fee_bps_per_side`, and
+  `paper_shadow_slippage_bps_per_side` for the broker/cost model; all example
+  defaults are zero, so those defaults are not a realistic all-in cost model.
+
+This is prospective paper evidence, not a profitability claim. Review it across
+multiple sessions and symbols, including missed/blocked candidates, before
+changing any live policy.
+
+---
+
 ## Implementation Checklist
 
 ### Must-do items
@@ -305,8 +348,13 @@ Reject reason: same symbol repeat loss
 - [ ] Add symbol loss guard
 - [ ] Add session trading cap
 - [ ] Improve premium/volume validation
-- [ ] Review timing windows for better execution quality
-- [ ] Add detailed rejection logging
+- [x] Paper-test a common 14:45 entry cutoff on every entry path
+- [x] Paper-test a ₹1,000 per-trade initial-risk cap, keeping the daily loss
+  guard separate
+- [x] Log candidate evaluations and rejection reasons
+- [x] Test a path-dependent adaptive exit as the primary paper option exit
+- [x] Compare the 1R runner with primary paper exits using quote-aware shadow
+  fills and configurable cost assumptions
 - [ ] Track weekly changes in win rate / profit factor / trade count
 
 ### Nice-to-have items
