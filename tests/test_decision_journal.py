@@ -46,3 +46,34 @@ def test_decision_journal_normalizes_outcome_and_records_ist_session(tmp_path):
     assert record["market_session"] == "regular_session"
     assert record["market_hours"] is True
     assert record["session_timezone"] == "Asia/Kolkata"
+
+
+def test_decision_journal_preserves_paper_risk_evaluation_and_cutoff_reason(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    journal = DecisionJournal(str(path))
+
+    journal.log_decision({
+        "ticker": "TCS_CE",
+        "signal": "BUY",
+        "outcome": "paper_risk_cap_blocked:one_lot_exceeds_1000_rupees",
+        "entry_evaluation": {
+            "paper_risk_cap_rupees": 1000.0,
+            "option_risk_per_lot_rupees": 2486.25,
+            "accepted": False,
+        },
+    })
+    journal.log_decision({
+        "ticker": "NIFTY_PE",
+        "signal": "SELL",
+        "outcome": "paper_entry_cutoff_blocked:45m_before_close",
+    })
+
+    records = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["outcome"] == "paper_risk_cap"
+    assert records[0]["rejection_reason"] == "one lot exceeds 1000 rupees"
+    assert records[0]["entry_evaluation"]["option_risk_per_lot_rupees"] == 2486.25
+    assert records[1]["outcome"] == "paper_entry_cutoff"
+    assert records[1]["rejection_reason"] == "45m before close"

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 PAPER_OPTION_TRAIL_RUNNER = "paper_option_2r_trail_runner"
+PAPER_OPTION_ADAPTIVE_EXIT = "paper_option_adaptive"
 
 
 class IntradayManager:
@@ -125,6 +126,7 @@ class IntradayManager:
         symbol: str, 
         entry_price: float, 
         stop_loss_price: float,
+        max_risk_per_trade: Optional[float] = None,
     ) -> int:
         """
         Calculate position size for futures based on risk management.
@@ -159,6 +161,11 @@ class IntradayManager:
         if risk_per_lot <= 0:
             return 0
         risk_budget = self.available_daily_risk()
+        if max_risk_per_trade is not None:
+            max_risk_per_trade = float(max_risk_per_trade)
+            if not math.isfinite(max_risk_per_trade) or max_risk_per_trade < 0:
+                raise ValueError("max_risk_per_trade must be finite and non-negative")
+            risk_budget = min(risk_budget, max_risk_per_trade)
         lots = int(risk_budget / risk_per_lot)
         if lots < 1:
             logger.warning(
@@ -378,6 +385,13 @@ class IntradayManager:
         exit_strategy: Optional[str] = None,
         runner_activation_r: Optional[float] = None,
         runner_gap_r: Optional[float] = None,
+        adaptive_breakeven_r: Optional[float] = None,
+        adaptive_trail_activation_r: Optional[float] = None,
+        adaptive_trail_gap_r: Optional[float] = None,
+        adaptive_runner_activation_r: Optional[float] = None,
+        adaptive_runner_gap_r: Optional[float] = None,
+        adaptive_exit_mode: Optional[str] = None,
+        max_favorable_r: float = 0.0,
         highest_price: Optional[float] = None,
         lowest_price: Optional[float] = None,
         trailing_active: bool = False,
@@ -399,6 +413,46 @@ class IntradayManager:
                 or initial_risk_distance <= 0
             ):
                 raise ValueError("Invalid risk or R multiple for option trail runner")
+        if exit_strategy == PAPER_OPTION_ADAPTIVE_EXIT:
+            adaptive_values = (
+                0.5
+                if adaptive_breakeven_r is None
+                else float(adaptive_breakeven_r),
+                1.0
+                if adaptive_trail_activation_r is None
+                else float(adaptive_trail_activation_r),
+                0.5
+                if adaptive_trail_gap_r is None
+                else float(adaptive_trail_gap_r),
+                2.0
+                if adaptive_runner_activation_r is None
+                else float(adaptive_runner_activation_r),
+                1.0
+                if adaptive_runner_gap_r is None
+                else float(adaptive_runner_gap_r),
+            )
+            (
+                adaptive_breakeven_r,
+                adaptive_trail_activation_r,
+                adaptive_trail_gap_r,
+                adaptive_runner_activation_r,
+                adaptive_runner_gap_r,
+            ) = adaptive_values
+            if (
+                not all(
+                    math.isfinite(value) and value > 0
+                    for value in adaptive_values
+                )
+                or adaptive_breakeven_r > adaptive_trail_activation_r
+                or adaptive_trail_activation_r >= adaptive_runner_activation_r
+                or not math.isfinite(initial_risk_distance)
+                or initial_risk_distance <= 0
+                or not math.isfinite(max_favorable_r)
+                or max_favorable_r < 0
+            ):
+                raise ValueError(
+                    "Invalid risk or R thresholds for adaptive option exit"
+                )
         registered_at = self._normalize_position_time(entry_time)
         strong_threshold = int(strong_signal_score)
         entry_score = int(signal_score) if signal_score is not None else None
@@ -433,6 +487,13 @@ class IntradayManager:
             "exit_strategy": exit_strategy,
             "runner_activation_r": runner_activation_r,
             "runner_gap_r": runner_gap_r,
+            "adaptive_breakeven_r": adaptive_breakeven_r,
+            "adaptive_trail_activation_r": adaptive_trail_activation_r,
+            "adaptive_trail_gap_r": adaptive_trail_gap_r,
+            "adaptive_runner_activation_r": adaptive_runner_activation_r,
+            "adaptive_runner_gap_r": adaptive_runner_gap_r,
+            "adaptive_exit_mode": adaptive_exit_mode or "initial_stop",
+            "max_favorable_r": max(float(max_favorable_r), 0.0),
             "milestone_window_minutes": max(int(milestone_window_minutes), 1),
             "strong_milestone_window_minutes": max(
                 int(strong_milestone_window_minutes), 1
@@ -520,6 +581,74 @@ class IntradayManager:
                     float(position["stop_loss"]),
                     position["lowest_price"] + trailing_distance,
                 )
+                previous = position["trailing_stop"]
+                position["trailing_stop"] = (
+                    candidate
+                    if previous is None
+                    else min(float(previous), candidate)
+                )
+            return float(position["trailing_stop"])
+
+        if position.get("exit_strategy") == PAPER_OPTION_ADAPTIVE_EXIT:
+            risk_distance = float(position["initial_risk_distance"])
+            if position["direction"] == "BUY":
+                position["highest_price"] = max(
+                    float(position["highest_price"]), price
+                )
+                favorable_distance = float(position["highest_price"]) - entry_price
+            else:
+                position["lowest_price"] = min(
+                    float(position["lowest_price"]), price
+                )
+                favorable_distance = entry_price - float(position["lowest_price"])
+
+            max_favorable_r = max(
+                float(position.get("max_favorable_r", 0.0)),
+                favorable_distance / risk_distance,
+            )
+            position["max_favorable_r"] = max_favorable_r
+            breakeven_r = float(position["adaptive_breakeven_r"])
+            activation_r = float(position["adaptive_trail_activation_r"])
+            runner_r = float(position["adaptive_runner_activation_r"])
+            if max_favorable_r >= runner_r:
+                mode = "runner"
+                trailing_gap_r = float(position["adaptive_runner_gap_r"])
+            elif max_favorable_r >= activation_r:
+                mode = "profit_trail"
+                trailing_gap_r = float(position["adaptive_trail_gap_r"])
+            elif max_favorable_r >= breakeven_r:
+                mode = "breakeven"
+                trailing_gap_r = 0.0
+            else:
+                mode = "initial_stop"
+                trailing_gap_r = 0.0
+
+            if mode == "initial_stop":
+                return None
+
+            position["adaptive_exit_mode"] = mode
+            position["trailing_active"] = True
+            peak_price = (
+                float(position["highest_price"])
+                if position["direction"] == "BUY"
+                else float(position["lowest_price"])
+            )
+            if mode == "breakeven":
+                candidate = entry_price
+            elif position["direction"] == "BUY":
+                candidate = peak_price - trailing_gap_r * risk_distance
+            else:
+                candidate = peak_price + trailing_gap_r * risk_distance
+            if position["direction"] == "BUY":
+                candidate = max(float(position["stop_loss"]), candidate)
+                previous = position["trailing_stop"]
+                position["trailing_stop"] = (
+                    candidate
+                    if previous is None
+                    else max(float(previous), candidate)
+                )
+            else:
+                candidate = min(float(position["stop_loss"]), candidate)
                 previous = position["trailing_stop"]
                 position["trailing_stop"] = (
                     candidate

@@ -857,6 +857,23 @@ class KiteMarketStream:
             raise ValueError("timestamp predates plausible live market data")
         return timestamp
 
+    @staticmethod
+    def _best_book_price(tick: Dict, side: str, direct_key: str) -> float:
+        candidates = [tick.get(direct_key)]
+        depth = tick.get("depth")
+        if isinstance(depth, dict):
+            levels = depth.get(side)
+            if isinstance(levels, list) and levels and isinstance(levels[0], dict):
+                candidates.append(levels[0].get("price"))
+        for candidate in candidates:
+            try:
+                price = float(candidate)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(price) and price > 0:
+                return price
+        return 0.0
+
     def on_ticks(self, ws: any, ticks: List[Dict]) -> None:
         """Callback when ticks arrive from Kite WebSocket."""
         for tick in ticks:
@@ -923,8 +940,8 @@ class KiteMarketStream:
                     instrument_token=instrument_token,
                     timestamp=timestamp,
                     last_price=float(tick.get("last_price", 0.0)),
-                    bid=float(tick.get("bid", 0.0)),
-                    ask=float(tick.get("ask", 0.0)),
+                    bid=self._best_book_price(tick, "buy", "bid"),
+                    ask=self._best_book_price(tick, "sell", "ask"),
                     volume=int(tick.get("volume_traded", tick.get("volume", 0))),
                     oi=(int(tick["oi"]) if tick.get("oi") is not None else None),
                     iv=(float(tick["iv"]) if tick.get("iv") is not None else None),

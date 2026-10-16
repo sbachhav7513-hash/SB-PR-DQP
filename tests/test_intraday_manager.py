@@ -10,7 +10,12 @@ from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.bar_builder import Bar
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
-from market_bot.trade_journal import TradeJournal, normalize_decision_outcome
+from market_bot.kite_provider import Tick
+from market_bot.trade_journal import (
+    PaperShadowExitJournal,
+    TradeJournal,
+    normalize_decision_outcome,
+)
 from market_bot.weekly_report import summarize_best_setup_windows
 
 
@@ -81,9 +86,31 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["take_profit"] == pytest.approx(147.6)
     assert position["staged_targets_enabled"] is False
     assert position["trailing_enabled"] is True
-    assert position["exit_strategy"] == "paper_option_2r_trail_runner"
-    assert position["runner_activation_r"] == 1.0
-    assert position["runner_gap_r"] == 2.0
+    assert position["exit_strategy"] == "paper_option_adaptive"
+    assert position["runner_activation_r"] is None
+    assert position["runner_gap_r"] is None
+    assert position["adaptive_breakeven_r"] == 0.5
+    assert position["adaptive_trail_activation_r"] == 1.0
+    assert position["adaptive_trail_gap_r"] == 0.5
+    assert position["adaptive_runner_activation_r"] == 2.0
+    assert position["adaptive_runner_gap_r"] == 1.0
+
+
+def test_adaptive_option_exit_is_paper_only():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_option_adaptive_exit_enabled": True}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+
+    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is True
+
+    bot.live_orders_enabled = True
+    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is False
+
+    bot.live_orders_enabled = False
+    bot.config["paper_option_adaptive_exit_enabled"] = False
+    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is False
 
 
 def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
@@ -237,9 +264,9 @@ def test_paper_range_breakout_uses_2r_trail_runner_with_range_risk_sizing():
     assert position["take_profit"] == pytest.approx(31.75)
     assert position["trailing_enabled"] is True
     assert position["staged_targets_enabled"] is False
-    assert position["exit_strategy"] == "paper_option_2r_trail_runner"
-    assert position["runner_activation_r"] == 1.0
-    assert position["runner_gap_r"] == 2.0
+    assert position["exit_strategy"] == "paper_option_adaptive"
+    assert position["runner_activation_r"] is None
+    assert position["runner_gap_r"] is None
 
 
 def test_option_trail_runner_ignores_reference_target_and_timebox():
@@ -345,6 +372,101 @@ def test_option_trail_runner_state_is_persisted_when_high_water_changes():
     assert manager.active_positions["NIFTY_CE"]["runner_persistence_pending"] is False
 
 
+@pytest.mark.parametrize(
+    ("direction", "entry", "stop", "prices", "expected_stops", "expected_modes"),
+    [
+        (
+            "BUY",
+            100.0,
+            90.0,
+            [105.0, 110.0, 120.0],
+            [100.0, 105.0, 110.0],
+            ["breakeven", "profit_trail", "runner"],
+        ),
+        (
+            "SELL",
+            100.0,
+            110.0,
+            [95.0, 90.0, 80.0],
+            [100.0, 95.0, 90.0],
+            ["breakeven", "profit_trail", "runner"],
+        ),
+    ],
+)
+def test_adaptive_option_exit_selects_mode_from_trade_progress(
+    direction, entry, stop, prices, expected_stops, expected_modes
+):
+    manager = IntradayManager(trailing_enabled=False)
+    manager.register_position(
+        "NIFTY_CE",
+        direction,
+        1,
+        entry,
+        stop,
+        120.0 if direction == "BUY" else 80.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+        adaptive_breakeven_r=0.5,
+        adaptive_trail_activation_r=1.0,
+        adaptive_trail_gap_r=0.5,
+        adaptive_runner_activation_r=2.0,
+        adaptive_runner_gap_r=1.0,
+    )
+
+    for price, expected_stop, expected_mode in zip(
+        prices, expected_stops, expected_modes
+    ):
+        assert manager.update_trailing_stop("NIFTY_CE", price) == pytest.approx(
+            expected_stop
+        )
+        position = manager.active_positions["NIFTY_CE"]
+        assert position["adaptive_exit_mode"] == expected_mode
+
+
+def test_adaptive_option_exit_stop_only_ratchets_tighter():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+    )
+
+    assert manager.update_trailing_stop("NIFTY_CE", 110.0) == 105.0
+    assert manager.update_trailing_stop("NIFTY_CE", 120.0) == 110.0
+    assert manager.update_trailing_stop("NIFTY_CE", 115.0) == 110.0
+    assert manager.active_positions["NIFTY_CE"]["adaptive_exit_mode"] == "runner"
+
+
+def test_adaptive_option_exit_mode_and_mfe_are_persisted():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.trade_journal = Mock()
+    bot.trade_journal.update_open_trade.return_value = True
+
+    assert bot._check_position_exit("NIFTY_CE", 105.0) is None
+
+    fields = bot.trade_journal.update_open_trade.call_args.args[1]
+    assert fields["adaptive_exit_mode"] == "breakeven"
+    assert fields["max_favorable_r"] == pytest.approx(0.5)
+    assert fields["trailing_stop"] == 100.0
+
+
 def test_option_trail_runner_ignores_opposite_signal_until_exit_rule_triggers():
     bot = object.__new__(KiteTradingBot)
     bot.config = {"trading_mode": "intraday_options"}
@@ -421,6 +543,8 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
     bot = object.__new__(KiteTradingBot)
     bot.config = config
     bot.intraday_manager = manager
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
 
     quantity = bot._calculate_option_quantity(
         "NIFTY_CE",
@@ -443,6 +567,7 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
     assert config["daily_max_loss_pct"] == 10.0
     assert config["paper_min_entry_score"] == 60
     assert config["option_max_risk_per_lot_pct"] == 10.0
+    assert config.get("paper_max_risk_per_trade", 1000.0) == 1000.0
     assert manager.daily_max_loss == 10_000.0
     assert manager.max_risk_per_trade == 10_000.0
     assert quantity == 65
@@ -475,19 +600,14 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
         95.60 * (1.0 - config["option_premium_stop_pct"]),
     )
 
-    assert quantity == 175
-    assert risk == pytest.approx(1_673.0)
+    assert quantity == 0
+    assert risk == 0
+    assert bot._pending_entry_evaluations["TCS_PE"][
+        "rejection_reason"
+    ] == "one_lot_exceeds_paper_risk_cap"
     assert risk <= manager.available_daily_risk()
 
-    manager.register_position(
-        "TCS_PE",
-        "BUY",
-        quantity,
-        95.60,
-        95.60 * (1.0 - config["option_premium_stop_pct"]),
-        95.60 * 1.10,
-    )
-    assert manager.available_daily_risk() == pytest.approx(7_677.0)
+    assert manager.available_daily_risk() == pytest.approx(9_350.0)
 
 
 def test_per_trade_risk_cap_is_separate_from_two_percent_daily_stop():
@@ -813,6 +933,50 @@ def test_paper_runner_restore_reinstates_trailing_state():
     assert position["runner_gap_r"] == 2.0
 
 
+def test_paper_adaptive_exit_restore_reinstates_mode_and_thresholds():
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_milestone_pct": 0.10, "strong_signal_score": 82}
+    bot.intraday_manager = IntradayManager()
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    bot._restore_paper_positions(
+        [
+            {
+                "ticker": "NIFTY_CE",
+                "action": "BUY",
+                "quantity": 65,
+                "entry": 100.0,
+                "stop_loss": 90.0,
+                "take_profit": 120.0,
+                "status": "open",
+                "timestamp": now.isoformat(),
+                "exit_strategy": "paper_option_adaptive",
+                "trailing_enabled": True,
+                "adaptive_breakeven_r": 0.5,
+                "adaptive_trail_activation_r": 1.0,
+                "adaptive_trail_gap_r": 0.5,
+                "adaptive_runner_activation_r": 2.0,
+                "adaptive_runner_gap_r": 1.0,
+                "adaptive_exit_mode": "profit_trail",
+                "max_favorable_r": 1.5,
+                "highest_price": 115.0,
+                "lowest_price": 100.0,
+                "trailing_stop": 110.0,
+                "trailing_active": True,
+            }
+        ]
+    )
+
+    position = bot.intraday_manager.active_positions["NIFTY_CE"]
+    assert position["exit_strategy"] == "paper_option_adaptive"
+    assert position["adaptive_exit_mode"] == "profit_trail"
+    assert position["max_favorable_r"] == pytest.approx(1.5)
+    assert position["trailing_stop"] == pytest.approx(110.0)
+
+
 def test_paper_trade_mark_is_persisted_and_throttled(tmp_path):
     journal = TradeJournal(str(tmp_path / "trades.jsonl"))
     journal.log_trade(
@@ -991,6 +1155,248 @@ def test_late_window_guard_uses_configured_ist_bounds_and_can_be_disabled():
     assert bot._late_window_blocked(datetime(2026, 9, 26, 11, 59, tzinfo=ist)) is False
     bot.config["late_window_enabled"] = False
     assert bot._late_window_blocked(datetime(2026, 9, 26, 12, 30, tzinfo=ist)) is False
+
+
+def test_paper_entry_cutoff_blocks_at_1445_but_not_before_and_is_paper_only():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_entry_cutoff_minutes_before_close": 45}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = IntradayManager()
+    ist = ZoneInfo("Asia/Kolkata")
+
+    assert bot._paper_entry_cutoff_reason(
+        datetime(2026, 10, 16, 14, 44, tzinfo=ist)
+    ) is None
+    assert bot._paper_entry_cutoff_reason(
+        datetime(2026, 10, 16, 14, 45, tzinfo=ist)
+    ) == "paper_entry_cutoff_blocked:45m_before_close"
+
+    bot.live_orders_enabled = True
+    assert bot._paper_entry_cutoff_reason(
+        datetime(2026, 10, 16, 15, 0, tzinfo=ist)
+    ) is None
+
+
+@pytest.mark.parametrize("_handler", ["_handle_buy_signal", "_handle_sell_signal"])
+def test_both_entry_handlers_apply_common_paper_cutoff(_handler):
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.return_value = None
+    bot.intraday_manager = SimpleNamespace(active_positions={})
+    bot._paper_entry_cutoff_reason = Mock(
+        return_value="paper_entry_cutoff_blocked:45m_before_close"
+    )
+
+    result = getattr(bot, _handler)("TCS_CE", 100.0, 80)
+
+    assert result == "paper_entry_cutoff_blocked:45m_before_close"
+    bot._paper_entry_cutoff_reason.assert_called_once_with()
+
+
+def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "paper_max_risk_per_trade": 1000.0,
+        "option_max_risk_per_lot_pct": 10.0,
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        max_risk_per_trade=10_000.0,
+        daily_max_loss=10_000.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"TCS_PE": {"lot_size": 225, "multiplier": 1}}
+    )
+    stop_pct = (112.0 - 100.95) / 112.0
+
+    quantity = bot._calculate_option_quantity("TCS_PE", 112.0, stop_pct)
+
+    assert quantity == 0
+    evaluation = bot._pending_entry_evaluations["TCS_PE"]
+    assert evaluation["option_risk_per_lot_rupees"] == pytest.approx(
+        112.0 * stop_pct * 225
+    )
+    assert evaluation["option_risk_per_lot_rupees"] > 1000.0
+    assert evaluation["rejection_reason"] == "one_lot_exceeds_paper_risk_cap"
+
+
+def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "paper_max_risk_per_trade": 1000.0,
+        "option_max_risk_per_lot_pct": 10.0,
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        max_risk_per_trade=10_000.0,
+        daily_max_loss=10_000.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    quantity = bot._calculate_option_quantity("NIFTY_CE", 123.0, 0.10)
+
+    assert quantity == 65
+    assert bot._pending_entry_evaluations["NIFTY_CE"][
+        "estimated_initial_risk_rupees"
+    ] == pytest.approx(799.5)
+
+
+def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"paper_max_risk_per_trade": 1000.0}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        max_risk_per_trade=10_000.0,
+        daily_max_loss=10_000.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"TCS": {"lot_size": 225, "multiplier": 1}}
+    )
+
+    quantity = bot._calculate_position_size("TCS", 112.0, 100.95)
+
+    assert quantity == 0
+    assert bot._pending_entry_evaluations["TCS"][
+        "rejection_reason"
+    ] == "one_lot_exceeds_paper_risk_cap"
+
+
+def test_decision_record_includes_pending_entry_risk_evaluation():
+    bot = object.__new__(KiteTradingBot)
+    bot.decision_journal = Mock()
+    bot._pending_entry_evaluations = {
+        "TCS_CE": {
+            "paper_risk_cap_rupees": 1000.0,
+            "option_risk_per_lot_rupees": 2486.25,
+            "accepted": False,
+        }
+    }
+    bar = Bar(
+        datetime(2026, 10, 16, 14, 45, tzinfo=ZoneInfo("Asia/Kolkata")),
+        100.0,
+        101.0,
+        99.0,
+        100.5,
+        10,
+    )
+
+    bot._record_decision(
+        "TCS_CE", bar, [bar], None, "BUY",
+        "paper_risk_cap_blocked:one_lot_exceeds_1000_rupees"
+    )
+
+    payload = bot.decision_journal.log_decision.call_args.args[0]
+    assert payload["entry_evaluation"]["paper_risk_cap_rupees"] == 1000.0
+    assert "TCS_CE" not in bot._pending_entry_evaluations
+
+
+def test_one_r_shadow_runner_records_quote_fills_costs_and_actual_exit(tmp_path):
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "paper_shadow_1r_runner_enabled": True,
+        "paper_shadow_fee_per_order": 10.0,
+        "paper_shadow_fee_bps_per_side": 5.0,
+        "paper_shadow_slippage_bps_per_side": 0.0,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+    bot.option_quote_cache = {
+        "TCS_CE": {
+            "last_price": 112.0,
+            "bid": 111.9,
+            "ask": 112.1,
+            "timestamp": datetime.now(ZoneInfo("Asia/Kolkata")),
+        }
+    }
+    bot.paper_shadow_exit_journal = PaperShadowExitJournal(
+        str(tmp_path / "shadow.jsonl")
+    )
+    bot.paper_shadow_positions = {}
+    bot.intraday_manager = SimpleNamespace(
+        should_exit_all_positions=Mock(return_value=False)
+    )
+    entry_time = datetime(2026, 10, 16, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    bot._start_paper_shadow_runner(
+        "TCS_CE", "tcs-trade", 112.0, 100.95, 225, entry_time.isoformat()
+    )
+    state = bot.paper_shadow_positions["tcs-trade"]
+    assert state["entry_fill_price"] == pytest.approx(112.1)
+    assert state["risk_distance"] == pytest.approx(11.15)
+
+    bot._update_paper_shadow_runner(
+        "TCS_CE",
+        Tick(
+            1,
+            datetime(2026, 10, 16, 10, 1, tzinfo=ZoneInfo("Asia/Kolkata")),
+            124.5,
+            bid=124.4,
+            ask=124.5,
+        ),
+    )
+    assert state["trailing_active"] is True
+    assert state["trailing_stop"] == pytest.approx(113.25)
+
+    bot._update_paper_shadow_runner(
+        "TCS_CE",
+        Tick(
+            1,
+            datetime(2026, 10, 16, 10, 2, tzinfo=ZoneInfo("Asia/Kolkata")),
+            113.3,
+            bid=113.2,
+            ask=113.3,
+        ),
+    )
+    closed = bot.paper_shadow_exit_journal.latest["tcs-trade"]
+    assert closed["status"] == "closed"
+    assert closed["exit_fill_source"] == "best_bid"
+    assert closed["gross_pnl_rupees"] == pytest.approx(247.5)
+    assert closed["estimated_fee_rupees"] == pytest.approx(45.34625)
+    assert closed["net_pnl_estimate_rupees"] == pytest.approx(202.15375)
+
+    bot.option_quote_cache["TCS_CE"] = {
+        "last_price": 117.0,
+        "bid": 116.9,
+        "ask": 117.0,
+    }
+    bot._record_paper_shadow_actual_exit(
+        {
+            "trade_id": "tcs-trade",
+            "ticker": "TCS_CE",
+            "action": "BUY",
+            "entry": 112.0,
+            "quantity": 225,
+            "paper_entry_bid": 111.9,
+            "paper_entry_ask": 112.1,
+            "paper_entry_quote_is_fresh": True,
+        },
+        117.0,
+        "TAKE_PROFIT",
+    )
+
+    compared = bot.paper_shadow_exit_journal.latest["tcs-trade"]
+    assert compared["actual_gross_pnl_rupees"] == pytest.approx(1125.0)
+    assert compared["actual_bid_ask_gross_pnl_rupees"] == pytest.approx(1080.0)
+    assert compared["actual_net_pnl_estimate_rupees"] == pytest.approx(1034.2375)
+    restored = PaperShadowExitJournal(str(tmp_path / "shadow.jsonl"))
+    assert restored.latest["tcs-trade"]["status"] == "closed"
 
 
 def test_live_entry_aborts_when_fill_slippage_exceeds_risk_cap():
