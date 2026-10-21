@@ -162,6 +162,93 @@ def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
     assert bot._handle_buy_signal.call_args.kwargs["paper_range_target_r"] == 2.0
 
 
+def test_paper_range_breakout_waits_for_one_completed_follow_through_bar():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "paper_option_range_breakout_enabled": True,
+        "paper_option_range_lookback_bars": 15,
+        "paper_option_range_confirmation_bars": 1,
+        "paper_option_range_target_r": 2.0,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+    bot.option_quote_cache = {"NIFTY_CE": {"last_price": 28.35}}
+    bot.kite_stream = SimpleNamespace(contract_tick_sizes={"NIFTY_CE": 0.05})
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={}, session_trade_symbols=set()
+    )
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    start = datetime(2026, 10, 14, 12, 38)
+    bars = [
+        Bar(start + timedelta(minutes=index), 27.0, 27.7, 26.55, 27.0, 1000)
+        for index in range(15)
+    ]
+    bars.extend(
+        [
+            Bar(start + timedelta(minutes=15), 27.7, 28.3, 27.6, 28.25, 1200),
+            Bar(start + timedelta(minutes=16), 28.25, 28.5, 28.1, 28.3, 1100),
+        ]
+    )
+
+    with patch(
+        "market_bot.kite_main.market_session_state",
+        return_value="REGULAR_SESSION",
+    ):
+        outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+
+    assert outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED"
+    bot._handle_buy_signal.assert_called_once_with(
+        "NIFTY_CE",
+        28.35,
+        0,
+        strategy_variant="paper_option_range_breakout",
+        minimum_signal_score=0,
+        paper_range_stop=pytest.approx(26.5),
+        paper_range_target_r=2.0,
+    )
+
+
+def test_paper_range_breakout_rejects_follow_through_close_below_range():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "paper_option_range_breakout_enabled": True,
+        "paper_option_range_lookback_bars": 15,
+        "paper_option_range_confirmation_bars": 1,
+        "paper_option_range_target_r": 2.0,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._options_enabled = Mock(return_value=True)
+    bot.option_quote_cache = {"NIFTY_CE": {"last_price": 28.35}}
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    start = datetime(2026, 10, 14, 12, 38)
+    bars = [
+        Bar(start + timedelta(minutes=index), 27.0, 27.7, 26.55, 27.0, 1000)
+        for index in range(15)
+    ]
+    bars.extend(
+        [
+            Bar(start + timedelta(minutes=15), 27.7, 28.3, 27.6, 28.25, 1200),
+            Bar(start + timedelta(minutes=16), 28.25, 28.5, 27.6, 27.65, 1100),
+        ]
+    )
+
+    outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+
+    assert (
+        outcome
+        == "PAPER_RANGE_BREAKOUT_REJECTED:"
+        "follow_through_close_below_range"
+    )
+    bot._option_quality_gate.assert_not_called()
+    bot._handle_buy_signal.assert_not_called()
+
+
 @pytest.mark.parametrize("breakout_volume", [0, 999])
 def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
     breakout_volume,
@@ -208,13 +295,14 @@ def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
     bot._handle_buy_signal.assert_not_called()
 
 
-def test_paper_range_breakout_uses_2r_trail_runner_with_range_risk_sizing():
+def test_paper_range_breakout_keeps_fixed_2r_exit_with_range_risk_sizing():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
         "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
         "option_max_risk_per_lot_pct": 10.0,
+        "paper_option_adaptive_exit_enabled": True,
         "option_min_lots": 1,
         "option_max_lots": 3,
         "strong_signal_score": 82,
@@ -262,9 +350,9 @@ def test_paper_range_breakout_uses_2r_trail_runner_with_range_risk_sizing():
     position = bot.intraday_manager.active_positions["NIFTY_CE"]
     assert position["stop_loss"] == 26.5
     assert position["take_profit"] == pytest.approx(31.75)
-    assert position["trailing_enabled"] is True
+    assert position["trailing_enabled"] is False
     assert position["staged_targets_enabled"] is False
-    assert position["exit_strategy"] == "paper_option_adaptive"
+    assert position["exit_strategy"] == "paper_range_breakout_2r"
     assert position["runner_activation_r"] is None
     assert position["runner_gap_r"] is None
 

@@ -5,6 +5,7 @@
   "paper_trading_enabled": true,
   "paper_option_range_breakout_enabled": true,
   "paper_option_range_lookback_bars": 15,
+  "paper_option_range_confirmation_bars": 1,
   "paper_option_range_target_r": 2.0,
   "paper_option_trail_activation_r": 1.0,
   "paper_option_trail_gap_r": 2.0,

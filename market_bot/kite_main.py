@@ -399,31 +399,48 @@ class KiteTradingBot:
 
         try:
             lookback = int(self.config.get("paper_option_range_lookback_bars", 15))
+            confirmation_bars = int(
+                self.config.get("paper_option_range_confirmation_bars", 0)
+            )
             target_r = float(self.config.get("paper_option_range_target_r", 2.0))
         except (TypeError, ValueError, OverflowError):
             logger.error("[%s] Invalid paper option range-breakout settings", symbol)
             return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
-        if lookback < 2 or not math.isfinite(target_r) or target_r <= 0:
+        if (
+            lookback < 2
+            or confirmation_bars not in {0, 1}
+            or not math.isfinite(target_r)
+            or target_r <= 0
+        ):
             logger.error("[%s] Invalid paper option range-breakout settings", symbol)
             return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
-        if len(bars) < lookback + 1:
+        if len(bars) < lookback + confirmation_bars + 1:
             return None
 
-        prior_range = bars[-lookback - 1 : -1]
-        current_bar = bars[-1]
-        previous_bar = bars[-2]
+        breakout_offset = confirmation_bars + 1
+        prior_range = bars[
+            -(lookback + confirmation_bars + 1) : -breakout_offset
+        ]
+        breakout_bar = bars[-breakout_offset]
+        previous_bar = bars[-breakout_offset - 1]
+        latest_bar = bars[-1]
         range_high = max(item.high for item in prior_range)
         range_low = min(item.low for item in prior_range)
         if not (
             math.isfinite(range_high)
             and math.isfinite(range_low)
-            and current_bar.close > range_high
+            and breakout_bar.close > range_high
             and previous_bar.close <= range_high
         ):
             return None
+        if confirmation_bars and latest_bar.close <= range_high:
+            return (
+                "PAPER_RANGE_BREAKOUT_REJECTED:"
+                "follow_through_close_below_range"
+            )
 
         try:
-            breakout_volume = float(current_bar.volume)
+            breakout_volume = float(breakout_bar.volume)
             prior_volumes = [float(item.volume) for item in prior_range]
         except (TypeError, ValueError, OverflowError):
             logger.error("[%s] Invalid volume in option range-breakout bars", symbol)
@@ -475,7 +492,7 @@ class KiteTradingBot:
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         raw_entry_price = quote.get("last_price", quote.get("premium"))
         if raw_entry_price is None:
-            raw_entry_price = current_bar.close
+            raw_entry_price = latest_bar.close
         try:
             entry_price = float(raw_entry_price)
         except (TypeError, ValueError, OverflowError):
@@ -2974,7 +2991,10 @@ class KiteTradingBot:
                 or "_" not in symbol
             ):
                 raise ValueError("Range-breakout exit plans are paper-options only")
-            paper_option_adaptive_exit = self._paper_option_adaptive_exit_enabled(symbol)
+            paper_option_adaptive_exit = (
+                not range_breakout_plan
+                and self._paper_option_adaptive_exit_enabled(symbol)
+            )
             adaptive_exit_values = None
             if paper_option_adaptive_exit:
                 try:
