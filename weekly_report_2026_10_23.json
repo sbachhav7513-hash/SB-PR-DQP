@@ -1,0 +1,279 @@
+{
+  "generated_at": "2026-10-23T16:02:47+05:30",
+  "session_timezone": "Asia/Kolkata",
+  "market_session_hours": {
+    "open": "09:15",
+    "close": "15:30"
+  },
+  "period_days": 7,
+  "closed_trades": 32,
+  "total_pnl": -586.75,
+  "winning_trades": 15,
+  "losing_trades": 17,
+  "win_rate": 46.88,
+  "average_win": 605.03,
+  "average_loss": -568.37,
+  "largest_win": 1160.0,
+  "largest_loss": -1012.5,
+  "profit_factor": 0.94,
+  "decisions_recorded": 40444,
+  "signal_counts": {
+    "BUY": 1720,
+    "SELL": 445,
+    "HOLD": 34973,
+    "ERROR": 0
+  },
+  "outcome_counts": {
+    "operational": 19087,
+    "option_filter": 1085,
+    "paper_risk_cap": 40,
+    "hold": 19835,
+    "trade_opened": 32,
+    "risk_blocked": 354,
+    "accuracy_filter": 9,
+    "paper_entry_cutoff": 2,
+    "execution_failed": 0
+  },
+  "market_session_counts": {
+    "regular_session": 37989,
+    "after_close": 1902,
+    "before_open": 553
+  },
+  "decision_reconciliation": {
+    "approved_entries": 32,
+    "classified_rejections": 1448,
+    "non_entry_decisions": 38964,
+    "accounted_decisions": 40444,
+    "matches_decisions_recorded": true
+  },
+  "performance_by_symbol": {
+    "RELIANCE_PE": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 525.0
+    },
+    "TCS_PE": {
+      "trades": 4,
+      "wins": 1,
+      "losses": 3,
+      "win_rate": 25.0,
+      "total_pnl": -438.75
+    },
+    "RELIANCE_CE": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 300.0
+    },
+    "LT_CE": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": -507.5
+    },
+    "LT_PE": {
+      "trades": 4,
+      "wins": 3,
+      "losses": 1,
+      "win_rate": 75.0,
+      "total_pnl": 2642.5
+    },
+    "SBIN_CE": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 525.0
+    },
+    "TCS_CE": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -1035.0
+    },
+    "SBIN_PE": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -1650.0
+    },
+    "HDFCBANK_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -520.0
+    },
+    "INFY_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -940.0
+    },
+    "INFY_PE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 1160.0
+    },
+    "NIFTY_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -58.5
+    },
+    "HDFCBANK_PE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 585.0
+    },
+    "ICICIBANK_PE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -630.0
+    },
+    "ICICIBANK_CE": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -735.0
+    },
+    "BANKNIFTY_CE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 190.5
+    }
+  },
+  "performance_by_hour": {
+    "10": {
+      "trades": 12,
+      "wins": 5,
+      "losses": 7,
+      "win_rate": 41.67,
+      "total_pnl": -559.75
+    },
+    "11": {
+      "trades": 9,
+      "wins": 4,
+      "losses": 5,
+      "win_rate": 44.44,
+      "total_pnl": -271.25
+    },
+    "12": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 1122.5
+    },
+    "13": {
+      "trades": 5,
+      "wins": 2,
+      "losses": 3,
+      "win_rate": 40.0,
+      "total_pnl": -1044.5
+    },
+    "9": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 166.25
+    }
+  },
+  "performance_by_strategy_variant": {
+    "paper_option_range_breakout": {
+      "trades": 13,
+      "wins": 4,
+      "losses": 9,
+      "win_rate": 30.77,
+      "total_pnl": -2558.75
+    },
+    "primary": {
+      "trades": 19,
+      "wins": 11,
+      "losses": 8,
+      "win_rate": 57.89,
+      "total_pnl": 1972.0
+    }
+  },
+  "option_exit_comparison": {
+    "fixed_20pct_baseline": {
+      "trade_entries": 32,
+      "entries_per_day": 4.57,
+      "closed_trades": 32,
+      "average_pnl_per_trade": -18.34,
+      "total_pnl": -586.75
+    }
+  },
+  "filter_stats": {
+    "volatility_rejected": 0,
+    "confirmation_rejected": 0,
+    "cooldown_rejected": 9,
+    "hours_rejected": 0,
+    "threshold_rejected": 0,
+    "approved_entries": 32,
+    "option_rejected": 1085,
+    "risk_rejected": 354,
+    "execution_failures": 0,
+    "total_rejected": 1448
+  },
+  "news_summary": {
+    "risk_counts": {
+      "NORMAL": 0,
+      "ELEVATED": 0,
+      "HIGH": 0,
+      "UNKNOWN": 40444,
+      "DISABLED": 0
+    },
+    "suppressed_entries": 0
+  },
+  "best_observed_profiles": [],
+  "pnl_basis": "Recorded paper P&L; brokerage, taxes, and slippage are not deducted.",
+  "learning_feedback": {
+    "status": "minimum_screening_sample_met",
+    "closed_trades": 32,
+    "minimum_closed_trades_for_screening": 10,
+    "recorded_pnl_before_costs": -586.75,
+    "average_recorded_pnl_before_costs": -18.34,
+    "loss_patterns_for_review": [
+      {
+        "exit_reason": "SL",
+        "trades": 31,
+        "losses": 17,
+        "recorded_pnl_before_costs": -1746.75,
+        "average_recorded_pnl_before_costs": -56.35
+      }
+    ],
+    "automatic_strategy_changes": false,
+    "recommendation": "The minimum screening count is met, not proof of an edge. Validate any candidate change with walk-forward replay and realistic costs; no strategy settings are changed automatically."
+  },
+  "recommendation": "The minimum screening count is met, not proof of an edge. Validate any candidate change with walk-forward replay and realistic costs; no strategy settings are changed automatically.",
+  "best_setup_windows": [
+    {
+      "label": "10:BUY",
+      "trades": 12,
+      "wins": 5,
+      "losses": 7,
+      "win_rate": 41.67,
+      "total_pnl": -559.75,
+      "average_pnl": -46.65
+    }
+  ]
+}
