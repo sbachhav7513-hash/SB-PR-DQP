@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Callable, Dict, List, Optional
 
 from .engine import TradingScore, score_market
+from .ema_reentry import find_ema_reentry_signal
 
 
 @dataclass
@@ -19,6 +20,17 @@ class BacktestTrade:
     exit_reason: str
     gross_return_pct: float = 0.0
     cost_pct: float = 0.0
+    trade_id: Optional[str] = None
+    is_ema_reentry: bool = False
+    original_trade_id: Optional[str] = None
+    stop_time: Optional[object] = None
+    reentry_signal_time: Optional[object] = None
+    reentry_reason: Optional[str] = None
+    reentry_vwap: Optional[float] = None
+    reentry_entry_price: Optional[float] = None
+    reentry_exit_price: Optional[float] = None
+    reentry_pnl_pct: Optional[float] = None
+    reentry_outcome: Optional[str] = None
 
 
 @dataclass
@@ -28,6 +40,7 @@ class BacktestResult:
     reason_counts: Dict[str, int] = field(default_factory=dict)
     rejection_counts: Dict[str, int] = field(default_factory=dict)
     evaluated_bars: int = 0
+    ema_reentry_statistics: Dict[str, object] = field(default_factory=dict)
 
     @property
     def total_return_pct(self) -> float:
@@ -56,6 +69,7 @@ def run_backtest(
     trailing_activation_ratio: float = 0.5,
     trailing_distance_ratio: float = 0.25,
     history_limit: Optional[int] = None,
+    ema_stop_reentry_enabled: bool = False,
 ) -> BacktestResult:
     """Replay completed-bar signals at the next open with optional live gates and costs."""
     if stop_loss_pct <= 0 or take_profit_pct <= 0:
@@ -79,6 +93,27 @@ def run_backtest(
     rejection_counts: Counter = Counter()
     session_entries: Counter = Counter()
     evaluated_bars = 0
+    pending_reentry: Optional[dict] = None
+    reentry_statistics = Counter()
+
+    def update_reentry_after_exit(
+        closed_position: dict, exit_reason: str, candle: Dict
+    ) -> None:
+        nonlocal pending_reentry
+        if closed_position.get("is_ema_reentry"):
+            pending_reentry = None
+        elif ema_stop_reentry_enabled and exit_reason == "STOP_LOSS":
+            stopped_at = _utc_datetime(candle)
+            if stopped_at is not None:
+                reentry_statistics["eligible_stop_losses"] += 1
+                pending_reentry = {
+                    "original_trade_id": closed_position["trade_id"],
+                    "stop_time": stopped_at,
+                    "action": closed_position["action"],
+                    "option_leg": (
+                        "CE" if closed_position["action"] == "BUY" else "PE"
+                    ),
+                }
 
     for index in range(1, len(candles)):
         candle = candles[index]
@@ -112,10 +147,12 @@ def run_backtest(
                 trailing_distance_ratio,
             )
             if exit_price is not None:
-                trades.append(_close_trade(
+                closed_trade = _close_trade(
                     position, candle, exit_price, exit_reason,
                     fee_bps_per_side, slippage_bps_per_side,
-                ))
+                )
+                trades.append(closed_trade)
+                update_reentry_after_exit(position, exit_reason, candle)
                 position = None
             elif close_at is not None:
                 current_time = _bar_datetime(candle)
@@ -134,6 +171,81 @@ def run_backtest(
             signal_history = candles[:index]
             if history_limit is not None:
                 signal_history = signal_history[-history_limit:]
+            if pending_reentry is not None:
+                opportunity = find_ema_reentry_signal(
+                    candles[:index],
+                    pending_reentry["option_leg"],
+                    pending_reentry["stop_time"],
+                )
+                current_time = _utc_datetime(candle)
+                if opportunity is not None and current_time is not None:
+                    if (
+                        current_time - pending_reentry["stop_time"]
+                    ).total_seconds() <= 10 * 60:
+                        entry_price = float(candle["open"])
+                        position = _open_position(
+                            pending_reentry["action"],
+                            candle,
+                            entry_price,
+                            stop_loss_pct,
+                            take_profit_pct,
+                        )
+                        position.update(
+                            {
+                                "trade_id": (
+                                    f"{ticker}-{current_time.isoformat()}-"
+                                    f"{pending_reentry['action']}-EMA-REENTRY"
+                                ),
+                                "is_ema_reentry": True,
+                                "original_trade_id": pending_reentry[
+                                    "original_trade_id"
+                                ],
+                                "stop_time": pending_reentry["stop_time"],
+                                "reentry_signal_time": opportunity.signal_time,
+                                "reentry_reason": opportunity.reason,
+                                "reentry_vwap": opportunity.vwap,
+                                "reentry_entry_price": entry_price,
+                            }
+                        )
+                        reentry_statistics["signals_confirmed"] += 1
+                        reentry_statistics["reentries"] += 1
+                        if current_time is not None:
+                            session_entries[current_time.date()] += 1
+                        exit_price, exit_reason = _advance_position(
+                            position,
+                            candle,
+                            trailing_enabled,
+                            trailing_activation_ratio,
+                            trailing_distance_ratio,
+                        )
+                        if exit_price is not None:
+                            closed_trade = _close_trade(
+                                position,
+                                candle,
+                                exit_price,
+                                exit_reason,
+                                fee_bps_per_side,
+                                slippage_bps_per_side,
+                            )
+                            trades.append(closed_trade)
+                            reentry_statistics["reentry_pnl_pct"] += (
+                                closed_trade.return_pct
+                            )
+                            pending_reentry = None
+                        continue
+                    else:
+                        rejection_counts["ema_reentry_entry_after_window"] += 1
+                        reentry_statistics["expired"] += 1
+                        pending_reentry = None
+                elif current_time is not None and (
+                    current_time - pending_reentry["stop_time"]
+                ).total_seconds() > 10 * 60:
+                    rejection_counts["ema_reentry_window_expired"] += 1
+                    reentry_statistics["expired"] += 1
+                    pending_reentry = None
+                if pending_reentry is not None:
+                    continue
+
             decision = signal_fn(ticker, signal_history)
             evaluated_bars += 1
             signal_counts[decision.signal] += 1
@@ -161,6 +273,11 @@ def run_backtest(
                     continue
                 entry_price = float(candle["open"])
                 position = _open_position(decision.signal, candle, entry_price, stop_loss_pct, take_profit_pct)
+                entry_time = _bar_datetime(candle)
+                position["trade_id"] = (
+                    f"{ticker}-{entry_time.isoformat() if entry_time else index}-"
+                    f"{decision.signal}"
+                )
                 if session_key is not None:
                     session_entries[session_key] += 1
                 exit_price, exit_reason = _advance_position(
@@ -171,10 +288,12 @@ def run_backtest(
                     trailing_distance_ratio,
                 )
                 if exit_price is not None:
-                    trades.append(_close_trade(
+                    closed_trade = _close_trade(
                         position, candle, exit_price, exit_reason,
                         fee_bps_per_side, slippage_bps_per_side,
-                    ))
+                    )
+                    trades.append(closed_trade)
+                    update_reentry_after_exit(position, exit_reason, candle)
                     position = None
 
     if position is not None:
@@ -188,12 +307,36 @@ def run_backtest(
             slippage_bps_per_side,
         ))
 
+    if ema_stop_reentry_enabled:
+        baseline_trades = [trade for trade in trades if not trade.is_ema_reentry]
+        reentry_trades = [trade for trade in trades if trade.is_ema_reentry]
+        baseline_return = sum(trade.return_pct for trade in baseline_trades)
+        reentry_return = sum(trade.return_pct for trade in reentry_trades)
+        reentry_statistics["baseline_total_return_pct"] = baseline_return
+        reentry_statistics["combined_total_return_pct"] = (
+            baseline_return + reentry_return
+        )
+        reentry_statistics["reentry_pnl_pct"] = reentry_return
+        reentry_statistics["reentry_wins"] = sum(
+            trade.return_pct > 0 for trade in reentry_trades
+        )
+        reentry_statistics["reentry_losses"] = sum(
+            trade.return_pct < 0 for trade in reentry_trades
+        )
+        reentry_statistics["reentry_breakeven"] = sum(
+            trade.return_pct == 0 for trade in reentry_trades
+        )
+        reentry_statistics["price_basis"] = (
+            "Underlying OHLC directional proxy, not option-premium P&L"
+        )
+
     return BacktestResult(
         trades=trades,
         signal_counts=dict(signal_counts),
         reason_counts=dict(reason_counts),
         rejection_counts=dict(rejection_counts),
         evaluated_bars=evaluated_bars,
+        ema_reentry_statistics=dict(reentry_statistics),
     )
 
 
@@ -207,6 +350,15 @@ def _bar_datetime(candle: Dict) -> Optional[datetime]:
         except ValueError:
             return None
     return None
+
+
+def _utc_datetime(candle: Dict) -> Optional[datetime]:
+    value = _bar_datetime(candle)
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _valid_candle(candle: Dict) -> bool:
@@ -320,6 +472,13 @@ def _close_trade(
     direction = 1 if position["action"] == "BUY" else -1
     gross_return_pct = direction * (exit_price - entry_price) / entry_price * 100.0
     cost_pct = 2.0 * (fee_bps_per_side + slippage_bps_per_side) / 100.0
+    reentry_pnl_pct = gross_return_pct - cost_pct
+    outcome = (
+        "WIN" if reentry_pnl_pct > 0
+        else "LOSS" if reentry_pnl_pct < 0
+        else "BREAKEVEN"
+    )
+    is_reentry = bool(position.get("is_ema_reentry"))
     return BacktestTrade(
         action=position["action"],
         entry_time=position["entry_time"],
@@ -330,4 +489,17 @@ def _close_trade(
         exit_reason=exit_reason,
         gross_return_pct=gross_return_pct,
         cost_pct=cost_pct,
+        trade_id=position.get("trade_id"),
+        is_ema_reentry=is_reentry,
+        original_trade_id=position.get("original_trade_id"),
+        stop_time=position.get("stop_time"),
+        reentry_signal_time=position.get("reentry_signal_time"),
+        reentry_reason=position.get("reentry_reason"),
+        reentry_vwap=position.get("reentry_vwap"),
+        reentry_entry_price=(
+            position.get("reentry_entry_price") if is_reentry else None
+        ),
+        reentry_exit_price=exit_price if is_reentry else None,
+        reentry_pnl_pct=reentry_pnl_pct if is_reentry else None,
+        reentry_outcome=outcome if is_reentry else None,
     )

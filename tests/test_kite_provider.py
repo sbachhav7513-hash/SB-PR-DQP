@@ -551,6 +551,43 @@ def test_option_quality_gate_uses_softer_strong_signal_floors_for_ce_and_pe():
         assert reason == "OK"
 
 
+def test_support_reversal_premium_exception_is_paper_only_and_isolated():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "paper_support_reversal_enabled": True,
+        "option_min_premium": 12.0,
+        "option_max_premium": 150.0,
+        "option_min_volume": 200,
+        "option_min_oi": 400,
+        "option_iv_min": 0.08,
+        "option_iv_max": 1.2,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.option_quote_cache = {
+        "NIFTY_CE": {
+            "last_price": 5.5,
+            "volume": 250,
+            "oi": 450,
+            "iv": 0.2,
+            "timestamp": datetime.now().astimezone(),
+        }
+    }
+
+    assert bot._option_quality_gate("NIFTY_CE", "BUY")[0] is False
+    assert bot._option_quality_gate(
+        "NIFTY_CE", "BUY", minimum_premium_override=5.0
+    ) == (True, "OK")
+
+    bot.live_orders_enabled = True
+    allowed, reason = bot._option_quality_gate(
+        "NIFTY_CE", "BUY", minimum_premium_override=5.0
+    )
+    assert allowed is False
+    assert "unavailable" in reason
+
+
 def test_option_quality_gate_rejects_invalid_or_unavailable_quotes():
     bot = object.__new__(KiteTradingBot)
     bot.config = {"trading_mode": "intraday_options"}

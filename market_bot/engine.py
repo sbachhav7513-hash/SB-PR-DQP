@@ -20,6 +20,15 @@ class TradingScore:
     strategy_variant: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class SupportResistanceReversal:
+    signal: str
+    level: float
+    touches: int
+    bars_since_touch: int
+    bar_time: Optional[datetime] = None
+
+
 def _extract_timestamps(history: List[Dict]) -> List[datetime]:
     timestamps: List[datetime] = []
     for item in history:
@@ -179,6 +188,242 @@ def calculate_atr(history: List[Dict], period: int = 14) -> Optional[float]:
         for current, previous in zip(history[1:], history[:-1])
     ]
     return sum(true_ranges[-period:]) / period
+
+
+def aggregate_ohlcv_bars(
+    history: List[Dict],
+    *,
+    source_interval_seconds: int,
+    target_interval_seconds: int,
+) -> List[Dict]:
+    """Aggregate only complete, contiguous OHLCV buckets."""
+    if (
+        source_interval_seconds <= 0
+        or target_interval_seconds <= source_interval_seconds
+        or target_interval_seconds % source_interval_seconds != 0
+    ):
+        raise ValueError("Target interval must be a multiple of the source interval")
+
+    bucket_size = target_interval_seconds // source_interval_seconds
+    groups: Dict[int, List[tuple[datetime, Dict]]] = {}
+    for bar in history:
+        value = bar.get("time")
+        try:
+            timestamp = (
+                value
+                if isinstance(value, datetime)
+                else datetime.fromisoformat(str(value))
+            )
+        except (TypeError, ValueError):
+            continue
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=IST)
+        else:
+            timestamp = timestamp.astimezone(IST)
+        bucket = int(timestamp.timestamp()) // target_interval_seconds
+        groups.setdefault(bucket, []).append((timestamp, bar))
+
+    aggregated = []
+    for items in groups.values():
+        items.sort(key=lambda item: item[0])
+        if len(items) != bucket_size or any(
+            (items[index][0] - items[index - 1][0]).total_seconds()
+            != source_interval_seconds
+            for index in range(1, len(items))
+        ):
+            continue
+        try:
+            opens = [float(bar["open"]) for _, bar in items]
+            highs = [float(bar["high"]) for _, bar in items]
+            lows = [float(bar["low"]) for _, bar in items]
+            closes = [float(bar["close"]) for _, bar in items]
+            volumes = [float(bar["volume"]) for _, bar in items]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not all(
+            math.isfinite(value)
+            for value in opens + highs + lows + closes + volumes
+        ) or any(
+            volume < 0 for volume in volumes
+        ) or any(
+            low > high or low > min(open_price, close) or high < max(open_price, close)
+            for open_price, high, low, close in zip(opens, highs, lows, closes)
+        ):
+            continue
+        aggregated.append(
+            {
+                "time": items[0][0],
+                "open": opens[0],
+                "high": max(highs),
+                "low": min(lows),
+                "close": closes[-1],
+                "volume": sum(volumes),
+            }
+        )
+    return aggregated
+
+
+def detect_support_resistance_reversal(
+    history: List[Dict],
+    *,
+    lookback_bars: int = 10,
+    pivot_window: int = 1,
+    minimum_touches: int = 2,
+    level_tolerance_pct: float = 0.002,
+    touch_lookback_bars: int = 4,
+    confirmation_bars: int = 1,
+    maximum_entry_distance_pct: float = 0.004,
+) -> Optional[SupportResistanceReversal]:
+    """Detect a confirmed underlying reversal at a repeatedly tested price level."""
+    history = _current_session_history(history)
+    if (
+        lookback_bars < 2 * pivot_window + confirmation_bars + 3
+        or pivot_window < 1
+        or minimum_touches < 2
+        or touch_lookback_bars < 1
+        or confirmation_bars < 1
+        or not math.isfinite(level_tolerance_pct)
+        or level_tolerance_pct <= 0
+        or not math.isfinite(maximum_entry_distance_pct)
+        or maximum_entry_distance_pct <= 0
+        or len(history) < lookback_bars
+    ):
+        return None
+
+    try:
+        bars = [
+            {
+                key: float(bar[key])
+                for key in ("open", "high", "low", "close")
+            }
+            for bar in history[-lookback_bars:]
+        ]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not all(
+        math.isfinite(value)
+        for bar in bars
+        for value in bar.values()
+    ):
+        return None
+    prior_bars = bars[:-1]
+    current = bars[-1]
+    low_pivots: List[tuple[int, float]] = []
+    high_pivots: List[tuple[int, float]] = []
+
+    for index in range(pivot_window, len(prior_bars) - pivot_window):
+        left = prior_bars[index - pivot_window:index]
+        right = prior_bars[index + 1:index + pivot_window + 1]
+        low = float(prior_bars[index]["low"])
+        high = float(prior_bars[index]["high"])
+        if low < min(float(bar["low"]) for bar in left) and low <= min(
+            float(bar["low"]) for bar in right
+        ):
+            low_pivots.append((index, low))
+        if high > max(float(bar["high"]) for bar in left) and high >= max(
+            float(bar["high"]) for bar in right
+        ):
+            high_pivots.append((index, high))
+
+    def tested_levels(
+        pivots: List[tuple[int, float]], kind: str
+    ) -> List[tuple[float, int]]:
+        groups: List[List[tuple[int, float]]] = []
+        for pivot in sorted(pivots, key=lambda item: item[1]):
+            for group in groups:
+                center = sum(value for _, value in group) / len(group)
+                if abs(pivot[1] - center) / center <= level_tolerance_pct:
+                    group.append(pivot)
+                    break
+            else:
+                groups.append([pivot])
+
+        result = []
+        for group in groups:
+            if len(group) < minimum_touches:
+                continue
+            level = sum(value for _, value in group) / len(group)
+            if kind == "support" and level < float(current["close"]):
+                result.append((level, len(group)))
+            elif kind == "resistance" and level > float(current["close"]):
+                result.append((level, len(group)))
+        return result
+
+    def touches_level(level: float, kind: str) -> Optional[int]:
+        start = max(0, len(prior_bars) - touch_lookback_bars)
+        for index in range(len(prior_bars) - 1, start - 1, -1):
+            bar = prior_bars[index]
+            if kind == "support":
+                touched = (
+                    float(bar["low"]) <= level * (1 + level_tolerance_pct)
+                    and float(bar["high"]) >= level * (1 - level_tolerance_pct)
+                )
+            else:
+                touched = (
+                    float(bar["high"]) >= level * (1 - level_tolerance_pct)
+                    and float(bar["low"]) <= level * (1 + level_tolerance_pct)
+                )
+            if touched:
+                return index
+        return None
+
+    close = float(current["close"])
+    open_price = float(current["open"])
+    value = history[-1].get("time")
+    try:
+        bar_time = (
+            value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        )
+    except (TypeError, ValueError):
+        bar_time = None
+    if bar_time is not None and bar_time.tzinfo is not None:
+        bar_time = bar_time.astimezone(IST)
+    previous = prior_bars[-confirmation_bars:]
+    distance_limit = maximum_entry_distance_pct
+    support_candidates = []
+    for level, count in tested_levels(low_pivots, "support"):
+        touch_index = touches_level(level, "support")
+        if (
+            touch_index is not None
+            and close > level
+            and close > open_price
+            and close > max(float(bar["high"]) for bar in previous)
+            and (close - level) / level <= distance_limit
+        ):
+            support_candidates.append((level, count, touch_index))
+    if support_candidates:
+        level, count, touch_index = max(support_candidates, key=lambda item: item[0])
+        return SupportResistanceReversal(
+            signal="BUY",
+            level=level,
+            touches=count,
+            bars_since_touch=len(prior_bars) - 1 - touch_index,
+            bar_time=bar_time,
+        )
+
+    resistance_candidates = []
+    for level, count in tested_levels(high_pivots, "resistance"):
+        touch_index = touches_level(level, "resistance")
+        if (
+            touch_index is not None
+            and close < level
+            and close < open_price
+            and close < min(float(bar["low"]) for bar in previous)
+            and (level - close) / level <= distance_limit
+        ):
+            resistance_candidates.append((level, count, touch_index))
+    if resistance_candidates:
+        level, count, touch_index = min(
+            resistance_candidates, key=lambda item: item[0]
+        )
+        return SupportResistanceReversal(
+            signal="SELL",
+            level=level,
+            touches=count,
+            bars_since_touch=len(prior_bars) - 1 - touch_index,
+            bar_time=bar_time,
+        )
+    return None
 
 
 def calculate_vwap(history: List[Dict], period: int = 20) -> Optional[float]:
@@ -362,7 +607,17 @@ def score_market(
     signal_proximity_pct: float = 0.005,
     volume_confirmation_history: Optional[List[Dict]] = None,
     paper_allow_trend_continuation: bool = False,
+    rsi_buy_block_above: float = 70.0,
+    rsi_sell_block_below: float = 30.0,
 ) -> TradingScore:
+    if (
+        not math.isfinite(rsi_buy_block_above)
+        or not 0 < rsi_buy_block_above <= 100
+        or not math.isfinite(rsi_sell_block_below)
+        or not 0 < rsi_sell_block_below <= 100
+    ):
+        raise ValueError("RSI entry thresholds must be between 0 and 100")
+
     history = _current_session_history(history)
     if trend_momentum_bonus_threshold is None:
         trend_momentum_bonus_threshold = min_trend_strength
@@ -501,9 +756,9 @@ def score_market(
     elif bearish_market and rsi_now > 65:
         score += 12
         reasons.append("RSI overbought")
-    elif bullish_market and rsi_now > 70:
+    elif bullish_market and rsi_now > rsi_buy_block_above:
         reasons.append("RSI overbought against BUY")
-    elif bearish_market and rsi_now < 30:
+    elif bearish_market and rsi_now < rsi_sell_block_below:
         reasons.append("RSI oversold against SELL")
 
     if bullish_market and price > recent_high * (1.0 - signal_proximity_pct):
@@ -533,7 +788,11 @@ def score_market(
     )
     minimum_buy_price = recent_high * (1.0 - signal_proximity_pct)
     maximum_sell_price = recent_low * (1.0 + signal_proximity_pct)
-    if score >= 55 and up_trend_conf and price >= minimum_buy_price:
+    if bullish_market and rsi_now > rsi_buy_block_above:
+        signal = "HOLD"
+    elif bearish_market and rsi_now < rsi_sell_block_below:
+        signal = "HOLD"
+    elif score >= 55 and up_trend_conf and price >= minimum_buy_price:
         signal = "BUY"
     elif score >= 55 and down_trend_conf and price <= maximum_sell_price:
         signal = "SELL"

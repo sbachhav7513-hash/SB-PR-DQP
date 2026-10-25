@@ -3,7 +3,7 @@
 > **Evidence warning (2026-10-15):** Any trade statistics and performance
 > conclusions in this historical guide are preliminary, not proof of a durable
 > edge. A small sample cannot validate profitability or justify live trading.
-> See [README_RELIABILITY.md](README_RELIABILITY.md) for the current deployment
+> See [README_RELIABILITY.md](README_RELIA` BILITY.md) for the current deployment
 > verdict.
 
 ## Summary of Changes

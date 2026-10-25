@@ -65,7 +65,8 @@ def load_trades(days=7):
     """Load trades from the past N days"""
     paper_trades = load_paper_records(
         'trades.parquet', days, [
-            'timestamp', 'ticker', 'action', 'status', 'pnl', 'strategy_variant'
+            'timestamp', 'ticker', 'action', 'status', 'pnl', 'strategy_variant',
+            'paper_exit_quote_timestamp',
         ]
     )
     if paper_trades is not None:

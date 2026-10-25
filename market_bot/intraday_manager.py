@@ -99,6 +99,8 @@ class IntradayManager:
         self.symbol_performance: Dict[str, Dict[str, float]] = {}
         self.recent_loss_symbols: Dict[str, datetime] = {}
         self.session_trade_symbols: set[str] = set()
+        self.session_trade_counts: Dict[str, int] = {}
+        self.session_loss_stop_times: Dict[str, datetime] = {}
         self.session_reversal_symbols: set[str] = set()
         self._session_date = datetime.now(IST).date()
         self.trade_history: list[dict] = []
@@ -188,13 +190,42 @@ class IntradayManager:
         
         return quantity
     
-    def can_open_trade(self, symbol: str, direction: str) -> tuple[bool, str]:
-        """Policy gate for one trade per symbol per session and risk limits."""
+    def can_open_trade(
+        self,
+        symbol: str,
+        direction: str,
+        *,
+        allow_stop_reentry: bool = False,
+        stop_reentry_cooldown_seconds: int = 900,
+        signal_score: Optional[int] = None,
+        minimum_stop_reentry_score: int = 75,
+    ) -> tuple[bool, str]:
+        """Apply session, optional paper stop-retry, and risk policies."""
         self._refresh_session()
         if symbol in self.session_reversal_symbols:
             return False, f"{symbol} already reversed this session; no new trade allowed"
         if symbol in self.session_trade_symbols:
-            return False, f"{symbol} already traded this session; only one trade per symbol per session is allowed"
+            if not allow_stop_reentry:
+                return False, f"{symbol} already traded this session; only one trade per symbol per session is allowed"
+            if self.session_trade_counts.get(symbol, 1) != 1:
+                return False, f"{symbol} already used its one stop-loss re-entry this session"
+            stopped_at = self.session_loss_stop_times.get(symbol)
+            if stopped_at is None:
+                return False, f"{symbol} has no qualifying loss stop for re-entry"
+            if stop_reentry_cooldown_seconds < 0:
+                raise ValueError("stop_reentry_cooldown_seconds must be non-negative")
+            elapsed = (datetime.now(IST) - stopped_at).total_seconds()
+            if elapsed < stop_reentry_cooldown_seconds:
+                remaining = stop_reentry_cooldown_seconds - elapsed
+                return False, (
+                    f"{symbol} stop re-entry cooldown active: "
+                    f"{remaining:.0f}s remaining"
+                )
+            if signal_score is None or signal_score < minimum_stop_reentry_score:
+                return False, (
+                    f"{symbol} stop re-entry requires score "
+                    f"{minimum_stop_reentry_score} or higher"
+                )
         if self.daily_pnl <= -self.daily_max_loss:
             return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
         available_risk = self.available_daily_risk()
@@ -266,11 +297,15 @@ class IntradayManager:
         self._refresh_session()
         self.daily_trade_count += 1
         self.session_trade_symbols.add(symbol)
+        self.session_trade_counts[symbol] = self.session_trade_counts.get(symbol, 0) + 1
         logger.info("[%s] Recorded open trade for %s; daily_trade_count=%d", symbol, direction, self.daily_trade_count)
 
     def restore_session_trades(self, trades: list[dict]) -> None:
         """Restore today's symbol exposure and realized P&L from the journal."""
         self._refresh_session()
+        self.session_trade_symbols.clear()
+        self.session_trade_counts.clear()
+        self.session_loss_stop_times.clear()
         closed_today = []
         for trade in trades:
             symbol = trade.get("ticker") or trade.get("symbol")
@@ -289,7 +324,11 @@ class IntradayManager:
                 and timestamp is not None
                 and timestamp.date() == self._session_date
             ):
-                self.session_trade_symbols.add(str(symbol))
+                symbol = str(symbol)
+                self.session_trade_symbols.add(symbol)
+                self.session_trade_counts[symbol] = (
+                    self.session_trade_counts.get(symbol, 0) + 1
+                )
             if trade.get("status") != "closed":
                 continue
             try:
@@ -314,6 +353,14 @@ class IntradayManager:
                         "Cannot restore aggregate daily risk from a closed journal "
                         "trade with non-finite P&L"
                     )
+                symbol = trade.get("ticker") or trade.get("symbol")
+                reason = str(trade.get("reason", "")).upper()
+                if (
+                    symbol
+                    and pnl < 0
+                    and reason in {"STOP_LOSS", "TRAILING_STOP"}
+                ):
+                    self.session_loss_stop_times[str(symbol)] = closed_at
                 closed_today.append((closed_at, pnl))
 
         closed_today.sort(key=lambda item: item[0])
@@ -329,6 +376,8 @@ class IntradayManager:
         self._refresh_session()
         self.daily_pnl += pnl
         self.trade_history.append({"symbol": symbol, "reason": reason, "pnl": pnl, "time": datetime.now(IST)})
+        if pnl < 0 and reason in {"STOP_LOSS", "TRAILING_STOP"}:
+            self.session_loss_stop_times[symbol] = datetime.now(IST)
         if reason == "SIGNAL_REVERSAL":
             self.session_reversal_symbols.add(symbol)
         if pnl < 0 and abs(pnl) >= self.daily_max_loss * 0.5:
@@ -356,6 +405,8 @@ class IntradayManager:
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
         self.session_trade_symbols.clear()
+        self.session_trade_counts.clear()
+        self.session_loss_stop_times.clear()
         self.session_reversal_symbols.clear()
 
     def register_position(

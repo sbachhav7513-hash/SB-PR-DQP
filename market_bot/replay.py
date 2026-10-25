@@ -279,6 +279,16 @@ def run_replay(
     volume_confirmation_candles: Optional[List[Dict]] = None,
 ) -> BacktestResult:
     """Replay the strategy and shared accuracy filters without broker access."""
+    ema_reentry_enabled = bool(
+        config.get("paper_ema_reentry_enabled", True)
+    )
+    if (
+        ema_reentry_enabled
+        and int(config.get("bar_interval_seconds", 60)) != 60
+    ):
+        raise ValueError(
+            "EMA stop-loss re-entry replay requires 1-minute underlying candles"
+        )
     if volume_confirmation_candles is not None and not volume_confirmation_candles:
         raise ValueError("volume confirmation data must contain at least one candle")
     contexts = context_histories or {}
@@ -330,6 +340,16 @@ def run_replay(
                 bool(config.get("paper_trading_enabled", False))
                 and bool(config.get("paper_allow_trend_continuation", False))
             ),
+            rsi_buy_block_above=(
+                float(config.get("paper_rsi_buy_block_above", 80.0))
+                if bool(config.get("paper_trading_enabled", False))
+                else 70.0
+            ),
+            rsi_sell_block_below=(
+                float(config.get("paper_rsi_sell_block_below", 25.0))
+                if bool(config.get("paper_trading_enabled", False))
+                else 30.0
+            ),
         )
 
     def entry_filter(
@@ -375,6 +395,7 @@ def run_replay(
         trailing_activation_ratio=float(config.get("trailing_activation_ratio", 0.5)),
         trailing_distance_ratio=float(config.get("trailing_distance_ratio", 0.25)),
         history_limit=50,
+        ema_stop_reentry_enabled=ema_reentry_enabled,
     )
 
 
@@ -402,6 +423,7 @@ def _summary(result: BacktestResult) -> Dict:
         "expectancy_pct_per_trade": sum(returns) / len(returns) if returns else None,
         "profit_factor": gains / losses if losses else None,
         "maximum_drawdown_pct": maximum_drawdown if returns else None,
+        "ema_stop_reentry": result.ema_reentry_statistics,
         "trades": [asdict(trade) for trade in result.trades],
     }
 
@@ -499,7 +521,7 @@ def main() -> None:
             "fee": args.fee_bps_per_side,
             "slippage": args.slippage_bps_per_side,
         },
-        "scope": "strategy, AccuracyFilters, one-entry-per-session rule, and simulated exits; optional separate option volume confirms underlying breakouts by exact timestamp; excludes broker fills, option contract selection, news, and portfolio risk sizing",
+        "scope": "strategy and EMA stop-loss re-entry on underlying 1-minute candles, AccuracyFilters, one-entry-per-session rule, and simulated underlying exits; optional separate option volume confirms underlying breakouts by exact timestamp; excludes broker fills, option-premium P&L, news, and portfolio risk sizing",
         "warnings": [],
         "results": _summary(result),
     }
@@ -525,6 +547,11 @@ def main() -> None:
             )
     if args.fee_bps_per_side == 0 or args.slippage_bps_per_side == 0:
         report["warnings"].append("Set fee and slippage assumptions to realistic non-zero values before relying on returns.")
+    if config.get("paper_ema_reentry_enabled", True):
+        report["warnings"].append(
+            "EMA re-entry replay returns use underlying OHLC directional proxies, "
+            "not option-premium P&L or live lot sizing."
+        )
 
     serialized = json.dumps(report, indent=2, default=str)
     if args.output:

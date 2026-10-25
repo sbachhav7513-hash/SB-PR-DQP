@@ -16,6 +16,7 @@ def test_option_trade_message_includes_exact_trading_symbol():
 
     assert "OPTION Trade: BUY NIFTY_CE | Leg: CE" in payload["message"]
     assert "Trading symbol: NIFTY26SEP25000CE" in payload["message"]
+    assert payload["trading_symbol"] == "NIFTY26SEP25000CE"
 
 
 def test_close_message_includes_exact_trading_symbol():

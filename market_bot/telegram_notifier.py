@@ -109,6 +109,7 @@ class TelegramNotifier:
         target_label = "Trailing reference" if trailing_enabled else "Target"
         return {
             "ticker": ticker,
+            "trading_symbol": trading_symbol or ticker,
             "action": action,
             "score": score,
             "entry": entry,

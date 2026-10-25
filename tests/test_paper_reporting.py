@@ -25,6 +25,7 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     trades.log_trade({
         "timestamp": timestamp,
         "ticker": "NIFTY",
+        "trading_symbol": "NIFTY26SEP25000CE",
         "action": "BUY",
         "entry": 100,
         "quantity": 50,
@@ -37,6 +38,7 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     )
     assert rows[0]["status"] == "closed"
     assert rows[0]["exit_price"] == "101"
+    assert rows[0]["trading_symbol"] == "NIFTY26SEP25000CE"
     assert (day_dir / "decisions.parquet").exists()
     decision_file = ParquetFile(day_dir / "decisions.parquet")
     assert decision_file.to_pandas()["signal"].tolist() == ["BUY", "HOLD"]
@@ -189,6 +191,34 @@ def test_weekly_report_groups_option_exit_strategies_separately(tmp_path):
                     "pnl_rupees": 45.0,
                     "exit_strategy": "paper_option_2r_trail_runner",
                 },
+                {
+                    "timestamp": timestamp,
+                    "ticker": "BANKNIFTY_PE",
+                    "action": "BUY",
+                    "status": "closed",
+                    "pnl": -12.0,
+                    "exit_strategy": "paper_option_adaptive",
+                    "strategy_variant": "adaptive_entry",
+                },
+                {
+                    "timestamp": timestamp,
+                    "ticker": "TCS_CE",
+                    "action": "BUY",
+                    "status": "closed",
+                    "pnl": -15.0,
+                    "exit_strategy": "paper_range_breakout_2r",
+                    "strategy_variant": "breakout_entry",
+                    "reason": "STOP_LOSS",
+                    "quantity": 10,
+                    "entry": 10.0,
+                    "exit_price": 8.0,
+                    "paper_entry_bid": 9.9,
+                    "paper_entry_ask": 10.0,
+                    "paper_exit_ltp": 8.0,
+                    "paper_exit_bid": 7.9,
+                    "paper_exit_ask": 8.1,
+                    "paper_entry_risk_rupees": 14.0,
+                },
             )
         )
         + "\n",
@@ -218,6 +248,33 @@ def test_weekly_report_groups_option_exit_strategies_separately(tmp_path):
     assert report["option_exit_comparison"]["paper_option_2r_trail_runner"][
         "average_pnl_per_trade"
     ] == 45.0
+    assert report["option_exit_comparison"]["paper_option_adaptive"][
+        "total_pnl"
+    ] == -12.0
+    assert report["option_exit_comparison"]["paper_range_breakout_2r"][
+        "total_pnl"
+    ] == -15.0
+    assert report["performance_by_strategy_variant"]["breakout_entry"][
+        "total_pnl"
+    ] == -15.0
+    assert report["performance_by_exit_reason"]["STOP_LOSS"]["losses"] == 1
+    assert report["quote_cost_coverage"] == {
+        "closed_trades": 5,
+        "quote_consistent_trades": 1,
+        "quote_based_pnl": -21.0,
+    }
+    assert report["stop_risk_overruns"] == {
+        "stop_losses_with_risk_data": 1,
+        "overrun_trades": 1,
+        "total_overrun_rupees": 1.0,
+    }
+    review = write_weekly_review(
+        str(tmp_path), str(tmp_path / "paper"), days=7
+    ).read_text(encoding="utf-8")
+    assert "Performance by Entry Strategy" in review
+    assert "Loss Clusters" in review
+    assert "1/5 closed trades" in review
+    assert "do not by themselves constitute an out-of-sample walk-forward replay" in review
 
 
 def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatch):
@@ -233,6 +290,7 @@ def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatc
             "action": "BUY",
             "status": "closed",
             "pnl": 100.0,
+            "paper_exit_quote_timestamp": timestamp,
         }
     )
     decisions_journal = DecisionJournal(
@@ -247,7 +305,9 @@ def test_weekly_analyzer_reads_partitioned_parquet_journals(tmp_path, monkeypatc
         }
     )
 
-    assert len(load_trades()) == 1
+    loaded_trades = load_trades()
+    assert len(loaded_trades) == 1
+    assert loaded_trades[0]["paper_exit_quote_timestamp"] == timestamp
     decisions = list(iter_decisions())
     assert len(decisions) == 1
     assert decisions[0]["outcome"] == "accuracy_filter"
