@@ -81,7 +81,8 @@ class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
     TRADE_COLUMNS = [
-        "trade_id", "timestamp", "ticker", "action", "quantity", "entry",
+        "trade_id", "timestamp", "ticker", "trading_symbol",
+        "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
         "holding_time_seconds", "protection_order_id", "strategy_variant",
@@ -112,6 +113,19 @@ class PaperTradingRecorder:
         "paper_exit_ltp",
         "paper_exit_bid",
         "paper_exit_ask",
+        "paper_exit_quote_timestamp",
+        "is_ema_reentry",
+        "original_trade_id",
+        "ema_reentry_eligible",
+        "ema_reentry_stop_time",
+        "ema_reentry_outcome",
+        "reentry_signal_time",
+        "reentry_reason",
+        "reentry_vwap",
+        "reentry_entry_price",
+        "reentry_exit_price",
+        "reentry_pnl",
+        "reentry_outcome",
     ]
     DECISION_COLUMNS = [
         "timestamp", "ticker", "signal", "outcome", "score", "reasons",
@@ -119,6 +133,10 @@ class PaperTradingRecorder:
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
         "entry_evaluation",
+        "event", "ema_reentry_event", "original_trade_id", "stop_time",
+        "reentry_signal_time", "reentry_reason", "reentry_vwap",
+        "reentry_entry_price", "reentry_exit_price", "reentry_pnl",
+        "reentry_outcome",
     ]
 
     def __init__(self, root: str = "paper_trading_data") -> None:

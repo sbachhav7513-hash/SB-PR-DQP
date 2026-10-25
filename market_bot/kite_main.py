@@ -16,7 +16,15 @@ from zoneinfo import ZoneInfo
 
 from .accuracy_filters import AccuracyFilters
 from .bar_builder import BarBuilder, Bar
-from .engine import market_session_state, score_market
+from .engine import (
+    SupportResistanceReversal,
+    aggregate_ohlcv_bars,
+    detect_support_resistance_reversal,
+    filter_signal_by_context,
+    market_session_state,
+    score_market,
+)
+from .ema_reentry import find_ema_reentry_signal
 from .intraday_manager import (
     IntradayManager,
     PAPER_OPTION_ADAPTIVE_EXIT,
@@ -542,6 +550,76 @@ class KiteTradingBot:
         )
         return f"PAPER_RANGE_BREAKOUT_{outcome.upper()}"
 
+    def _paper_support_reversal_candidate(
+        self, symbol: str, underlying_bars: list[Bar]
+    ) -> Optional[SupportResistanceReversal]:
+        """Find a deduplicated paper-only reversal from completed underlying bars."""
+        if (
+            not self.config.get("paper_support_reversal_enabled", False)
+            or not getattr(self, "paper_trading_enabled", False)
+            or getattr(self, "live_orders_enabled", False)
+            or not self._options_enabled()
+            or not symbol.endswith(("_CE", "_PE"))
+        ):
+            return None
+
+        underlying = symbol.rsplit("_", 1)[0].upper()
+        try:
+            source_interval = int(self.config.get("bar_interval_seconds", 60))
+            cooldown_minutes = int(
+                self.config.get("paper_support_reversal_cooldown_minutes", 15)
+            )
+        except (TypeError, ValueError, OverflowError):
+            logger.error("[%s] Invalid paper support-reversal settings", symbol)
+            return None
+        if (
+            source_interval <= 0
+            or source_interval >= 300
+            or 300 % source_interval != 0
+            or not 1 <= cooldown_minutes <= 120
+        ):
+            logger.error("[%s] Invalid paper support-reversal settings", symbol)
+            return None
+
+        history = aggregate_ohlcv_bars(
+            [item.to_dict() for item in underlying_bars],
+            source_interval_seconds=source_interval,
+            target_interval_seconds=300,
+        )
+        candidate = detect_support_resistance_reversal(history)
+        if candidate is None:
+            return None
+        preferred = self._preferred_option_symbol(underlying, candidate.signal)
+        if symbol != preferred:
+            return None
+
+        timestamp = candidate.bar_time or history[-1]["time"]
+        last_candidates = getattr(self, "_paper_support_reversal_last_candidate", {})
+        previous = last_candidates.get(underlying)
+        if previous is not None:
+            previous_time, previous_signal, previous_level = previous
+            elapsed = (timestamp - previous_time).total_seconds()
+            same_setup = (
+                previous_time.date() == timestamp.date()
+                and previous_signal == candidate.signal
+                and abs(previous_level - candidate.level) / candidate.level <= 0.002
+            )
+            if same_setup and 0 <= elapsed < cooldown_minutes * 60:
+                return None
+        return candidate
+
+    def _mark_paper_support_reversal_attempt(
+        self, symbol: str, candidate: SupportResistanceReversal
+    ) -> None:
+        underlying = symbol.rsplit("_", 1)[0].upper()
+        last_candidates = getattr(self, "_paper_support_reversal_last_candidate", {})
+        last_candidates[underlying] = (
+            candidate.bar_time or datetime.now(IST),
+            candidate.signal,
+            candidate.level,
+        )
+        self._paper_support_reversal_last_candidate = last_candidates
+
     def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
         if lot_size <= 0:
@@ -656,6 +734,16 @@ class KiteTradingBot:
             raise RuntimeError(
                 "paper_trading_enabled and live_orders_enabled cannot both be true"
             )
+        if (
+            self.config.get("paper_ema_reentry_enabled", True)
+            and self.paper_trading_enabled
+            and not self.live_orders_enabled
+            and options_mode
+            and int(self.config.get("bar_interval_seconds", 60)) != 60
+        ):
+            raise ValueError(
+                "paper_ema_reentry_enabled requires 1-minute underlying bars"
+            )
         if self.live_orders_enabled and not self.config.get("live_orders_confirmed", False):
             raise RuntimeError(
                 "live_orders_enabled requires live_orders_confirmed=true in kite_config.json"
@@ -686,12 +774,23 @@ class KiteTradingBot:
         }
         session_trades = self.trade_journal.read_trades()
         self.intraday_manager.restore_session_trades(session_trades)
+        self._ema_reentry_states: Dict[str, dict] = {}
+        self._restore_ema_reentry_states(session_trades)
         if self.paper_trading_enabled:
             self._restore_paper_positions(session_trades)
         self.decision_journal = DecisionJournal(
             self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
         )
+        for symbol, state in self._ema_reentry_states.items():
+            if state.get("status") == "expired":
+                self._log_ema_reentry_event(
+                    symbol,
+                    state,
+                    "WINDOW_EXPIRED",
+                    current_time=datetime.now(IST),
+                    outcome="no_signal",
+                )
         self.weekly_report_dir = Path(
             self.config.get("weekly_report_dir", ".")
         )
@@ -720,6 +819,18 @@ class KiteTradingBot:
         )
         if not 0 <= self.paper_min_entry_score <= 85:
             raise ValueError("paper_min_entry_score must be between 0 and 85")
+        self.paper_stop_reentry_min_score = int(
+            self.config.get("paper_stop_reentry_min_score", 75)
+        )
+        if not 0 <= self.paper_stop_reentry_min_score <= 85:
+            raise ValueError("paper_stop_reentry_min_score must be between 0 and 85")
+        self.paper_stop_reentry_cooldown_minutes = int(
+            self.config.get("paper_stop_reentry_cooldown_minutes", 15)
+        )
+        if not 1 <= self.paper_stop_reentry_cooldown_minutes <= 240:
+            raise ValueError(
+                "paper_stop_reentry_cooldown_minutes must be between 1 and 240"
+            )
         self.paper_option_min_candle_body_ratio = float(
             self.config.get(
                 "paper_option_min_candle_body_ratio",
@@ -749,6 +860,221 @@ class KiteTradingBot:
             return standard_floor
         paper_floor = getattr(self, "paper_min_entry_score", standard_floor)
         return min(standard_floor, paper_floor)
+
+    def _can_open_trade_for_signal(
+        self,
+        symbol: str,
+        direction: str,
+        score: int,
+        *,
+        ema_reentry_confirmed: bool = False,
+    ) -> tuple[bool, str]:
+        if ema_reentry_confirmed and self._paper_ema_reentry_enabled():
+            return self.intraday_manager.can_open_trade(
+                symbol,
+                direction,
+                allow_stop_reentry=True,
+                stop_reentry_cooldown_seconds=0,
+                signal_score=score,
+                minimum_stop_reentry_score=0,
+            )
+        allow_stop_reentry = (
+            self.config.get("paper_stop_reentry_enabled", False)
+            and getattr(self, "paper_trading_enabled", False)
+            and not getattr(self, "live_orders_enabled", False)
+            and self._options_enabled()
+            and symbol.endswith(("_CE", "_PE"))
+        )
+        if not allow_stop_reentry:
+            return self.intraday_manager.can_open_trade(symbol, direction)
+        return self.intraday_manager.can_open_trade(
+            symbol,
+            direction,
+            allow_stop_reentry=True,
+            stop_reentry_cooldown_seconds=(
+                self.paper_stop_reentry_cooldown_minutes * 60
+            ),
+            signal_score=score,
+            minimum_stop_reentry_score=self.paper_stop_reentry_min_score,
+        )
+
+    def _paper_ema_reentry_enabled(self) -> bool:
+        config = getattr(self, "config", {})
+        return (
+            bool(config.get("paper_ema_reentry_enabled", True))
+            and bool(getattr(self, "paper_trading_enabled", False))
+            and not bool(getattr(self, "live_orders_enabled", False))
+            and config.get("trading_mode") in {"intraday_options", "intraday_both"}
+        )
+
+    def _restore_ema_reentry_states(self, trades: list[dict]) -> None:
+        if not self._paper_ema_reentry_enabled():
+            return
+        child_original_ids = {
+            str(trade.get("original_trade_id"))
+            for trade in trades
+            if trade.get("is_ema_reentry") and trade.get("original_trade_id")
+        }
+        now = datetime.now(IST)
+        for trade in trades:
+            if (
+                trade.get("status") != "closed"
+                or trade.get("reason") != "STOP_LOSS"
+                or not trade.get("ema_reentry_eligible")
+                or str(trade.get("trade_id")) in child_original_ids
+            ):
+                continue
+            symbol = str(trade.get("ticker", ""))
+            if not symbol.endswith(("_CE", "_PE")):
+                continue
+            stop_time = self._journal_datetime(trade.get("ema_reentry_stop_time"))
+            original_trade_id = str(trade.get("trade_id", ""))
+            if stop_time is None or not original_trade_id:
+                continue
+            if stop_time.date() != now.date():
+                continue
+            state = {
+                "original_trade_id": original_trade_id,
+                "stop_time": stop_time,
+                "status": "observing",
+            }
+            if (now - stop_time).total_seconds() > 10 * 60:
+                state["status"] = "expired"
+                state["outcome"] = "NO_SIGNAL"
+                self.trade_journal.annotate_trade(
+                    symbol,
+                    {"ema_reentry_outcome": "NO_SIGNAL"},
+                    action="BUY",
+                )
+            self._ema_reentry_states[symbol] = state
+
+    def _paper_ema_reentry_candidate(
+        self, symbol: str, underlying_history: list[dict]
+    ) -> Optional[dict]:
+        active_positions = getattr(
+            getattr(self, "intraday_manager", None), "active_positions", {}
+        )
+        if (
+            not self._paper_ema_reentry_enabled()
+            or not symbol.endswith(("_CE", "_PE"))
+            or (
+                isinstance(active_positions, dict)
+                and symbol in active_positions
+            )
+        ):
+            return None
+        state = getattr(self, "_ema_reentry_states", {}).get(symbol)
+        if not state or state.get("status") != "observing":
+            return None
+
+        current_time = self._journal_datetime(
+            str(underlying_history[-1].get("time", ""))
+            if underlying_history
+            else None
+        )
+        stop_time = state["stop_time"]
+        if current_time is None:
+            return None
+        if (current_time - stop_time).total_seconds() > 10 * 60:
+            state["status"] = "expired"
+            state["outcome"] = "NO_SIGNAL"
+            self.trade_journal.annotate_trade(
+                symbol,
+                {"ema_reentry_outcome": "NO_SIGNAL"},
+                action="BUY",
+            )
+            self._log_ema_reentry_event(
+                symbol,
+                state,
+                "WINDOW_EXPIRED",
+                current_time=current_time,
+            )
+            return None
+
+        signal = find_ema_reentry_signal(
+            underlying_history,
+            "CE" if symbol.endswith("_CE") else "PE",
+            stop_time,
+        )
+        if signal is None:
+            return None
+        state["status"] = "triggered"
+        state["signal_time"] = signal.signal_time
+        state["reentry_reason"] = signal.reason
+        return {
+            "original_trade_id": state["original_trade_id"],
+            "stop_time": signal.stop_time.isoformat(),
+            "signal_time": signal.signal_time.isoformat(),
+            "crossover_time": signal.crossover_time.isoformat(),
+            "reentry_reason": signal.reason,
+            "crossover_level": signal.crossover_level,
+            "confirmation_close": signal.confirmation_close,
+            "vwap": signal.vwap,
+            "signal": signal.signal,
+        }
+
+    def _log_ema_reentry_event(
+        self,
+        symbol: str,
+        state: dict,
+        event: str,
+        *,
+        current_time: datetime,
+        signal: Optional[dict] = None,
+        outcome: Optional[str] = None,
+    ) -> None:
+        journal = getattr(self, "decision_journal", None)
+        if journal is None:
+            return
+        journal.log_decision(
+            {
+                "timestamp": current_time.isoformat(),
+                "event": "ema_stop_reentry",
+                "ema_reentry_event": event,
+                "ticker": symbol,
+                "signal": (signal or {}).get("signal", "HOLD"),
+                "outcome": outcome or event.lower(),
+                "strategy_variant": "paper_ema_stop_reentry",
+                "original_trade_id": state.get("original_trade_id"),
+                "stop_time": str(state.get("stop_time")),
+                "reentry_signal_time": (signal or {}).get("signal_time"),
+                "reentry_reason": (signal or {}).get("reentry_reason"),
+                "reentry_vwap": (signal or {}).get("vwap"),
+                "reentry_entry_price": (signal or {}).get("entry_price"),
+                "reentry_exit_price": (signal or {}).get("exit_price"),
+                "reentry_pnl": (signal or {}).get("pnl"),
+                "reentry_outcome": (signal or {}).get("reentry_outcome"),
+                "reasons": [(signal or {}).get("reentry_reason", event)],
+            }
+        )
+
+    def _complete_ema_reentry_attempt(
+        self, symbol: str, signal: dict, outcome: str
+    ) -> None:
+        state = getattr(self, "_ema_reentry_states", {}).get(symbol, {})
+        opened = outcome == "trade_opened"
+        state["status"] = "opened" if opened else "rejected"
+        state["outcome"] = outcome
+        self.trade_journal.annotate_trade(
+            symbol,
+            {
+                "ema_reentry_outcome": (
+                    "REENTRY_OPENED" if opened else "REENTRY_REJECTED"
+                ),
+                "ema_reentry_signal_time": signal["signal_time"],
+                "ema_reentry_reason": signal["reentry_reason"],
+            },
+            action="BUY",
+        )
+        self._log_ema_reentry_event(
+            symbol,
+            state,
+            "ENTRY_OPENED" if opened else "ENTRY_REJECTED",
+            current_time=self._journal_datetime(signal["signal_time"])
+            or datetime.now(IST),
+            signal=signal,
+            outcome=outcome,
+        )
 
     def _on_connection_change(self, connected: bool, reason: str) -> None:
         self._entries_paused = not connected
@@ -1288,6 +1614,7 @@ class KiteTradingBot:
         symbol: str,
         signal: str,
         score: Optional[int] = None,
+        minimum_premium_override: Optional[float] = None,
     ) -> tuple[bool, str]:
         """Require a fresh option quote and enforce contract-quality limits."""
         if not self._options_enabled():
@@ -1345,6 +1672,21 @@ class KiteTradingBot:
             return False, "invalid option quote"
 
         min_premium = float(self.config.get("option_min_premium", 12.0))
+        if minimum_premium_override is not None:
+            if (
+                not self.config.get("paper_support_reversal_enabled", False)
+                or not getattr(self, "paper_trading_enabled", False)
+                or getattr(self, "live_orders_enabled", False)
+                or not self._options_enabled()
+                or not symbol.endswith(("_CE", "_PE"))
+            ):
+                return False, "paper support-reversal premium override unavailable"
+            try:
+                min_premium = float(minimum_premium_override)
+            except (TypeError, ValueError, OverflowError):
+                return False, "invalid support-reversal premium floor"
+            if not math.isfinite(min_premium) or min_premium <= 0:
+                return False, "invalid support-reversal premium floor"
         max_premium = float(self.config.get("option_max_premium", 800.0))
         min_volume = int(self.config.get("option_min_volume", 200))
         min_oi = int(self.config.get("option_min_oi", 400))
@@ -1501,6 +1843,7 @@ class KiteTradingBot:
             return
 
         signal_bars = bars
+        support_underlying_bars: list[Bar] = []
         if self._options_enabled() and "_" in symbol:
             underlying = symbol.rsplit("_", 1)[0].upper()
             underlying_token = self.config["instrument_tokens"].get(underlying)
@@ -1525,6 +1868,14 @@ class KiteTradingBot:
                 )
                 return
             signal_bars = underlying_bars
+            if (
+                self.config.get("paper_support_reversal_enabled", False)
+                and getattr(self, "paper_trading_enabled", False)
+                and not getattr(self, "live_orders_enabled", False)
+            ):
+                support_underlying_bars = self.bar_builder.get_bars(
+                    underlying_token, limit=100
+                )
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in signal_bars]
@@ -1596,6 +1947,16 @@ class KiteTradingBot:
                     getattr(self, "paper_trading_enabled", False)
                     and bool(self.config.get("paper_allow_trend_continuation", False))
                 ),
+                rsi_buy_block_above=(
+                    float(self.config.get("paper_rsi_buy_block_above", 80.0))
+                    if getattr(self, "paper_trading_enabled", False)
+                    else 70.0
+                ),
+                rsi_sell_block_below=(
+                    float(self.config.get("paper_rsi_sell_block_below", 25.0))
+                    if getattr(self, "paper_trading_enabled", False)
+                    else 30.0
+                ),
             )
         except Exception:
             logger.exception("[%s] Strategy evaluation failed", symbol)
@@ -1609,6 +1970,128 @@ class KiteTradingBot:
             if news_reason:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
+
+        support_candidate: Optional[SupportResistanceReversal] = None
+        if (
+            session_state == "REGULAR_SESSION"
+            and support_underlying_bars
+            and symbol.endswith(("_CE", "_PE"))
+        ):
+            support_candidate = self._paper_support_reversal_candidate(
+                symbol, support_underlying_bars
+            )
+            active_positions = getattr(
+                getattr(self, "intraday_manager", None), "active_positions", {}
+            )
+            underlying_prefix = f"{symbol.rsplit('_', 1)[0].upper()}_"
+            underlying_position_active = (
+                isinstance(active_positions, dict)
+                and any(
+                    position_symbol.startswith(underlying_prefix)
+                    for position_symbol in active_positions
+                )
+            )
+            if (
+                support_candidate is not None
+                and isinstance(active_positions, dict)
+                and not underlying_position_active
+                and market_score.signal in {"HOLD", support_candidate.signal}
+            ):
+                context_block = None
+                for context_name, context_history in context_histories.items():
+                    filtered_signal, context_reason = filter_signal_by_context(
+                        support_candidate.signal,
+                        context_history,
+                        ema_fast=int(self.config.get("ema_fast", 9)),
+                        ema_slow=int(self.config.get("ema_slow", 21)),
+                        hard_block=bool(self.config.get("hard_context_filter", True)),
+                    )
+                    if context_reason:
+                        market_score.reasons.append(
+                            f"{context_name}: {context_reason}"
+                        )
+                    if filtered_signal != support_candidate.signal:
+                        context_block = context_reason or "context filter blocked signal"
+                        break
+
+                news_block = False
+                if news_context:
+                    filtered_signal, news_reason = apply_news_filter(
+                        support_candidate.signal, news_context
+                    )
+                    if filtered_signal != support_candidate.signal:
+                        market_score.reasons.append(
+                            news_reason or "News filter blocked support reversal"
+                        )
+                        news_block = True
+
+                try:
+                    support_min_score = int(
+                        self.config.get("paper_support_reversal_min_score", 75)
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    support_min_score = 86
+                support_score = min(
+                    85,
+                    max(
+                        market_score.score,
+                        65 + 5 * support_candidate.touches,
+                    ),
+                )
+                if context_block:
+                    logger.info(
+                        "[%s] Paper support reversal blocked: %s",
+                        symbol,
+                        context_block,
+                    )
+                elif news_block:
+                    logger.info("[%s] Paper support reversal blocked by news", symbol)
+                elif (
+                    "RSI overbought against BUY" in market_score.reasons
+                    if support_candidate.signal == "BUY"
+                    else "RSI oversold against SELL" in market_score.reasons
+                ):
+                    logger.info(
+                        "[%s] Paper support reversal blocked by RSI extreme",
+                        symbol,
+                    )
+                elif not 55 <= support_min_score <= 85:
+                    logger.error(
+                        "[%s] Invalid paper_support_reversal_min_score", symbol
+                    )
+                elif support_score >= support_min_score:
+                    market_score.signal = support_candidate.signal
+                    market_score.score = support_score
+                    market_score.strategy_variant = (
+                        "paper_underlying_support_reversal"
+                    )
+                    market_score.reasons.append(
+                        "Paper underlying support/reversal confirmed at "
+                        f"{support_candidate.level:.2f} "
+                        f"({support_candidate.touches} clustered pivots)"
+                    )
+
+        ema_reentry_context = self._paper_ema_reentry_candidate(symbol, history)
+        if ema_reentry_context is not None:
+            market_score.signal = ema_reentry_context["signal"]
+            market_score.score = max(
+                market_score.score,
+                self._entry_score_floor(),
+            )
+            market_score.strategy_variant = "paper_ema_stop_reentry"
+            market_score.reasons.append(ema_reentry_context["reentry_reason"])
+            state = self._ema_reentry_states[symbol]
+            self._log_ema_reentry_event(
+                symbol,
+                state,
+                "SIGNAL_CONFIRMED",
+                current_time=self._journal_datetime(
+                    ema_reentry_context["signal_time"]
+                )
+                or datetime.now(IST),
+                signal=ema_reentry_context,
+                outcome="signal_confirmed",
+            )
 
         logger.info(
             "[%s] Score=%s Signal=%s Reasons=%s",
@@ -1645,6 +2128,10 @@ class KiteTradingBot:
                 )
 
         if session_state == "BEFORE_OPEN":
+            if ema_reentry_context is not None:
+                self._complete_ema_reentry_attempt(
+                    symbol, ema_reentry_context, "pre_market_blocked"
+                )
             logger.info(
                 "[%s] pre-market analysis: score=%s signal=%s (no orders until regular session)",
                 symbol,
@@ -1675,6 +2162,10 @@ class KiteTradingBot:
             market_score.signal in {"BUY", "SELL"}
             and self._late_window_blocked(datetime.now(IST))
         ):
+            if ema_reentry_context is not None:
+                self._complete_ema_reentry_attempt(
+                    symbol, ema_reentry_context, "late_window_blocked"
+                )
             logger.info(
                 "[%s] Entry blocked by configured late-window guard at %s IST",
                 symbol,
@@ -1699,6 +2190,12 @@ class KiteTradingBot:
             underlying = symbol.rsplit("_", 1)[0].upper()
             preferred = self._preferred_option_symbol(underlying, market_score.signal)
             if preferred is None:
+                if ema_reentry_context is not None:
+                    self._complete_ema_reentry_attempt(
+                        symbol,
+                        ema_reentry_context,
+                        "option_leg_unavailable",
+                    )
                 logger.info(
                     "[%s] No eligible option leg for %s signal; skipping entry",
                     symbol,
@@ -1715,6 +2212,10 @@ class KiteTradingBot:
                 )
                 return
             if symbol != preferred:
+                if ema_reentry_context is not None:
+                    self._complete_ema_reentry_attempt(
+                        symbol, ema_reentry_context, "option_leg_skipped"
+                    )
                 logger.info(
                     "[%s] Skipping %s because %s is the active option leg for %s signal",
                     symbol,
@@ -1733,10 +2234,41 @@ class KiteTradingBot:
                 )
                 return
 
-            if not self._has_option_candle_momentum(
+            minimum_body_ratio = self._option_candle_min_body_ratio()
+            if (
+                getattr(market_score, "strategy_variant", None)
+                == "paper_underlying_support_reversal"
+            ):
+                try:
+                    minimum_body_ratio = float(
+                        self.config.get(
+                            "paper_support_reversal_min_candle_body_ratio", 0.20
+                        )
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    minimum_body_ratio = float("nan")
+                if (
+                    not math.isfinite(minimum_body_ratio)
+                    or not 0 < minimum_body_ratio <= 1
+                ):
+                    logger.error(
+                        "[%s] Invalid paper support-reversal candle body ratio",
+                        symbol,
+                    )
+                    self._record_decision(
+                        symbol,
+                        bar,
+                        bars,
+                        market_score,
+                        market_score.signal,
+                        "PAPER_SUPPORT_REVERSAL_INVALID_BODY_RATIO",
+                        news_context,
+                    )
+                    return
+            if ema_reentry_context is None and not self._has_option_candle_momentum(
                 market_score.signal,
                 signal_bars[-1].to_dict(),
-                minimum_body_ratio=self._option_candle_min_body_ratio(),
+                minimum_body_ratio=minimum_body_ratio,
             ):
                 logger.info(
                     "[%s] Option entry rejected: signal candle lacks directional momentum",
@@ -1753,12 +2285,31 @@ class KiteTradingBot:
                 )
                 return
 
-            allowed, option_reason = self._option_quality_gate(
-                symbol,
-                market_score.signal,
-                market_score.score,
-            )
+            if (
+                getattr(market_score, "strategy_variant", None)
+                == "paper_underlying_support_reversal"
+            ):
+                allowed, option_reason = self._option_quality_gate(
+                    symbol,
+                    market_score.signal,
+                    market_score.score,
+                    minimum_premium_override=self.config.get(
+                        "paper_support_reversal_min_premium", 5.0
+                    ),
+                )
+            else:
+                allowed, option_reason = self._option_quality_gate(
+                    symbol,
+                    market_score.signal,
+                    market_score.score,
+                )
             if not allowed:
+                if ema_reentry_context is not None:
+                    self._complete_ema_reentry_attempt(
+                        symbol,
+                        ema_reentry_context,
+                        f"option_quality_rejected:{option_reason}",
+                    )
                 logger.info("[%s] Option quality reject: %s", symbol, option_reason)
                 self._record_decision(
                     symbol,
@@ -1783,19 +2334,22 @@ class KiteTradingBot:
             current_time = time.time()
             now = datetime.now(IST)
             position_minimum_score = self._entry_score_floor()
-            allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
-                symbol=symbol,
-                signal=market_score.signal,
-                score=market_score.score,
-                history=history,
-                current_bar=signal_bars[-1].to_dict(),
-                previous_bar=previous_bar,
-                current_time=current_time,
-                hour=now.hour,
-                minute=now.minute,
-                record_entry=False,
-                min_score=position_minimum_score,
-            )
+            if ema_reentry_context is not None:
+                allowed, rejection_reason = True, "ema_reentry_confirmation"
+            else:
+                allowed, rejection_reason = self.accuracy_filters.validate_entry_with_reason(
+                    symbol=symbol,
+                    signal=market_score.signal,
+                    score=market_score.score,
+                    history=history,
+                    current_bar=signal_bars[-1].to_dict(),
+                    previous_bar=previous_bar,
+                    current_time=current_time,
+                    hour=now.hour,
+                    minute=now.minute,
+                    record_entry=False,
+                    min_score=position_minimum_score,
+                )
             if not allowed:
                 logger.info(
                     "[%s] Signal rejected by accuracy filter (%s): score=%s signal=%s",
@@ -1814,6 +2368,14 @@ class KiteTradingBot:
                     news_context,
                 )
                 return
+            if (
+                support_candidate is not None
+                and getattr(market_score, "strategy_variant", None)
+                == "paper_underlying_support_reversal"
+            ):
+                self._mark_paper_support_reversal_attempt(
+                    symbol, support_candidate
+                )
 
         trade_action = self._option_trade_action(symbol, market_score.signal)
         if trade_action == "BUY":
@@ -1823,6 +2385,11 @@ class KiteTradingBot:
                 market_score.score,
                 strategy_variant=market_score.strategy_variant,
                 minimum_signal_score=position_minimum_score,
+                **(
+                    {"ema_reentry_context": ema_reentry_context}
+                    if ema_reentry_context is not None
+                    else {}
+                ),
             )
         elif trade_action == "SELL":
             outcome = self._handle_sell_signal(
@@ -1836,6 +2403,11 @@ class KiteTradingBot:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
             outcome = "hold"
 
+        if ema_reentry_context is not None:
+            self._complete_ema_reentry_attempt(
+                symbol, ema_reentry_context, outcome
+            )
+
         if outcome == "trade_opened":
             self.accuracy_filters.record_entry(symbol, current_time)
 
@@ -1847,6 +2419,7 @@ class KiteTradingBot:
             market_score.signal,
             outcome,
             news_context,
+            ema_reentry_context=ema_reentry_context,
         )
 
     def _start_paper_shadow_runner(
@@ -2821,7 +3394,14 @@ class KiteTradingBot:
             self, "live_orders_enabled", False
         ):
             self._record_paper_shadow_actual_exit(trade, price, reason)
-        journal_pnl = self.trade_journal.close_trade(symbol, price, action, reason)
+        closed_at = datetime.now(IST)
+        journal_pnl = self.trade_journal.close_trade(
+            symbol,
+            price,
+            action,
+            reason,
+            closed_at=closed_at.isoformat(),
+        )
         exit_info = self.intraday_manager.close_position(symbol, price, reason)
         if not trade and not exit_info:
             return
@@ -2831,51 +3411,131 @@ class KiteTradingBot:
             self.intraday_manager.record_trade_close(
                 symbol, reason, exit_info["pnl_rupees"]
             )
+            is_ema_reentry = bool((trade or {}).get("is_ema_reentry"))
+            ema_reentry_eligible = (
+                self._paper_ema_reentry_enabled()
+                and reason == "STOP_LOSS"
+                and pnl < 0
+                and not is_ema_reentry
+                and bool((trade or {}).get("trade_id"))
+            )
+            exit_annotation = {
+                "pnl": exit_info["pnl_rupees"],
+                "pnl_points": exit_info["pnl_points"],
+                "pnl_rupees": exit_info["pnl_rupees"],
+                "duration_seconds": exit_info["duration"],
+                "holding_time_seconds": exit_info["duration"],
+                "quantity": exit_info["quantity"],
+                "target_stage": position.get("target_stage", 0) if position else 0,
+                "milestone_reached_pct": (
+                    position.get("milestone_reached_pct", 0.0) if position else 0.0
+                ),
+                "exit_reason_category": self._exit_reason_category(reason),
+                "exit_strategy": (
+                    "tiered_milestone"
+                    if position and position.get("staged_targets_enabled")
+                    else (
+                        (trade or {}).get("exit_strategy")
+                        or (
+                            "fixed_20pct"
+                            if self._options_enabled() and "_" in symbol
+                            else None
+                        )
+                    )
+                ),
+                "score": position.get("signal_score") if position else None,
+                "current_signal_score": (
+                    position.get("current_signal_score") if position else None
+                ),
+                "weak_signal_adverse_checks": (
+                    position.get("weak_signal_adverse_checks", 0)
+                    if position
+                    else 0
+                ),
+                "paper_exit_ltp": float(price),
+                "paper_exit_bid": self._positive_quote_value(
+                    quote.get("bid")
+                ),
+                "paper_exit_ask": self._positive_quote_value(
+                    quote.get("ask")
+                ),
+                "paper_exit_quote_timestamp": (
+                    str(quote["timestamp"])
+                    if quote.get("timestamp") is not None
+                    else None
+                ),
+            }
+            if is_ema_reentry:
+                reentry_outcome = (
+                    "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
+                )
+                exit_annotation.update(
+                    {
+                        "reentry_exit_price": float(price),
+                        "reentry_pnl": float(pnl),
+                        "reentry_outcome": reentry_outcome,
+                    }
+                )
+            if ema_reentry_eligible:
+                exit_annotation.update(
+                    {
+                        "ema_reentry_eligible": True,
+                        "ema_reentry_stop_time": closed_at.isoformat(),
+                        "ema_reentry_outcome": "PENDING",
+                    }
+                )
             self.trade_journal.annotate_trade(
                 symbol,
-                {
-                    "pnl": exit_info["pnl_rupees"],
-                    "pnl_points": exit_info["pnl_points"],
-                    "pnl_rupees": exit_info["pnl_rupees"],
-                    "duration_seconds": exit_info["duration"],
-                    "holding_time_seconds": exit_info["duration"],
-                    "quantity": exit_info["quantity"],
-                    "target_stage": position.get("target_stage", 0) if position else 0,
-                    "milestone_reached_pct": (
-                        position.get("milestone_reached_pct", 0.0) if position else 0.0
-                    ),
-                    "exit_reason_category": self._exit_reason_category(reason),
-                    "exit_strategy": (
-                        "tiered_milestone"
-                        if position and position.get("staged_targets_enabled")
-                        else (
-                            (trade or {}).get("exit_strategy")
-                            or (
-                                "fixed_20pct"
-                                if self._options_enabled() and "_" in symbol
-                                else None
-                            )
-                        )
-                    ),
-                    "score": position.get("signal_score") if position else None,
-                    "current_signal_score": (
-                        position.get("current_signal_score") if position else None
-                    ),
-                    "weak_signal_adverse_checks": (
-                        position.get("weak_signal_adverse_checks", 0)
-                        if position
-                        else 0
-                    ),
-                    "paper_exit_ltp": float(price),
-                    "paper_exit_bid": self._positive_quote_value(
-                        quote.get("bid")
-                    ),
-                    "paper_exit_ask": self._positive_quote_value(
-                        quote.get("ask")
-                    ),
-                },
+                exit_annotation,
                 action,
             )
+            if ema_reentry_eligible:
+                state = {
+                    "original_trade_id": str(trade["trade_id"]),
+                    "stop_time": closed_at,
+                    "status": "observing",
+                }
+                self._ema_reentry_states[symbol] = state
+                self._log_ema_reentry_event(
+                    symbol,
+                    state,
+                    "OBSERVATION_STARTED",
+                    current_time=closed_at,
+                    outcome="observing",
+                )
+            elif is_ema_reentry:
+                state = getattr(self, "_ema_reentry_states", {}).get(
+                    symbol,
+                    {
+                        "original_trade_id": (trade or {}).get(
+                            "original_trade_id"
+                        ),
+                        "stop_time": (trade or {}).get(
+                            "ema_reentry_stop_time"
+                        ),
+                    },
+                )
+                state["status"] = "completed"
+                state["outcome"] = (
+                    "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
+                )
+                self._log_ema_reentry_event(
+                    symbol,
+                    state,
+                    "TRADE_CLOSED",
+                    current_time=closed_at,
+                    signal={
+                        "signal": "BUY",
+                        "signal_time": (trade or {}).get("reentry_signal_time"),
+                        "reentry_reason": (trade or {}).get("reentry_reason"),
+                        "vwap": (trade or {}).get("reentry_vwap"),
+                        "entry_price": (trade or {}).get("entry"),
+                        "exit_price": float(price),
+                        "pnl": float(pnl),
+                        "reentry_outcome": state["outcome"],
+                    },
+                    outcome=state["outcome"].lower(),
+                )
         self._persist_current_live_risk_state()
         mode = "intraday_options" if self._options_enabled() else "futures"
         option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
@@ -2913,6 +3573,7 @@ class KiteTradingBot:
         outcome: str,
         news_context=None,
         strategy_variant: Optional[str] = None,
+        ema_reentry_context: Optional[dict] = None,
     ) -> None:
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
@@ -2939,6 +3600,34 @@ class KiteTradingBot:
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
                 "news_headlines": news_context.headlines[:5] if news_context else [],
                 "entry_evaluation": entry_evaluation,
+                "original_trade_id": (
+                    ema_reentry_context.get("original_trade_id")
+                    if ema_reentry_context
+                    else None
+                ),
+                "stop_time": (
+                    ema_reentry_context.get("stop_time")
+                    if ema_reentry_context
+                    else None
+                ),
+                "reentry_signal_time": (
+                    ema_reentry_context.get("signal_time")
+                    if ema_reentry_context
+                    else None
+                ),
+                "reentry_reason": (
+                    ema_reentry_context.get("reentry_reason")
+                    if ema_reentry_context
+                    else None
+                ),
+                "reentry_vwap": (
+                    ema_reentry_context.get("vwap")
+                    if ema_reentry_context
+                    else None
+                ),
+                "ema_reentry_event": (
+                    "ENTRY_DECISION" if ema_reentry_context else None
+                ),
             }
         )
 
@@ -2951,6 +3640,7 @@ class KiteTradingBot:
         minimum_signal_score: Optional[int] = None,
         paper_range_stop: Optional[float] = None,
         paper_range_target_r: Optional[float] = None,
+        ema_reentry_context: Optional[dict] = None,
     ) -> str:
         """Handle a BUY signal."""
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
@@ -2975,10 +3665,24 @@ class KiteTradingBot:
                 return cutoff_reason
             if not self._live_entry_allowed(symbol):
                 return "live_entry_paused"
-            allowed, reason = self.intraday_manager.can_open_trade(symbol, "BUY")
+            allowed, reason = self._can_open_trade_for_signal(
+                symbol,
+                "BUY",
+                score,
+                ema_reentry_confirmed=ema_reentry_context is not None,
+            )
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
+            if (
+                symbol in self.intraday_manager.session_trade_symbols
+                and strategy_variant != "paper_ema_stop_reentry"
+            ):
+                strategy_variant = (
+                    "paper_underlying_support_reversal_stop_reentry"
+                    if strategy_variant == "paper_underlying_support_reversal"
+                    else "paper_stop_reentry"
+                )
             range_breakout_plan = (
                 paper_range_stop is not None or paper_range_target_r is not None
             )
@@ -3212,6 +3916,24 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            if ema_reentry_context is not None:
+                alert.update(
+                    {
+                        "is_ema_reentry": True,
+                        "original_trade_id": ema_reentry_context[
+                            "original_trade_id"
+                        ],
+                        "ema_reentry_stop_time": ema_reentry_context["stop_time"],
+                        "reentry_signal_time": ema_reentry_context[
+                            "signal_time"
+                        ],
+                        "reentry_reason": ema_reentry_context[
+                            "reentry_reason"
+                        ],
+                        "reentry_vwap": ema_reentry_context.get("vwap"),
+                        "reentry_entry_price": float(price),
+                    }
+                )
             if getattr(self, "paper_trading_enabled", False):
                 quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
                 alert["timestamp"] = datetime.now(IST).isoformat()
@@ -3338,10 +4060,16 @@ class KiteTradingBot:
                 return cutoff_reason
             if not self._live_entry_allowed(symbol):
                 return "live_entry_paused"
-            allowed, reason = self.intraday_manager.can_open_trade(symbol, "SELL")
+            allowed, reason = self._can_open_trade_for_signal(symbol, "SELL", score)
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
+            if symbol in self.intraday_manager.session_trade_symbols:
+                strategy_variant = (
+                    "paper_underlying_support_reversal_stop_reentry"
+                    if strategy_variant == "paper_underlying_support_reversal"
+                    else "paper_stop_reentry"
+                )
             paper_option_adaptive_exit = self._paper_option_adaptive_exit_enabled(symbol)
             adaptive_exit_values = None
             if paper_option_adaptive_exit:
@@ -3635,6 +4363,23 @@ class KiteTradingBot:
                     f"URGENT: session cannot complete; broker flatness is unknown.\n{exc}"
                 )
                 return False
+        for symbol, state in getattr(self, "_ema_reentry_states", {}).items():
+            if state.get("status") != "observing":
+                continue
+            state["status"] = "expired"
+            state["outcome"] = "NO_SIGNAL"
+            self.trade_journal.annotate_trade(
+                symbol,
+                {"ema_reentry_outcome": "NO_SIGNAL"},
+                action="BUY",
+            )
+            self._log_ema_reentry_event(
+                symbol,
+                state,
+                "SESSION_ENDED",
+                current_time=now,
+                outcome="no_signal",
+            )
         self._write_daily_summary_if_due()
         self._run_weekly_report_if_due(now)
         return True

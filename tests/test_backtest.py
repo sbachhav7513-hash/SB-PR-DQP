@@ -264,6 +264,51 @@ def test_replay_passes_paper_continuation_gate_as_live_strategy_does(
     assert set(observed) == {expected}
 
 
+@pytest.mark.parametrize(
+    ("paper_enabled", "expected_buy_threshold", "expected_sell_threshold"),
+    [(True, 80.0, 25.0), (False, 70.0, 30.0)],
+)
+def test_replay_uses_relaxed_rsi_thresholds_only_for_paper(
+    paper_enabled, expected_buy_threshold, expected_sell_threshold
+):
+    history = [
+        {
+            **candle(100, 100.5, 99.5, 100, index),
+            "time": f"2026-09-28T10:0{index}:00+05:30",
+            "volume": 100,
+        }
+        for index in range(3)
+    ]
+    observed = []
+
+    def hold_signal(ticker, bars, **kwargs):
+        observed.append(
+            (
+                kwargs["rsi_buy_block_above"],
+                kwargs["rsi_sell_block_below"],
+            )
+        )
+        return TradingScore(ticker, 0, "HOLD")
+
+    with patch("market_bot.replay.score_market", side_effect=hold_signal):
+        run_replay(
+            "TEST",
+            history,
+            {
+                "use_market_context": False,
+                "late_window_enabled": False,
+                "paper_trading_enabled": paper_enabled,
+                "paper_rsi_buy_block_above": 80,
+                "paper_rsi_sell_block_below": 25,
+            },
+        )
+
+    assert observed
+    assert set(observed) == {
+        (expected_buy_threshold, expected_sell_threshold)
+    }
+
+
 def test_strategy_replay_reports_zero_trade_win_rate_as_unavailable():
     history = [
         {
@@ -284,6 +329,19 @@ def test_strategy_replay_reports_zero_trade_win_rate_as_unavailable():
     assert result.win_rate_pct is None
     assert result.evaluated_bars == 2
     assert result.reason_counts == {"test hold": 2}
+
+
+def test_ema_reentry_replay_rejects_non_minute_interval():
+    with pytest.raises(ValueError, match="requires 1-minute"):
+        run_replay(
+            "TEST",
+            [],
+            {
+                "paper_ema_reentry_enabled": True,
+                "bar_interval_seconds": 300,
+            },
+            signal_fn=lambda ticker, previous: TradingScore(ticker, 0, "HOLD"),
+        )
 
 
 def test_replay_loader_sorts_and_normalizes_csv_timestamps(tmp_path):

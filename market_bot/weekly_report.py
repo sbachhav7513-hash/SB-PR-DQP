@@ -140,6 +140,52 @@ def _learning_feedback(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _quote_cost_coverage(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    quote_based_pnls = []
+    for trade in trades:
+        entry = _number(trade.get("entry"))
+        quantity = _number(trade.get("quantity"))
+        entry_bid = _number(trade.get("paper_entry_bid"))
+        entry_ask = _number(trade.get("paper_entry_ask"))
+        exit_ltp = _number(trade.get("paper_exit_ltp"))
+        exit_bid = _number(trade.get("paper_exit_bid"))
+        exit_ask = _number(trade.get("paper_exit_ask"))
+        if (
+            quantity <= 0
+            or min(entry_bid, entry_ask, exit_ltp, exit_bid, exit_ask) <= 0
+            or entry_bid > entry
+            or entry > entry_ask
+            or exit_bid > exit_ltp
+            or exit_ltp > exit_ask
+        ):
+            continue
+        quote_based_pnls.append((exit_bid - entry_ask) * quantity)
+
+    return {
+        "closed_trades": len(trades),
+        "quote_consistent_trades": len(quote_based_pnls),
+        "quote_based_pnl": round(sum(quote_based_pnls), 2),
+    }
+
+
+def _stop_risk_overruns(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    stop_losses = []
+    for trade in trades:
+        if str(trade.get("reason", "")).upper() != "STOP_LOSS":
+            continue
+        initial_risk = _number(trade.get("paper_entry_risk_rupees"))
+        if initial_risk <= 0:
+            continue
+        loss = max(0.0, -_recorded_trade_pnl(trade))
+        stop_losses.append(max(0.0, loss - initial_risk))
+
+    return {
+        "stop_losses_with_risk_data": len(stop_losses),
+        "overrun_trades": sum(1 for overrun in stop_losses if overrun > 0.01),
+        "total_overrun_rupees": round(sum(stop_losses), 2),
+    }
+
+
 def _recent_parquet_records(
     root: Path,
     filename: str,
@@ -248,11 +294,8 @@ def _option_exit_comparison(
         ticker = str(trade.get("ticker", "")).upper()
         if not ticker.endswith(("_CE", "_PE")):
             continue
-        strategy = trade.get("exit_strategy")
-        if strategy not in {
-            "tiered_milestone",
-            "paper_option_2r_trail_runner",
-        }:
+        strategy = str(trade.get("exit_strategy") or "").strip()
+        if not strategy:
             strategy = "fixed_20pct_baseline"
         grouped[strategy].append(trade)
 
@@ -278,6 +321,114 @@ def _option_exit_metrics(
         "closed_trades": len(closed),
         "average_pnl_per_trade": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
         "total_pnl": round(sum(pnls), 2),
+    }
+
+
+def _flag(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _ema_reentry_summary(
+    trade_records: List[Dict[str, Any]],
+    decisions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    closed = [trade for trade in trade_records if trade.get("status") == "closed"]
+    reentries = [trade for trade in closed if _flag(trade.get("is_ema_reentry"))]
+    eligible_stops = [
+        trade for trade in closed if _flag(trade.get("ema_reentry_eligible"))
+    ]
+    reentry_pnls = [_recorded_trade_pnl(trade) for trade in reentries]
+    baseline_trades = [
+        trade for trade in closed if not _flag(trade.get("is_ema_reentry"))
+    ]
+    baseline_pnls = [_recorded_trade_pnl(trade) for trade in baseline_trades]
+    comparison_pnls = [*baseline_pnls, *reentry_pnls]
+    confirmed = sum(
+        str(item.get("ema_reentry_event", "")).upper() == "SIGNAL_CONFIRMED"
+        for item in decisions
+    )
+    expired = sum(
+        str(item.get("ema_reentry_event", "")).upper() == "WINDOW_EXPIRED"
+        for item in decisions
+    )
+    rejected = sum(
+        str(item.get("ema_reentry_event", "")).upper() == "ENTRY_REJECTED"
+        for item in decisions
+    )
+    wins = sum(pnl > 0 for pnl in reentry_pnls)
+    losses = sum(pnl < 0 for pnl in reentry_pnls)
+    breakeven = sum(pnl == 0 for pnl in reentry_pnls)
+    return {
+        "paper_only": True,
+        "eligible_stop_losses": len(eligible_stops),
+        "signals_confirmed": confirmed,
+        "windows_expired": expired,
+        "no_signal": sum(
+            str(trade.get("ema_reentry_outcome", "")).upper() == "NO_SIGNAL"
+            for trade in eligible_stops
+        ),
+        "entry_rejections": rejected,
+        "reentries_closed": len(reentries),
+        "trade_log": [
+            {
+                "trade_id": trade.get("trade_id"),
+                "original_trade_id": trade.get("original_trade_id"),
+                "ticker": trade.get("ticker"),
+                "stop_time": trade.get("ema_reentry_stop_time"),
+                "signal_time": trade.get("reentry_signal_time"),
+                "reason": trade.get("reentry_reason"),
+                "entry_price": _number(
+                    trade.get("reentry_entry_price", trade.get("entry"))
+                ),
+                "exit_price": _number(
+                    trade.get("reentry_exit_price", trade.get("exit_price"))
+                ),
+                "pnl": _recorded_trade_pnl(trade),
+                "outcome": (
+                    trade.get("reentry_outcome")
+                    or (
+                        "WIN"
+                        if _recorded_trade_pnl(trade) > 0
+                        else "LOSS"
+                        if _recorded_trade_pnl(trade) < 0
+                        else "BREAKEVEN"
+                    )
+                ),
+            }
+            for trade in reentries
+        ],
+        "wins": wins,
+        "losses": losses,
+        "breakeven": breakeven,
+        "win_rate_pct": round(wins / len(reentries) * 100, 2) if reentries else 0.0,
+        "total_reentry_pnl": round(sum(reentry_pnls), 2),
+        "baseline_comparison": {
+            "baseline_closed_trades": len(baseline_trades),
+            "baseline_pnl": round(sum(baseline_pnls), 2),
+            "strategy_closed_trades": len(comparison_pnls),
+            "strategy_pnl": round(sum(comparison_pnls), 2),
+            "incremental_reentry_pnl": round(sum(reentry_pnls), 2),
+            "pnl_change": round(sum(comparison_pnls) - sum(baseline_pnls), 2),
+            "baseline_win_rate_pct": (
+                round(sum(pnl > 0 for pnl in baseline_pnls) / len(baseline_pnls) * 100, 2)
+                if baseline_pnls
+                else 0.0
+            ),
+            "strategy_win_rate_pct": (
+                round(
+                    sum(pnl > 0 for pnl in comparison_pnls)
+                    / len(comparison_pnls)
+                    * 100,
+                    2,
+                )
+                if comparison_pnls
+                else 0.0
+            ),
+        },
+        "pnl_basis": (
+            "Recorded paper option P&L; includes the original stopped trade and "
+            "any closed re-entry. Unmodeled costs may apply."
+        ),
     }
 
 
@@ -350,8 +501,17 @@ def build_weekly_report(
         "trades.parquet",
         days,
         [
-            "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
+            "trade_id", "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
             "strategy_variant", "exit_strategy", "reason", "exit_reason_category",
+            "quantity", "entry", "exit_price", "paper_entry_bid",
+            "paper_entry_ask", "paper_exit_ltp", "paper_exit_bid",
+            "paper_exit_ask", "paper_exit_quote_timestamp",
+            "paper_entry_risk_rupees",
+            "is_ema_reentry", "original_trade_id", "ema_reentry_eligible",
+            "ema_reentry_stop_time", "ema_reentry_outcome",
+            "reentry_signal_time", "reentry_reason", "reentry_vwap",
+            "reentry_entry_price", "reentry_exit_price", "reentry_pnl",
+            "reentry_outcome",
         ],
     )
     trades = [trade for trade in trade_records if trade.get("status") == "closed"]
@@ -365,6 +525,8 @@ def build_weekly_report(
             "timestamp", "ticker", "signal", "outcome", "score", "reasons",
             "outcome_detail", "rejection_reason", "market_session", "market_hours",
             "session_timezone", "strategy_variant",
+            "event", "ema_reentry_event", "original_trade_id", "stop_time",
+            "reentry_signal_time", "reentry_reason", "reentry_vwap",
         ],
     )
 
@@ -461,7 +623,11 @@ def build_weekly_report(
         "performance_by_strategy_variant": _performance_by_key(
             trades, "strategy_variant"
         ),
+        "performance_by_exit_reason": _performance_by_key(trades, "reason"),
+        "ema_reentry_summary": _ema_reentry_summary(trade_records, decisions),
         "option_exit_comparison": _option_exit_comparison(trade_records, days),
+        "quote_cost_coverage": _quote_cost_coverage(trades),
+        "stop_risk_overruns": _stop_risk_overruns(trades),
         "filter_stats": _load_filter_stats(root, days, decisions),
         "news_summary": {
             "risk_counts": news_risk_counts,
@@ -567,15 +733,18 @@ def _date_records(
         days=3660,
         columns=(
             [
-                "timestamp", "status", "pnl", "pnl_rupees", "reason",
+                "trade_id", "timestamp", "status", "pnl", "pnl_rupees", "reason",
                 "exit_reason_category", "ticker", "action", "score",
-                "strategy_variant",
+                "strategy_variant", "is_ema_reentry", "original_trade_id",
+                "ema_reentry_eligible", "ema_reentry_outcome",
+                "reentry_pnl", "reentry_outcome",
             ]
             if parquet_name == "trades.parquet"
             else [
                 "timestamp", "signal", "outcome", "score", "reasons",
                 "outcome_detail", "rejection_reason", "trend_shadow_signal",
-                "trend_shadow_rejection_reason", "strategy_variant",
+                "trend_shadow_rejection_reason", "strategy_variant", "event",
+                "ema_reentry_event",
             ]
         ),
     )
@@ -609,6 +778,7 @@ def write_daily_summary(
         target_date,
     )
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
+    ema_reentry = _ema_reentry_summary(trades, decisions)
     values = {
         "date": target_date.isoformat(),
         "closed_trades": len(trades),
@@ -622,6 +792,16 @@ def write_daily_summary(
         "hold_signals": sum(1 for item in decisions if item.get("signal") == "HOLD"),
         "stop_loss_exits": sum(1 for trade in trades if trade.get("reason") == "STOP_LOSS"),
         "take_profit_exits": sum(1 for trade in trades if trade.get("reason") == "TAKE_PROFIT"),
+        "ema_reentry_eligible_stops": ema_reentry["eligible_stop_losses"],
+        "ema_reentry_signals_confirmed": ema_reentry["signals_confirmed"],
+        "ema_reentries_closed": ema_reentry["reentries_closed"],
+        "ema_reentry_pnl": ema_reentry["total_reentry_pnl"],
+        "ema_reentry_baseline_pnl": ema_reentry["baseline_comparison"][
+            "baseline_pnl"
+        ],
+        "ema_reentry_strategy_pnl": ema_reentry["baseline_comparison"][
+            "strategy_pnl"
+        ],
     }
     recorder = PaperTradingRecorder(paper_data_dir)
     destination = recorder._day_path(
@@ -659,6 +839,7 @@ def write_daily_review(
 
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     wins = sum(1 for pnl in pnls if pnl > 0)
+    ema_reentry = _ema_reentry_summary(trades, decisions)
     signal_counts: Dict[str, int] = defaultdict(int)
     outcome_counts: Dict[str, int] = defaultdict(int)
     rejection_counts: Dict[str, int] = defaultdict(int)
@@ -709,6 +890,9 @@ def write_daily_review(
         )
 
     win_rate = wins / len(trades) * 100 if trades else 0.0
+    ema_reentries = [
+        trade for trade in trades if _flag(trade.get("is_ema_reentry"))
+    ]
     recorder = PaperTradingRecorder(paper_data_dir)
     destination = recorder._day_path(
         datetime.combine(target_date, datetime.min.time()).isoformat(),
@@ -723,6 +907,49 @@ def write_daily_review(
         f"- Recorded P&L before unmodeled trading costs: {sum(pnls):.2f}",
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
+        "",
+        "## EMA Stop-Loss Re-entry",
+        f"- Eligible stop-loss trades: {ema_reentry['eligible_stop_losses']}",
+        f"- Confirmed signals: {ema_reentry['signals_confirmed']}",
+        f"- Windows expired without a signal: {ema_reentry['no_signal']}",
+        f"- Signal entries rejected by other gates: {ema_reentry['entry_rejections']}",
+        f"- Re-entries closed: {ema_reentry['reentries_closed']}",
+        f"- Re-entry wins / losses / breakeven: {ema_reentry['wins']} / "
+        f"{ema_reentry['losses']} / {ema_reentry['breakeven']}",
+        f"- Re-entry P&L: {ema_reentry['total_reentry_pnl']:.2f}",
+        f"- Baseline P&L: "
+        f"{ema_reentry['baseline_comparison']['baseline_pnl']:.2f}; "
+        f"with re-entries: "
+        f"{ema_reentry['baseline_comparison']['strategy_pnl']:.2f}",
+        "",
+        "### Re-entry Trade Log",
+        "| Original trade ID | Symbol | Stop time | Signal time | Reason | Entry | Exit | P&L | Outcome |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |",
+        *(
+            [
+                "| {original_trade_id} | {ticker} | {stop_time} | {signal_time} | "
+                "{reason} | {entry:.2f} | {exit:.2f} | {pnl:.2f} | {outcome} |".format(
+                    original_trade_id=str(trade.get("original_trade_id") or "N/A").replace("|", "/"),
+                    ticker=str(trade.get("ticker") or "UNKNOWN").replace("|", "/"),
+                    stop_time=str(trade.get("ema_reentry_stop_time") or "N/A"),
+                    signal_time=str(trade.get("reentry_signal_time") or "N/A"),
+                    reason=str(trade.get("reentry_reason") or "N/A").replace("|", "/"),
+                    entry=_number(trade.get("reentry_entry_price", trade.get("entry"))),
+                    exit=_number(trade.get("reentry_exit_price", trade.get("exit_price"))),
+                    pnl=_recorded_trade_pnl(trade),
+                    outcome=str(
+                        trade.get("reentry_outcome")
+                        or (
+                            "WIN" if _recorded_trade_pnl(trade) > 0
+                            else "LOSS" if _recorded_trade_pnl(trade) < 0
+                            else "BREAKEVEN"
+                        )
+                    ),
+                )
+                for trade in ema_reentries
+            ]
+            or ["| No re-entry trades recorded | - | - | - | - | - | - | 0.00 | - |"]
+        ),
         "",
         "## Signals",
         *format_counts(signal_counts),
@@ -838,6 +1065,7 @@ def write_weekly_review(
 ) -> Path:
     """Write a human-readable review with evidence-based improvement prompts."""
     report = build_weekly_report(data_dir, days, paper_data_dir)
+    ema_reentry_summary = report["ema_reentry_summary"]
     now = datetime.now()
     recorder = PaperTradingRecorder(paper_data_dir)
     day_path = recorder._day_path(now.isoformat(), "daily_summary.parquet")
@@ -891,6 +1119,13 @@ def write_weekly_review(
         "## Observed Results",
         f"- Closed trades: {report['closed_trades']}",
         f"- Recorded P&L before unmodeled trading costs: {report['total_pnl']:.2f}",
+        f"- Recorded expectancy before costs: "
+        f"{report['total_pnl'] / report['closed_trades']:.2f} per trade"
+        if report["closed_trades"]
+        else "- Recorded expectancy before costs: unavailable (no closed trades)",
+        f"- Average win / loss: {report['average_win']:.2f} / "
+        f"{report['average_loss']:.2f}",
+        f"- Profit factor before costs: {report['profit_factor']:.2f}",
         f"- Win rate: {report['win_rate']:.2f}%",
         f"- Decisions recorded: {report['decisions_recorded']}",
         f"- High-news-risk decisions: {report['news_summary']['risk_counts'].get('HIGH', 0)}",
@@ -915,6 +1150,110 @@ def write_weekly_review(
             or ["| No option trades recorded | - | - | - | - | - |"]
         ),
         "Legacy option trades without an exit-strategy tag are grouped as the fixed-20% baseline; compare sample counts before drawing conclusions.",
+        "",
+        "## Performance by Entry Strategy",
+        "| Entry strategy | Closed trades | Wins | Losses | Recorded P&L |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            [
+                f"| {str(strategy).replace('|', '/')} | {metrics['trades']} | "
+                f"{metrics['wins']} | {metrics['losses']} | "
+                f"{metrics['total_pnl']:.2f} |"
+                for strategy, metrics in sorted(
+                    report["performance_by_strategy_variant"].items()
+                )
+            ]
+            or ["| No strategy-tagged trades | - | - | - | - |"]
+        ),
+        "",
+        "## EMA Stop-Loss Re-entry Comparison",
+        f"- Eligible stop-loss trades: {ema_reentry_summary['eligible_stop_losses']}",
+        f"- Confirmed re-entry signals: {ema_reentry_summary['signals_confirmed']}",
+        f"- Windows expired without a signal: {ema_reentry_summary['no_signal']}",
+        f"- Signal entries rejected by other gates: "
+        f"{ema_reentry_summary['entry_rejections']}",
+        f"- Closed re-entries: {ema_reentry_summary['reentries_closed']}",
+        f"- Re-entry wins / losses / breakeven: "
+        f"{ema_reentry_summary['wins']} / "
+        f"{ema_reentry_summary['losses']} / "
+        f"{ema_reentry_summary['breakeven']}",
+        f"- Baseline P&L: "
+        f"{ema_reentry_summary['baseline_comparison']['baseline_pnl']:.2f}; "
+        f"with re-entries: "
+        f"{ema_reentry_summary['baseline_comparison']['strategy_pnl']:.2f}",
+        "Paper-only comparison; the baseline excludes EMA re-entry trades, and all figures use recorded P&L.",
+        "",
+        "## Loss Clusters",
+        "| Exit reason | Closed trades | Wins | Losses | Recorded P&L |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            [
+                f"| {str(reason).replace('|', '/')} | {metrics['trades']} | "
+                f"{metrics['wins']} | {metrics['losses']} | "
+                f"{metrics['total_pnl']:.2f} |"
+                for reason, metrics in sorted(
+                    report["performance_by_exit_reason"].items(),
+                    key=lambda item: item[1]["total_pnl"],
+                )
+            ]
+            or ["| No closed-trade exits recorded | - | - | - | - |"]
+        ),
+        "",
+        "### Symbols",
+        "| Symbol | Closed trades | Wins | Losses | Recorded P&L |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            [
+                f"| {str(symbol).replace('|', '/')} | {metrics['trades']} | "
+                f"{metrics['wins']} | {metrics['losses']} | "
+                f"{metrics['total_pnl']:.2f} |"
+                for symbol, metrics in sorted(
+                    report["performance_by_symbol"].items(),
+                    key=lambda item: item[1]["total_pnl"],
+                )[:5]
+            ]
+            or ["| No symbol-level trades recorded | - | - | - | - |"]
+        ),
+        "",
+        "### Entry hour (IST)",
+        "| Hour | Closed trades | Wins | Losses | Recorded P&L |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            [
+                f"| {hour}:00 | {metrics['trades']} | {metrics['wins']} | "
+                f"{metrics['losses']} | {metrics['total_pnl']:.2f} |"
+                for hour, metrics in sorted(
+                    report["performance_by_hour"].items(),
+                    key=lambda item: item[1]["total_pnl"],
+                )
+            ]
+            or ["| No entry-hour trades recorded | - | - | - | - |"]
+        ),
+        "",
+        "## Cost-data coverage",
+        (
+            "- Entry and exit bid/ask snapshots bracketed the recorded LTP for "
+            f"{report['quote_cost_coverage']['quote_consistent_trades']}/"
+            f"{report['quote_cost_coverage']['closed_trades']} closed trades. "
+            f"The quote-based P&L proxy on this subset is "
+            f"{report['quote_cost_coverage']['quote_based_pnl']:.2f}; "
+            "it is not a full-sample expectancy."
+            if report["quote_cost_coverage"]["closed_trades"]
+            else "- No closed trades are available for quote-based cost coverage."
+        ),
+        "- Brokerage, taxes, and slippage are not included; do not treat the partial quote proxy as a net-performance result.",
+        (
+            f"- {report['stop_risk_overruns']['overrun_trades']}/"
+            f"{report['stop_risk_overruns']['stop_losses_with_risk_data']} "
+            f"stop-loss exits exceeded their recorded initial risk by a total of "
+            f"{report['stop_risk_overruns']['total_overrun_rupees']:.2f}; "
+            "the paper exit is marked at the observed tick after the stop threshold, "
+            "not guaranteed at the stop price."
+            if report["stop_risk_overruns"]["stop_losses_with_risk_data"]
+            else "- Stop-loss risk overruns cannot be assessed because initial-risk estimates are unavailable."
+        ),
+        "- The available week-level records do not by themselves constitute an out-of-sample walk-forward replay; do not infer a parameter change from these aggregates.",
+        "- Keep score thresholds unchanged based on win rate alone.",
         "",
         "## What Needs Attention",
         *[f"- {issue}" for issue in issues],

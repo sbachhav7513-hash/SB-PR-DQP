@@ -726,3 +726,73 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record evidence, limitations, and rollback guidance.
 - Validation: `python -m pytest -q tests\test_intraday_manager.py` passed (95 tests); the full suite passed (221 passed, 1 skipped); `python -m compileall -q market_bot tests`, configuration JSON parsing, and `git diff --check` passed.
 - Decision / limitation: This is a reversible paper-only trial, not a promise of daily profits or live authorization. The two-session replay combines direction agreement with delayed confirmation and includes hypothetical trades; it does not isolate all interactions or model executable bid/ask fills. Keep live orders disabled. To roll back the entry filter, set `paper_option_range_confirmation_bars` to `0`; retain the fixed 2R exit for this separately defined variant.
+
+### 2026-10-25
+
+#### DLY-2026-10-25-01
+
+- Reason: Review the October 19-23 paper-trading losses against weekly Parquet records and uploaded Kite daily candles, then make a bounded paper-only change.
+- Evidence: The week recorded 32 closed trades and -₹586.75 before costs (15 wins / 17 losses; gross expectancy -₹18.34/trade; profit factor 0.94). By entry variant, 13 `paper_option_range_breakout` trades had 4 wins / 9 losses for -₹2,558.75; 19 primary trades had 11 wins / 8 losses for +₹1,972.00. Seven breakout-entry trades on October 19 used adaptive exits; six on October 21 used the breakout 2R exit. Only 9/32 entry/exit quote pairs bracket the recorded LTP. Twelve of 14 stop-outs with initial-risk data exceeded their risk estimate by ₹448.63 total, reflecting observed-tick exits beyond the stop threshold. The older weekly review also mislabeled exit groups as baseline. This is a loss signal, not a causal verdict or validated walk-forward result; exact contracts and reliable cost coverage are missing.
+- Changes:
+  - `kite_config.json` (modified): Pause the paper range-breakout pilot by setting `paper_option_range_breakout_enabled=false`; it remains opt-in and live orders remain disabled.
+  - `market_bot/telegram_notifier.py` (modified): Include the exact selected `trading_symbol` in the trade payload, not only the human-readable message.
+  - `market_bot/trade_journal.py` (modified): Persist `trading_symbol` in paper-trade Parquet rows so future loss reviews can match exact option contracts.
+  - `market_bot/weekly_report.py` (modified): Keep every non-empty exit-strategy label separate; add entry variant, exit-reason, symbol, hour, quote-coverage, and stop-risk-overrun summaries.
+  - `tests/test_intraday_manager.py`, `tests/test_telegram_notifier.py`, and `tests/test_paper_reporting.py` (modified): Check the paused active setting, exact-symbol persistence, and separate reporting for new exit strategies.
+  - `paper_trading_data/2026-10/week_43/weekly_review_2026_10_25.md` (created): Regenerate the week review with correctly attributed clusters and cost-data limitations.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the pause as precautionary and the performance result as inconclusive.
+- Validation: `python -m pytest -q tests\test_intraday_manager.py tests\test_telegram_notifier.py tests\test_paper_reporting.py` passed (106 tests); both Kite configs parse with live orders and the range-breakout pilot disabled; `git diff --check` passed. The regenerated review reports entry-variant and exit-reason clusters, the 9/32 quote-coverage limit, and stop-risk overruns, while reconciling to -₹586.75.
+- Outcome / follow-up: No profitability improvement is claimed. Keep the pilot paused until contract-level replay or a properly tagged forward paper sample can be assessed with costs; do not change the live-order setting.
+
+#### DLY-2026-10-25-02
+
+- Reason: Analyze the October 23 TCS_PE trade that entered at 10:24 IST and exited within a minute before the option premium later rose.
+- Related entries checked: `EXP-2026-10-08-01` / `EXP-2026-10-08-02` (paper continuation and score-floor trials), `EXP-2026-10-13-01` (score-floor evaluation), and `EXP-2026-10-25-01` (week 43 review).
+- Files:
+  - `market_bot/engine.py` (modified): Block BUY signals above RSI 70 and SELL signals below RSI 30.
+  - `tests/test_strategy.py` (modified): Cover both countertrend RSI extremes.
+  - `TRADING_ACCURACY_GUIDE.md` (modified): Correct the active paper-floor description and document the trade analysis and limitations.
+  - `STRATEGY_CHANGELOG.md` (modified): Record this as an unvalidated, reversible strategy trial.
+  - `DAILY_CHANGELOG.md` (modified): Record the implementation and validation.
+- Validation and result: `python -m pytest -q -p no:cacheprovider tests\test_strategy.py tests\test_intraday_manager.py` passed (125 tests); `git diff --check` passed. The available TCS decision archive stores only five history bars, so it cannot support a full historical scorer replay.
+- Outcome / follow-up: The adaptive stop limited the recorded loss to -INR 22.50 before costs after a 0.522R favorable excursion. Widening it is not justified because subsequent price action crossed the initial stop before recovering. Keep the RSI trial paper-only and review after 10 comparable sessions and at least 10 closed trades.
+
+#### DLY-2026-10-25-03
+
+- Reason: Investigate the October 23 SBIN PE loss and repeated fresh setups blocked after its stop; distinguish a stop breach from a later hindsight rally.
+- Related entries checked: `DLY-2026-10-25-01` / `EXP-2026-10-25-01` (week-43 review and paused range-breakout pilot), `DLY-2026-10-25-02` / `EXP-2026-10-25-02` (TCS review and RSI-extreme gate), and the existing range-breakout experiment entries.
+- Evidence: SBIN26OCT970PE was bought at ₹12.20 for 750 units and stopped at ₹10.85 at 10:08:18 IST for -₹1,012.50; its initial stop was ₹10.98 and the exact-contract 10:08 bar low was ₹10.60. Later minute bars reached ₹21.85, but are not executable-fill evidence. After the stop, archived breakout candidates and later standard signals were blocked by the one-trade-per-symbol/session rule. The score-65 signals cited RSI oversold against SELL and would be rejected by the current RSI-extreme gate; the breakout pilot is now disabled. Across 14 of 17 losing records with exact-contract minute data for Oct 19-23, 9 later retested entry and 6 later reached the recorded 20% target. Three losses had no matching exact-contract data. These OHLC counts do not establish valid entries or obtainable fills.
+- Files:
+  - `market_bot/intraday_manager.py` (modified): Track same-session trade counts and negative stop timestamps, including journal restoration; permit only a one-time, cooldown-qualified retry when explicitly requested by the paper options path.
+  - `market_bot/kite_main.py` (modified): Route retry policy only for paper options, requiring a 15-minute cooldown and score 75; tag accepted retries `paper_stop_reentry` and retain all normal entry/risk checks.
+  - `market_bot/kite_main.py` and `market_bot/trade_journal.py` (modified): Persist the exit quote timestamp with paper LTP/bid/ask; the historical SBIN LTP ₹10.85 versus bid ₹11.20/ask ₹11.25 has no retained quote timestamp to establish freshness.
+  - `market_bot/weekly_report.py` (modified): Include the exit quote timestamp in the report data path.
+  - `analyze_weekly.py` (modified): Include the quote timestamp in the standalone weekly Parquet loader.
+  - `kite_config.json` (modified): Enable the bounded paper retry; live orders and the separate range-breakout pilot remain disabled.
+  - `kite_config.example.json` (modified): Document the retry controls but leave the feature disabled by default.
+  - `tests/test_intraday_manager.py` (modified): Cover cooldown, score threshold, one-retry maximum, qualifying stop reasons, restart restoration, and live-path isolation.
+  - `tests/test_paper_reporting.py` (modified): Verify the exit quote timestamp is retained in partitioned Parquet and available to the weekly analyzer.
+  - `DAILY_WEEKLY_OPERATIONS.md` and `TRADING_ACCURACY_GUIDE.md` (modified): Correct range-breakout status and document the SBIN evidence and paper-only retry boundaries.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record evidence, validation, and the forward evaluation plan.
+- Validation and result: `python -m pytest -q -p no:cacheprovider tests\test_intraday_manager.py tests\test_strategy.py tests\test_paper_reporting.py` passed (136 tests); both configs parsed with expected paper/live settings; changed Python files passed syntax compilation; `git diff --check` passed.
+- Outcome / follow-up: Keep the retry policy as a reversible paper-only trial. It does not widen or ignore stops, re-enable the breakout pilot, or claim that the bot could have captured the SBIN rally. Review at least 10 closed retry trades with costs and drawdown before drawing performance conclusions.
+
+### 2026-10-26
+
+#### DLY-2026-10-26-01
+
+- Reason: Investigate the October 23 ICICIBANK 1400 CE entry/exit and the user's missed support-bounce and PE observations; add a narrowly isolated paper-only test for underlying-derived support/resistance.
+- Related entries checked: `DLY-2026-10-25-01` / `EXP-2026-10-25-01` (paused premium-breakout pilot), `DLY-2026-10-25-02` / `EXP-2026-10-25-02` (RSI extreme gate), and `DLY-2026-10-25-03` / `EXP-2026-10-25-03` (bounded stop retry).
+- Evidence: The 09:43 ICICIBANK 1400 CE entry was a score-85 bullish underlying signal at ₹9.45 and exited at ₹8.40 for -₹735. The 10:04 PE candidate scored 65 and was blocked because one-lot stop risk exceeded the ₹1,000 paper cap; it also cited oversold SELL RSI. The ₹5.29/₹8.90/₹9.78 levels were option-premium levels, not underlying levels, and the CE premium crossed below ₹5.29 to ₹4.95. Underlying replay aggregated complete contiguous one-minute bars into five-minute candles and found a 13:25 BUY candidate at support near ₹1,378.95 with two clustered pivots; the underlying candle closed ₹1,381.00 above the prior five-minute high. A later 13:30 one-minute candle closed higher at ₹1,381.70 with a 0.273 body/range ratio. Ten raw detector candidates occurred over the session; a post-hoc 15-minute same-level cooldown screen reduced that to seven. The export lacks a matched benchmark series and timestamped option bid/ask snapshot, so full context/quote/risk fill replay and any profit counterfactual are unavailable.
+- Files:
+  - `market_bot/engine.py` (modified): Aggregate only complete contiguous OHLCV buckets and detect clustered-pivot, recent-retest, directional support/resistance reversals on underlying candles.
+  - `market_bot/kite_main.py` (modified): Add a separately tagged paper-options route, hard context/news/RSI checks, same-underlying open-position guard, event cooldown after entry gates, support-specific candle-body threshold, and a premium-floor exception restricted to this variant.
+  - `kite_config.json` (modified): Enable the paper-only variant with score 75, 15-minute same-level cooldown, body ratio 0.20, and ₹5 minimum premium; live orders remain disabled.
+  - `kite_config.example.json` (modified): Document the same controls with the experiment disabled by default.
+  - `tests/test_strategy.py` (modified): Cover complete/gapped aggregation, support/reclaim, mirrored resistance/rejection, and single-pivot rejection.
+  - `tests/test_intraday_manager.py` (modified): Cover paper-only candidate routing, primary RSI veto, one-option-leg-at-a-time behavior, cooldown deduplication, and reuse of the normal accuracy/risk flow.
+  - `tests/test_kite_provider.py` (modified): Verify the ₹5 floor exception is isolated to paper mode and ordinary entries retain their ₹12 floor.
+  - `TRADING_ACCURACY_GUIDE.md` and `DAILY_WEEKLY_OPERATIONS.md` (modified): Record the ICICIBANK evidence, limits, and operation/monitoring rules.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the implementation, evidence, validation, and forward evaluation criteria.
+- Validation and result: `python -m pytest -q -p no:cacheprovider tests\test_strategy.py tests\test_kite_provider.py tests\test_intraday_manager.py tests\test_paper_reporting.py` passed (182 passed, 1 skipped); Pylance syntax checks passed for all changed Python files; active/example JSON parsed with support enabled only in the paper config and live orders disabled; `git diff --check` passed. The detector replay is diagnostic only and has no executable quote/backtest result.
+- Outcome / follow-up: Keep as a reversible, paper-only trial. Standard ₹12 premium quality floor, fresh quote, volume and available OI/IV, expiry, accuracy, sizing, stop, ₹1,000 per-trade risk, daily-loss, and loss-circuit controls remain in effect. Do not infer profitability from the Oct 23 candle highs; review candidate/rejection counts and at least 10 closed trades with costs before deciding to retain or revert. The example config remains disabled and live orders stay off.

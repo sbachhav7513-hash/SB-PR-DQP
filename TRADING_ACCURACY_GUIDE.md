@@ -12,12 +12,113 @@
 `kite_config.json` enables `paper_allow_trend_continuation` for paper trading.
 This allows a scored trend setup to proceed without the separate volatility
 compression and breakout-candle checks that blocked candidates in the latest
-paper review. The active paper config also sets `paper_min_entry_score` to 55
+paper review. The active paper config also sets `paper_min_entry_score` to 60
 while `min_entry_score` remains 70; the lower floor only applies when paper
 trading is enabled. Direction, trend strength, ADX, VWAP, benchmark,
 confirmation, option quality, and risk checks still apply. Neither setting
 authorizes live orders or guarantees a trade or profitable result. Compare the
 next daily review before making any further changes.
+
+## October 23 TCS PE trade review
+
+The journal records a TCS_PE SELL signal at 10:24:56 IST with score 65 and the
+reason `RSI oversold against SELL`. The paper floor of 60 admitted this signal
+while the paper continuation setting relaxed breakout-candle checks. The
+position entered at 12.45, reached 13.10 (+0.522R), then hit the adaptive
+breakeven stop at 12.45 and exited at 12.35 after 59 seconds (-INR 22.50 before
+costs). The option later rose, but widening the stop is not a safe conclusion:
+uploaded minute candles show it first trading below the initial stop.
+
+A symmetric RSI-extreme signal gate now holds BUY signals above RSI 70 and SELL
+signals below RSI 30. This would have blocked the recorded signal. It is an
+unvalidated strategy trial, not proof that future trades will improve; review
+rejected candidates and cost-adjusted outcomes over forward paper sessions.
+Keep live orders disabled.
+
+## October 23 SBIN PE stop and re-entry review
+
+The journal records SBIN26OCT970PE bought at ₹12.20 for 750 units, stopped at
+₹10.85 at 10:08:18 IST for a gross loss of ₹1,012.50. The initial stop was
+₹10.98, and the exact-contract 10:08 candle reached ₹10.60, so the stop was
+crossed; simply widening or ignoring it would have increased risk.
+
+Archived decisions then show range-breakout candidates at 10:32, 10:33, 10:36,
+and 10:37 blocked by the one-trade-per-symbol-per-session rule. Later standard
+SELL candidates scored 65 and cited “RSI oversold against SELL”; the symmetric
+RSI-extreme gate now holds such signals. The range-breakout path is currently
+disabled in the active config, so the blocked historical candidates are not a
+valid claim that the current strategy would have re-entered. Exact-contract
+minute bars later reached ₹21.85 and crossed the recorded ₹14.64 target, but
+those highs are hindsight OHLC observations, not executable fills.
+
+The exit journal also records LTP ₹10.85 alongside bid ₹11.20 and ask ₹11.25.
+That quote/LTP relationship is inconsistent, and the historical quote timestamp
+was not retained, so neither the bid nor the LTP can be treated as a verified
+executable fill. New paper exits now persist the quote timestamp for freshness
+audits; the mark-to-LTP execution behavior itself is unchanged.
+
+Across 14 losing trades with matching exact-contract minute data from Oct 19-23,
+9 later candles retested the entry and 6 later reached the recorded 20% target.
+Three additional losses lacked matching exact-contract data. These counts do
+not account for whether the strategy would have generated a valid fresh signal,
+bid/ask spread, quote freshness, slippage, or the intraminute path.
+
+A paper-only re-entry trial now permits at most one retry per option symbol
+after a negative stop exit, with a 15-minute cooldown and a fresh score of at
+least 75. The normal option-quality, sizing, stop, daily-risk, and loss-circuit
+checks still apply. Accepted retries are tagged `paper_stop_reentry`. The trial
+does not widen the original stop or enable the currently disabled range-breakout
+strategy. It is enabled only in the active paper config; live orders remain
+disabled. Evaluate signal/rejection counts,
+fills, costs, P&L, and drawdown over a forward sample before drawing conclusions.
+
+## October 23 ICICIBANK 1400 CE support/reversal review
+
+The October 23 ICICIBANK 1400 CE entry at ₹9.45 was a score-85 bullish
+underlying-trend signal at 09:43, not a premium-support entry. It exited at
+₹8.40 for a recorded -₹735. At 10:04, the bearish PE candidate scored 65 but
+was rejected because the proposed one-lot stop risk exceeded the ₹1,000 paper
+cap; its reasons also included “RSI oversold against SELL.” CE and PE are
+selected directionally from the underlying signal, not opened together as a
+straddle.
+
+The cited ₹5.29 support and ₹8.90/₹9.78 resistance are option-premium levels.
+The primary scorer uses the underlying and did not calculate support/resistance
+on either series. The underlying reached ₹1,377.90 at 13:15. The 1400 CE
+traded below ₹5.29, reaching ₹4.95 at 13:16, so the displayed support did not
+hold on its first touch. A chart high or later bounce cannot establish a
+fillable entry.
+
+A separate paper-only underlying support/reversal trial now uses complete,
+contiguous five-minute bars aggregated from one-minute underlying candles. It
+requires two clustered pivots, a recent retest, a directional close through the
+prior bar, and proximity to the level. On this session it identified a BUY
+candidate on the 13:25 five-minute bar at an underlying level near ₹1,378.95
+(two pivots; close ₹1,381.00). The underlying's 13:30 one-minute candle then
+closed higher at ₹1,381.70 with a 0.273 body/range ratio. The trial's
+support-specific 0.20 momentum floor permits that candle while the existing
+one-minute directional confirmation still applies. The exact-contract CE
+closed at ₹5.55 at 13:29 and ₹5.90 at 13:30; these are candle observations,
+not an entry fill or a counterfactual profit.
+
+The export has no matched benchmark series or timestamped historical bid/ask
+snapshot for the option, so the hard-context and fresh-quote gates cannot be
+fully replayed for this candidate. The paper feature must pass both at runtime.
+
+The October 23 replay produced 10 raw detector candidates across the full
+ICICIBANK session; applying a 15-minute same-level cooldown to each detected
+setup as a replay screen reduces that count to 7. Runtime cooldown is recorded
+only after option-quality and accuracy checks pass. Candidate frequency still
+needs monitoring; this is not a performance backtest. Promotion also requires
+the configured score and hard benchmark context, news, regular-session,
+accuracy, fresh option-quote, contract quality/liquidity, quantity, stop, and
+risk checks. Only this strategy may use
+the ₹5 premium floor; the normal ₹12 floor is unchanged. The usual per-trade
+₹1,000 paper risk cap and standard adaptive exit remain in force. The strategy
+is enabled only in the active paper config, disabled in the example config,
+and cannot run when live orders are enabled. Continue as a reversible paper
+trial and assess at least 10 closed trades with costs before drawing a
+performance conclusion.
 
 ## Current Strategy Assessment
 
@@ -176,35 +277,15 @@ if volatility > 0.05:  # Market is wild (> 5% movement)
 
 ---
 
-### Issue 2: Multiple Entries in Same Direction
+### Issue 2: Same-symbol re-entry after a stop
 
-**Problem**:
-```
-09:15 → BUY signal (entry)
-09:16 → HOLD (already in position)
-09:17 → BUY signal AGAIN! (bug?)
-09:18 → Attempts to enter again (overleveraged)
-
-Current code only prevents re-entry of SAME position.
-But allows multiple entries in quick succession.
-```
-
-**Fix - Add Cooldown Period**:
-```python
-class TradeManager:
-    last_entry_time = {}
-    COOLDOWN_SECONDS = 300  # 5 minutes
-    
-    def can_enter_signal(self, symbol):
-        if symbol not in last_entry_time:
-            return True
-        
-        time_since_last = (now - last_entry_time[symbol]).total_seconds()
-        if time_since_last < COOLDOWN_SECONDS:
-            return False  # Skip signal during cooldown
-        
-        return True
-```
+The session guard already prevents a second same-symbol trade, including a
+fresh setup after a stop. That protects against repeated losses but can also
+block a later, independently validated option setup. A separate paper-only
+trial allows one retry only after a losing stop, a 15-minute cooldown, and a
+score of at least 75; all standard quality and risk gates remain mandatory.
+This is an unvalidated policy trial, not evidence that re-entry will improve
+performance.
 
 **Measured performance effect**: Not established
 
@@ -469,4 +550,5 @@ Prevents cascading losses
 threshold. See [README_RELIABILITY.md](README_RELIABILITY.md) for the current
 NO-GO verdict and remaining validation gates.
 
-Do you want me to implement these improvements? Start with Week 1 fixes?
+The candidate changes above are not validated. Continue paper-only evaluation
+and do not enable live orders based on this guide.

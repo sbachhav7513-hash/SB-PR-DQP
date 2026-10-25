@@ -1,16 +1,19 @@
 import random
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from market_bot.bar_builder import Bar, BarBuilder
 from market_bot.engine import (
+    aggregate_ohlcv_bars,
     calculate_adx,
     calculate_atr,
     calculate_vwap,
     breakout_quality,
     classify_price_regime,
+    detect_support_resistance_reversal,
     filter_signal_by_context,
     market_context_signal,
     market_session_state,
@@ -119,6 +122,104 @@ def test_close_only_regime_classifier_identifies_sideways_market():
     assert "20-bar move" in result.reasons[0]
 
 
+def test_aggregate_ohlcv_bars_ignores_partial_or_gapped_buckets():
+    timezone = ZoneInfo("Asia/Kolkata")
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=timezone)
+    history = [
+        {
+            "time": start + timedelta(minutes=index),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100.5 + index,
+            "volume": 10,
+        }
+        for index in range(7)
+    ]
+
+    aggregated = aggregate_ohlcv_bars(
+        history,
+        source_interval_seconds=60,
+        target_interval_seconds=300,
+    )
+
+    assert len(aggregated) == 1
+    assert aggregated[0] == {
+        "time": start,
+        "open": 100.0,
+        "high": 105.0,
+        "low": 99.0,
+        "close": 104.5,
+        "volume": 50.0,
+    }
+    assert aggregate_ohlcv_bars(
+        [item for index, item in enumerate(history[:5]) if index != 2],
+        source_interval_seconds=60,
+        target_interval_seconds=300,
+    ) == []
+
+
+def test_support_reversal_requires_two_pivots_and_a_confirmed_reclaim():
+    history = [
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.1, "low": 99.90, "close": 99.95},
+        {"open": 99.9, "high": 100.0, "low": 99.80, "close": 99.90},
+        {"open": 99.9, "high": 100.1, "low": 99.90, "close": 100.0},
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.1},
+        {"open": 100.1, "high": 100.1, "low": 99.85, "close": 99.95},
+        {"open": 99.95, "high": 100.1, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.05, "low": 99.90, "close": 100.0},
+        {"open": 99.95, "high": 100.0, "low": 99.70, "close": 99.85},
+        {"open": 99.9, "high": 100.25, "low": 99.8, "close": 100.15},
+    ]
+
+    result = detect_support_resistance_reversal(history)
+
+    assert result is not None
+    assert result.signal == "BUY"
+    assert result.level == pytest.approx(99.825)
+    assert result.touches == 2
+
+    inverse_history = [
+        {
+            **bar,
+            "open": 200.0 - bar["open"],
+            "high": 200.0 - bar["low"],
+            "low": 200.0 - bar["high"],
+            "close": 200.0 - bar["close"],
+        }
+        for bar in history
+    ]
+    inverse_result = detect_support_resistance_reversal(inverse_history)
+    assert inverse_result is not None
+    assert inverse_result.signal == "SELL"
+
+    history[-1] = {
+        "open": 100.2,
+        "high": 100.25,
+        "low": 99.7,
+        "close": 99.8,
+    }
+    assert detect_support_resistance_reversal(history) is None
+
+
+def test_support_reversal_rejects_a_single_support_pivot():
+    history = [
+        {"open": 100, "high": 100.2, "low": 99.95, "close": 100},
+        {"open": 100, "high": 100.1, "low": 99.9, "close": 99.95},
+        {"open": 99.9, "high": 100, "low": 99.8, "close": 99.9},
+        {"open": 99.9, "high": 100.1, "low": 99.9, "close": 100},
+        {"open": 100, "high": 100.2, "low": 99.95, "close": 100.1},
+        {"open": 100.1, "high": 100.1, "low": 100.0, "close": 100.05},
+        {"open": 100.0, "high": 100.1, "low": 100.0, "close": 100.05},
+        {"open": 100.05, "high": 100.1, "low": 100.0, "close": 100.05},
+        {"open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0},
+        {"open": 100.0, "high": 100.3, "low": 99.95, "close": 100.2},
+    ]
+
+    assert detect_support_resistance_reversal(history) is None
+
+
 def test_lower_sideways_net_move_threshold_admits_modest_directional_move():
     step = 0.27 / 19
     closes = [100.0] * 10 + [100.0 + index * step for index in range(20)]
@@ -190,6 +291,133 @@ def test_bearish_recent_low_bonus_and_entry_use_same_proximity():
     assert default_result.signal == "SELL"
 
 
+@pytest.mark.parametrize(
+    (
+        "closes",
+        "fast_previous",
+        "fast_now",
+        "rsi_value",
+        "expected_score",
+        "expected_signal",
+        "expected_reason",
+    ),
+    [
+        (
+            [100.0 - index * 0.1 for index in range(40)],
+            100.5,
+            99.0,
+            29.0,
+            65,
+            "HOLD",
+            "RSI oversold against SELL",
+        ),
+        (
+            [100.0 - index * 0.1 for index in range(40)],
+            100.5,
+            99.0,
+            30.0,
+            85,
+            "SELL",
+            "RSI in trend zone",
+        ),
+        (
+            [90.0 + index * 0.1 for index in range(40)],
+            99.5,
+            101.0,
+            70.0,
+            85,
+            "BUY",
+            "RSI in trend zone",
+        ),
+        (
+            [90.0 + index * 0.1 for index in range(40)],
+            99.5,
+            101.0,
+            71.0,
+            65,
+            "HOLD",
+            "RSI overbought against BUY",
+        ),
+    ],
+)
+def test_score_market_blocks_entries_at_countertrend_rsi_extremes(
+    closes,
+    fast_previous,
+    fast_now,
+    rsi_value,
+    expected_score,
+    expected_signal,
+    expected_reason,
+):
+    fast = [fast_previous] * (len(closes) - 1) + [fast_now]
+    slow = [100.0] * len(closes)
+    history = [{"close": close} for close in closes]
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda _closes, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[rsi_value]), patch(
+        "market_bot.engine.calculate_adx", return_value=None
+    ), patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            session_state="REGULAR_SESSION",
+        )
+
+    assert result.score == expected_score
+    assert result.signal == expected_signal
+    assert expected_reason in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("bullish", "rsi_value", "expected_signal"),
+    [
+        (True, 79.0, "BUY"),
+        (True, 81.0, "HOLD"),
+        (False, 26.0, "SELL"),
+        (False, 24.0, "HOLD"),
+    ],
+)
+def test_score_market_uses_relaxed_paper_rsi_entry_thresholds(
+    bullish, rsi_value, expected_signal
+):
+    closes = (
+        [90.0 + index * 0.1 for index in range(40)]
+        if bullish
+        else [100.0 - index * 0.1 for index in range(40)]
+    )
+    fast = (
+        [99.5] * (len(closes) - 1) + [101.0]
+        if bullish
+        else [100.5] * (len(closes) - 1) + [99.0]
+    )
+    slow = [100.0] * len(closes)
+
+    with patch(
+        "market_bot.engine.ema",
+        side_effect=lambda _closes, period: fast if period == 9 else slow,
+    ), patch("market_bot.engine.rsi", return_value=[rsi_value]), patch(
+        "market_bot.engine.calculate_adx", return_value=None
+    ), patch("market_bot.engine.classify_price_regime", return_value="TRENDING"):
+        result = score_market(
+            "TEST",
+            [{"close": close} for close in closes],
+            min_trend_strength=0.005,
+            session_state="REGULAR_SESSION",
+            rsi_buy_block_above=80.0,
+            rsi_sell_block_below=25.0,
+        )
+
+    assert result.signal == expected_signal
+
+
+def test_score_market_rejects_invalid_rsi_entry_thresholds():
+    with pytest.raises(ValueError, match="RSI entry thresholds"):
+        score_market("TEST", [], rsi_buy_block_above=101.0)
+
+
 def test_slightly_wider_proximity_admits_nearby_bearish_setup():
     closes = [100.0] * 21 + [90.0]
     closes.extend(90.5 + index * 0.1 for index in range(9))
@@ -259,25 +487,26 @@ def test_bullish_recent_high_bonus_and_entry_use_same_proximity():
 def test_trend_momentum_bonus_defaults_to_min_trend_strength():
     history = [{"close": 100.0 + index * 0.04} for index in range(40)]
 
-    default_result = score_market(
-        "TEST",
-        history,
-        min_trend_strength=0.005,
-        sideways_range_pct=0.1,
-        sideways_net_move_pct=0.1,
-    )
-    explicit_default_result = score_market(
-        "TEST",
-        history,
-        min_trend_strength=0.005,
-        trend_momentum_bonus_threshold=0.02,
-        sideways_range_pct=0.1,
-        sideways_net_move_pct=0.1,
-    )
+    with patch("market_bot.engine.rsi", return_value=[60.0] * len(history)):
+        default_result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
+        explicit_default_result = score_market(
+            "TEST",
+            history,
+            min_trend_strength=0.005,
+            trend_momentum_bonus_threshold=0.02,
+            sideways_range_pct=0.1,
+            sideways_net_move_pct=0.1,
+        )
 
     assert default_result.score == explicit_default_result.score + 12
     assert default_result.signal == "BUY"
-    assert explicit_default_result.signal == "HOLD"
+    assert explicit_default_result.signal == "BUY"
 
 
 def test_compression_breakout_can_pass_sideways_regime_gate():
@@ -366,7 +595,9 @@ def test_paper_trend_continuation_relaxes_only_breakout_candle_checks():
 def test_min_adx_threshold_can_admit_setup_at_adx_11():
     history = [{"close": 100.0 + index * 0.1} for index in range(40)]
 
-    with patch("market_bot.engine.calculate_adx", return_value=11.5):
+    with patch("market_bot.engine.calculate_adx", return_value=11.5), patch(
+        "market_bot.engine.rsi", return_value=[60.0] * len(history)
+    ):
         rejected = score_market(
             "TEST",
             history,
@@ -492,12 +723,15 @@ def test_hard_context_filter_blocks_buy_against_bearish_benchmark():
     symbol_history = [{"close": 100.0 + index * 1.2} for index in range(60)]
     benchmark_history = [{"close": 200.0 - index * 1.2} for index in range(60)]
 
-    result = score_market(
-        "TEST",
-        symbol_history,
-        context_history=benchmark_history,
-        hard_context_filter=True,
-    )
+    with patch(
+        "market_bot.engine.rsi", return_value=[60.0] * len(symbol_history)
+    ):
+        result = score_market(
+            "TEST",
+            symbol_history,
+            context_history=benchmark_history,
+            hard_context_filter=True,
+        )
 
     assert result.signal == "HOLD"
     assert "BUY blocked" in " ".join(result.reasons)
@@ -545,11 +779,12 @@ def test_live_session_state_uses_current_ist_clock_for_stale_bar_timestamps():
         market_session_state(stale_history, now=datetime(2026, 9, 22, 10, 0, 0))
         == "REGULAR_SESSION"
     )
-    result = score_market(
-        "TEST",
-        stale_history,
-        session_state="REGULAR_SESSION",
-    )
+    with patch("market_bot.engine.rsi", return_value=[60.0] * len(stale_history)):
+        result = score_market(
+            "TEST",
+            stale_history,
+            session_state="REGULAR_SESSION",
+        )
 
     assert result.signal == "BUY"
     assert "before open" not in " ".join(result.reasons).lower()
@@ -563,7 +798,10 @@ def test_regular_session_data_can_trigger_buy_signal():
 
     assert market_session_state(regular_history) == "REGULAR_SESSION"
 
-    result = score_market("TEST", regular_history)
+    with patch(
+        "market_bot.engine.rsi", return_value=[60.0] * len(regular_history)
+    ):
+        result = score_market("TEST", regular_history)
 
     assert result.signal == "BUY"
     assert result.score >= 60
@@ -572,7 +810,8 @@ def test_regular_session_data_can_trigger_buy_signal():
 def test_strong_bullish_trend_should_generate_buy_signal():
     history = [{"close": 100.0 + index * 1.2} for index in range(60)]
 
-    result = score_market("TEST", history)
+    with patch("market_bot.engine.rsi", return_value=[60.0] * len(history)):
+        result = score_market("TEST", history)
 
     assert result.signal == "BUY"
     assert result.score >= 60
@@ -584,7 +823,10 @@ def test_before_open_data_can_be_scored_for_premarkarket_signal():
         for index in range(60)
     ]
 
-    result = score_market("TEST", before_open_history, allow_before_open=True)
+    with patch(
+        "market_bot.engine.rsi", return_value=[60.0] * len(before_open_history)
+    ):
+        result = score_market("TEST", before_open_history, allow_before_open=True)
 
     assert result.signal == "BUY"
     assert result.score >= 60
@@ -602,7 +844,8 @@ def test_score_market_ignores_stale_previous_day_bars():
         for index in range(30)
     ]
 
-    result = score_market("TEST", stale + fresh)
+    with patch("market_bot.engine.rsi", return_value=[60.0] * len(stale + fresh)):
+        result = score_market("TEST", stale + fresh)
 
     assert result.signal == "BUY"
     assert result.score >= 60

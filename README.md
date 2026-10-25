@@ -161,6 +161,31 @@ This version:
 - Lower latency for signal generation
 - Better suited for intraday trading
 
+#### Paper EMA Stop-Loss Re-entry
+
+When `paper_ema_reentry_enabled` is true, an option trade that closes at a losing
+`STOP_LOSS` starts a single 10-minute observation window for that original trade.
+The feature is paper-only and is disabled whenever live orders are enabled. It
+requires 1-minute underlying candles: CE setups use an EMA(5) cross above EMA(20)
+followed by a later underlying close above the crossover candle high; PE setups
+use the inverse cross and close below the crossover candle low. EMA alignment is
+checked again at confirmation. The underlying session VWAP is recorded as context,
+not used as an extra entry filter.
+
+The re-entry uses the standard paper option sizing and exit handling. Trade rows
+and daily/weekly reports link it to the original trade and record stop/signal
+times, reason, option-premium entry/exit, P&L, outcome, and a baseline comparison.
+For an offline replay, set `paper_ema_reentry_enabled` in the supplied config and
+run:
+
+```bash
+python -m market_bot.replay underlying_1m.csv --ticker NIFTY --config kite_config.json --output ema_reentry_report.json
+```
+
+Offline replay signals use the underlying candles and its reported returns are
+underlying-price directional proxies, not option-premium P&L. Paper reports use
+the recorded option trade P&L.
+
 ---
 
 ## 📁 Project Structure
