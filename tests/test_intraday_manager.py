@@ -49,7 +49,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_entry_cutoff_minutes_before_close": 0,
+        "entry_cutoff_minutes_before_close": 0,
         "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
         "option_max_risk_per_lot_pct": 10.0,
@@ -98,30 +98,30 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["adaptive_runner_gap_r"] == 1.0
 
 
-def test_adaptive_option_exit_is_paper_only():
+def test_adaptive_option_exit_uses_shared_strategy_config():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_option_adaptive_exit_enabled": True}
+    bot.config = {"option_adaptive_exit_enabled": True}
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
     bot._options_enabled = Mock(return_value=True)
 
-    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is True
+    assert bot._option_adaptive_exit_enabled("NIFTY_CE") is True
 
     bot.live_orders_enabled = True
-    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is False
+    bot.paper_trading_enabled = False
+    assert bot._option_adaptive_exit_enabled("NIFTY_CE") is True
 
-    bot.live_orders_enabled = False
-    bot.config["paper_option_adaptive_exit_enabled"] = False
-    assert bot._paper_option_adaptive_exit_enabled("NIFTY_CE") is False
+    bot.config["option_adaptive_exit_enabled"] = False
+    assert bot._option_adaptive_exit_enabled("NIFTY_CE") is False
 
 
 def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_option_range_breakout_enabled": True,
-        "paper_option_range_lookback_bars": 15,
-        "paper_option_range_target_r": 2.0,
+        "option_range_breakout_enabled": True,
+        "option_range_lookback_bars": 15,
+        "option_range_target_r": 2.0,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
@@ -151,7 +151,7 @@ def test_paper_range_breakout_triggers_on_close_above_previous_15_bars():
         "market_bot.kite_main.market_session_state",
         return_value="REGULAR_SESSION",
     ):
-        outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+        outcome = bot._try_option_range_breakout("NIFTY_CE", bars)
 
     assert outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED"
     bot._option_quality_gate.assert_called_once_with(
@@ -168,10 +168,10 @@ def test_paper_range_breakout_waits_for_one_completed_follow_through_bar():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_option_range_breakout_enabled": True,
-        "paper_option_range_lookback_bars": 15,
-        "paper_option_range_confirmation_bars": 1,
-        "paper_option_range_target_r": 2.0,
+        "option_range_breakout_enabled": True,
+        "option_range_lookback_bars": 15,
+        "option_range_confirmation_bars": 1,
+        "option_range_target_r": 2.0,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
@@ -199,14 +199,14 @@ def test_paper_range_breakout_waits_for_one_completed_follow_through_bar():
         "market_bot.kite_main.market_session_state",
         return_value="REGULAR_SESSION",
     ):
-        outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+        outcome = bot._try_option_range_breakout("NIFTY_CE", bars)
 
     assert outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED"
     bot._handle_buy_signal.assert_called_once_with(
         "NIFTY_CE",
         28.35,
         0,
-        strategy_variant="paper_option_range_breakout",
+        strategy_variant="option_range_breakout",
         minimum_signal_score=0,
         paper_range_stop=pytest.approx(26.5),
         paper_range_target_r=2.0,
@@ -217,10 +217,10 @@ def test_paper_range_breakout_rejects_follow_through_close_below_range():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_option_range_breakout_enabled": True,
-        "paper_option_range_lookback_bars": 15,
-        "paper_option_range_confirmation_bars": 1,
-        "paper_option_range_target_r": 2.0,
+        "option_range_breakout_enabled": True,
+        "option_range_lookback_bars": 15,
+        "option_range_confirmation_bars": 1,
+        "option_range_target_r": 2.0,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
@@ -240,7 +240,7 @@ def test_paper_range_breakout_rejects_follow_through_close_below_range():
         ]
     )
 
-    outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+    outcome = bot._try_option_range_breakout("NIFTY_CE", bars)
 
     assert (
         outcome
@@ -258,9 +258,9 @@ def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_option_range_breakout_enabled": True,
-        "paper_option_range_lookback_bars": 15,
-        "paper_option_range_target_r": 2.0,
+        "option_range_breakout_enabled": True,
+        "option_range_lookback_bars": 15,
+        "option_range_target_r": 2.0,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
@@ -286,7 +286,7 @@ def test_paper_range_breakout_rejects_volume_below_prior_15_bar_average(
         )
     )
 
-    outcome = bot._try_paper_option_range_breakout("NIFTY_CE", bars)
+    outcome = bot._try_option_range_breakout("NIFTY_CE", bars)
 
     assert (
         outcome
@@ -301,11 +301,11 @@ def test_paper_range_breakout_keeps_fixed_2r_exit_with_range_risk_sizing():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_entry_cutoff_minutes_before_close": 0,
+        "entry_cutoff_minutes_before_close": 0,
         "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
         "option_max_risk_per_lot_pct": 10.0,
-        "paper_option_adaptive_exit_enabled": True,
+        "option_adaptive_exit_enabled": True,
         "option_min_lots": 1,
         "option_max_lots": 3,
         "strong_signal_score": 82,
@@ -337,7 +337,7 @@ def test_paper_range_breakout_keeps_fixed_2r_exit_with_range_risk_sizing():
         "NIFTY_CE",
         28.25,
         0,
-        strategy_variant="paper_option_range_breakout",
+        strategy_variant="option_range_breakout",
         minimum_signal_score=0,
         paper_range_stop=26.5,
         paper_range_target_r=2.0,
@@ -593,32 +593,56 @@ def test_option_trail_runner_is_forced_out_by_market_close():
     )
 
 
-def test_paper_range_breakout_never_runs_when_live_orders_are_enabled():
+def test_option_range_breakout_runs_in_live_mode():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "paper_option_range_breakout_enabled": True,
-        "paper_option_range_lookback_bars": 15,
+        "option_range_breakout_enabled": True,
+        "option_range_lookback_bars": 15,
+        "option_range_target_r": 2.0,
     }
-    bot.paper_trading_enabled = True
+    bot.paper_trading_enabled = False
     bot.live_orders_enabled = True
     bot._options_enabled = Mock(return_value=True)
-    bot._option_quality_gate = Mock()
+    bot.option_quote_cache = {"NIFTY_CE": {"last_price": 28.25}}
+    bot.kite_stream = SimpleNamespace(contract_tick_sizes={"NIFTY_CE": 0.05})
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={}, session_trade_symbols=set()
+    )
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    start = datetime(2026, 10, 14, 12, 38)
+    bars = [
+        Bar(start + timedelta(minutes=index), 27, 27.7, 26.55, 27, 1000)
+        for index in range(15)
+    ]
+    bars.extend(
+        [
+            Bar(start + timedelta(minutes=15), 27, 27.7, 26.8, 27, 1000),
+            Bar(start + timedelta(minutes=16), 27.7, 28.3, 27.6, 28.25, 1000),
+        ]
+    )
 
-    assert bot._try_paper_option_range_breakout("NIFTY_CE", []) is None
-    bot._option_quality_gate.assert_not_called()
+    with patch(
+        "market_bot.kite_main.market_session_state",
+        return_value="REGULAR_SESSION",
+    ):
+        outcome = bot._try_option_range_breakout("NIFTY_CE", bars)
+
+    assert outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED"
+    bot._handle_buy_signal.assert_called_once()
 
 
-def test_support_reversal_is_paper_only_and_deduplicates_same_level():
+def test_support_reversal_is_shared_and_deduplicates_same_level():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_support_reversal_enabled": True,
+        "support_reversal_enabled": True,
         "bar_interval_seconds": 60,
-        "paper_support_reversal_cooldown_minutes": 15,
+        "support_reversal_cooldown_minutes": 15,
         "instrument_tokens": {"NIFTY_CE": 100},
     }
-    bot.paper_trading_enabled = True
-    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = False
+    bot.live_orders_enabled = True
     values = [
         (100.0, 100.2, 99.95, 100.0),
         (100.0, 100.1, 99.90, 99.95),
@@ -646,21 +670,18 @@ def test_support_reversal_is_paper_only_and_deduplicates_same_level():
                 )
             )
 
-    candidate = bot._paper_support_reversal_candidate(
+    candidate = bot._support_reversal_candidate(
         "NIFTY_CE", underlying_bars
     )
 
     assert candidate is not None
     assert candidate.signal == "BUY"
-    bot._mark_paper_support_reversal_attempt("NIFTY_CE", candidate)
-    assert bot._paper_support_reversal_candidate(
+    bot._mark_support_reversal_attempt("NIFTY_CE", candidate)
+    assert bot._support_reversal_candidate(
         "NIFTY_CE", underlying_bars
     ) is None
 
-    bot.live_orders_enabled = True
-    assert bot._paper_support_reversal_candidate(
-        "NIFTY_CE", underlying_bars
-    ) is None
+    assert bot._support_reversal_candidate("NIFTY_CE", underlying_bars) is None
 
 
 def test_paper_range_breakout_outcomes_are_classified_in_daily_reports():
@@ -672,7 +693,7 @@ def test_paper_range_breakout_outcomes_are_classified_in_daily_reports():
     ) == "option_filter"
 
 
-def test_active_paper_config_sizes_options_within_remaining_daily_risk():
+def test_active_config_sizes_options_within_shared_per_trade_risk():
     with open("kite_config.json", encoding="utf-8") as config_file:
         config = json.load(config_file)
     with open("kite_config.example.json", encoding="utf-8") as example_config_file:
@@ -680,9 +701,7 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
 
     manager = IntradayManager(
         account_size=config["account_size"],
-        max_risk_per_trade=(
-            config["account_size"] * config["daily_max_loss_pct"] / 100.0
-        ),
+        max_risk_per_trade=config["max_risk_per_trade"],
         daily_max_loss_pct=config["daily_max_loss_pct"],
     )
     manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
@@ -704,22 +723,20 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
         100.0 * (1.0 - config["option_premium_stop_pct"]),
     )
 
-    assert config["paper_trading_enabled"] is True
-    assert config["live_orders_enabled"] is False
-    assert config["paper_option_range_breakout_enabled"] is False
-    assert example_config["paper_option_range_breakout_enabled"] is False
-    assert config["paper_support_reversal_enabled"] is True
-    assert example_config["paper_support_reversal_enabled"] is False
-    assert config["paper_support_reversal_min_premium"] == 5.0
-    assert example_config["paper_support_reversal_min_premium"] == 5.0
+    assert config["mode"] == "PAPER"
+    assert config["option_range_breakout_enabled"] is False
+    assert example_config["option_range_breakout_enabled"] is False
+    assert config["support_reversal_enabled"] is True
+    assert example_config["support_reversal_enabled"] is True
+    assert config["support_reversal_min_premium"] == 5.0
+    assert example_config["support_reversal_min_premium"] == 5.0
     assert config["option_min_lots"] == 1
-    assert config["max_risk_per_trade"] is None
+    assert config["max_risk_per_trade"] == 1000.0
     assert config["daily_max_loss_pct"] == 10.0
-    assert config["paper_min_entry_score"] == 60
+    assert config["min_entry_score"] == 60
     assert config["option_max_risk_per_lot_pct"] == 10.0
-    assert config.get("paper_max_risk_per_trade", 1000.0) == 1000.0
     assert manager.daily_max_loss == 10_000.0
-    assert manager.max_risk_per_trade == 10_000.0
+    assert manager.max_risk_per_trade == 1000.0
     assert quantity == 65
     assert risk == pytest.approx(650.0)
     assert risk <= manager.available_daily_risk()
@@ -754,10 +771,10 @@ def test_active_paper_config_sizes_options_within_remaining_daily_risk():
     assert risk == 0
     assert bot._pending_entry_evaluations["TCS_PE"][
         "rejection_reason"
-    ] == "one_lot_exceeds_paper_risk_cap"
+    ] == "one_lot_exceeds_trade_risk_cap"
     assert risk <= manager.available_daily_risk()
 
-    assert manager.available_daily_risk() == pytest.approx(9_350.0)
+    assert manager.available_daily_risk() == pytest.approx(1_000.0)
 
 
 def test_per_trade_risk_cap_is_separate_from_two_percent_daily_stop():
@@ -1353,17 +1370,17 @@ def test_only_negative_stop_exits_qualify_for_paper_reentry():
     assert "no qualifying loss stop" in reason.lower()
 
 
-def test_stop_reentry_policy_is_paper_options_only():
+def test_stop_reentry_policy_is_shared_across_execution_modes():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_stop_reentry_enabled": True,
-        "paper_stop_reentry_cooldown_minutes": 15,
+        "stop_reentry_enabled": True,
+        "stop_reentry_cooldown_minutes": 15,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
-    bot.paper_stop_reentry_min_score = 75
-    bot.paper_stop_reentry_cooldown_minutes = 15
+    bot.stop_reentry_min_score = 75
+    bot.stop_reentry_cooldown_minutes = 15
     bot.intraday_manager = Mock()
     bot.intraday_manager.can_open_trade.return_value = (True, "OK")
 
@@ -1380,7 +1397,14 @@ def test_stop_reentry_policy_is_paper_options_only():
     bot.intraday_manager.can_open_trade.reset_mock()
     bot.live_orders_enabled = True
     assert bot._can_open_trade_for_signal("NIFTY_CE", "BUY", 80) == (True, "OK")
-    bot.intraday_manager.can_open_trade.assert_called_once_with("NIFTY_CE", "BUY")
+    bot.intraday_manager.can_open_trade.assert_called_once_with(
+        "NIFTY_CE",
+        "BUY",
+        allow_stop_reentry=True,
+        stop_reentry_cooldown_seconds=900,
+        signal_score=80,
+        minimum_stop_reentry_score=75,
+    )
 
 
 def test_session_trades_are_restored_from_the_journal():
@@ -1442,25 +1466,25 @@ def test_late_window_guard_uses_configured_ist_bounds_and_can_be_disabled():
     assert bot._late_window_blocked(datetime(2026, 9, 26, 12, 30, tzinfo=ist)) is False
 
 
-def test_paper_entry_cutoff_blocks_at_1445_but_not_before_and_is_paper_only():
+def test_shared_entry_cutoff_blocks_at_1445_in_both_modes():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_entry_cutoff_minutes_before_close": 45}
+    bot.config = {"entry_cutoff_minutes_before_close": 45}
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
     bot.intraday_manager = IntradayManager()
     ist = ZoneInfo("Asia/Kolkata")
 
-    assert bot._paper_entry_cutoff_reason(
+    assert bot._entry_cutoff_reason(
         datetime(2026, 10, 16, 14, 44, tzinfo=ist)
     ) is None
-    assert bot._paper_entry_cutoff_reason(
+    assert bot._entry_cutoff_reason(
         datetime(2026, 10, 16, 14, 45, tzinfo=ist)
-    ) == "paper_entry_cutoff_blocked:45m_before_close"
+    ) == "entry_cutoff_blocked:45m_before_close"
 
     bot.live_orders_enabled = True
-    assert bot._paper_entry_cutoff_reason(
+    assert bot._entry_cutoff_reason(
         datetime(2026, 10, 16, 15, 0, tzinfo=ist)
-    ) is None
+    ) == "entry_cutoff_blocked:45m_before_close"
 
 
 @pytest.mark.parametrize("_handler", ["_handle_buy_signal", "_handle_sell_signal"])
@@ -1472,20 +1496,20 @@ def test_both_entry_handlers_apply_common_paper_cutoff(_handler):
     bot.trade_journal = Mock()
     bot.trade_journal.get_open_trade.return_value = None
     bot.intraday_manager = SimpleNamespace(active_positions={})
-    bot._paper_entry_cutoff_reason = Mock(
-        return_value="paper_entry_cutoff_blocked:45m_before_close"
+    bot._entry_cutoff_reason = Mock(
+        return_value="entry_cutoff_blocked:45m_before_close"
     )
 
     result = getattr(bot, _handler)("TCS_CE", 100.0, 80)
 
-    assert result == "paper_entry_cutoff_blocked:45m_before_close"
-    bot._paper_entry_cutoff_reason.assert_called_once_with()
+    assert result == "entry_cutoff_blocked:45m_before_close"
+    bot._entry_cutoff_reason.assert_called_once_with()
 
 
 def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "paper_max_risk_per_trade": 1000.0,
+        "max_risk_per_trade": 1000.0,
         "option_max_risk_per_lot_pct": 10.0,
         "option_min_lots": 1,
         "option_max_lots": 3,
@@ -1510,13 +1534,13 @@ def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
         112.0 * stop_pct * 225
     )
     assert evaluation["option_risk_per_lot_rupees"] > 1000.0
-    assert evaluation["rejection_reason"] == "one_lot_exceeds_paper_risk_cap"
+    assert evaluation["rejection_reason"] == "one_lot_exceeds_trade_risk_cap"
 
 
 def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "paper_max_risk_per_trade": 1000.0,
+        "max_risk_per_trade": 1000.0,
         "option_max_risk_per_lot_pct": 10.0,
         "option_min_lots": 1,
         "option_max_lots": 3,
@@ -1542,7 +1566,7 @@ def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
 
 def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_max_risk_per_trade": 1000.0}
+    bot.config = {"max_risk_per_trade": 1000.0}
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
     bot.intraday_manager = IntradayManager(
@@ -1559,7 +1583,7 @@ def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
     assert quantity == 0
     assert bot._pending_entry_evaluations["TCS"][
         "rejection_reason"
-    ] == "one_lot_exceeds_paper_risk_cap"
+    ] == "one_lot_exceeds_trade_risk_cap"
 
 
 def test_decision_record_includes_pending_entry_risk_evaluation():
@@ -1567,7 +1591,7 @@ def test_decision_record_includes_pending_entry_risk_evaluation():
     bot.decision_journal = Mock()
     bot._pending_entry_evaluations = {
         "TCS_CE": {
-            "paper_risk_cap_rupees": 1000.0,
+            "risk_cap_rupees": 1000.0,
             "option_risk_per_lot_rupees": 2486.25,
             "accepted": False,
         }
@@ -1583,11 +1607,11 @@ def test_decision_record_includes_pending_entry_risk_evaluation():
 
     bot._record_decision(
         "TCS_CE", bar, [bar], None, "BUY",
-        "paper_risk_cap_blocked:one_lot_exceeds_1000_rupees"
+        "risk_cap_blocked:one_lot_exceeds_1000_rupees"
     )
 
     payload = bot.decision_journal.log_decision.call_args.args[0]
-    assert payload["entry_evaluation"]["paper_risk_cap_rupees"] == 1000.0
+    assert payload["entry_evaluation"]["risk_cap_rupees"] == 1000.0
     assert "TCS_CE" not in bot._pending_entry_evaluations
 
 
@@ -2014,6 +2038,7 @@ def test_tick_exit_closes_when_milestone_window_expires_outside_paper_extension(
     bot.intraday_manager = manager
     bot._close_position = Mock()
     bot.paper_trading_enabled = False
+    bot.config = {"extend_option_timebox": False}
 
     with patch("market_bot.intraday_manager.datetime") as clock:
         clock.now.return_value = entered_at.replace(minute=5)
@@ -2041,7 +2066,7 @@ def test_paper_timebox_expiry_extends_window_and_persists_checkpoint():
     bot = object.__new__(KiteTradingBot)
     bot.intraday_manager = manager
     bot.paper_trading_enabled = True
-    bot.config = {"paper_extend_option_timebox": True}
+    bot.config = {"extend_option_timebox": True}
     bot.trade_journal = Mock()
     bot.trade_journal.update_open_trade.return_value = True
     bot._close_position = Mock()
@@ -2082,7 +2107,7 @@ def test_paper_timebox_extension_does_not_override_stop_loss():
     bot = object.__new__(KiteTradingBot)
     bot.intraday_manager = manager
     bot.paper_trading_enabled = True
-    bot.config = {"paper_extend_option_timebox": True}
+    bot.config = {"extend_option_timebox": True}
     bot.trade_journal = Mock()
     bot._close_position = Mock()
 
@@ -2145,7 +2170,7 @@ def test_option_signal_weakening_uses_adverse_premium_move_for_ce_and_pe_buys():
     bot._close_position.assert_called_once_with("BANKNIFTY_PE", 95.0, "SIGNAL_WEAKEN")
 
 
-def test_live_option_signal_weakening_remains_immediate():
+def test_option_signal_weakening_confirmation_is_shared_across_modes():
     manager = IntradayManager()
     manager.register_position(
         "NIFTY_CE",
@@ -2162,8 +2187,11 @@ def test_live_option_signal_weakening_remains_immediate():
     bot = object.__new__(KiteTradingBot)
     bot.intraday_manager = manager
     bot.paper_trading_enabled = False
+    bot.live_orders_enabled = True
+    bot.trade_journal = Mock()
     bot._close_position = Mock()
 
+    assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) is None
     assert bot._check_option_signal_health("NIFTY_CE", "HOLD", 69, 70, 95.0) == "SIGNAL_WEAKEN"
     bot._close_position.assert_called_once_with("NIFTY_CE", 95.0, "SIGNAL_WEAKEN")
 
@@ -2346,7 +2374,7 @@ def test_maximum_engine_score_is_not_rejected_by_accuracy_filter():
     [
         (True, False, "trade_opened", True),
         (True, False, "trade_blocked:consecutive_losses", False),
-        (False, True, "trade_opened", False),
+        (False, True, "trade_opened", True),
     ],
 )
 def test_option_entry_uses_one_strategy_in_both_modes(
@@ -2359,8 +2387,8 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         "options_underlyings": ["NIFTY"],
         "benchmark_symbols": [],
         "late_window_enabled": False,
-        "paper_allow_trend_continuation": True,
-        "paper_min_entry_score": 55,
+        "allow_trend_continuation": True,
+        "min_entry_score": 55,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -2382,7 +2410,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     bot.intraday_manager.should_exit_all_positions.return_value = False
     bot.use_market_context = False
     bot.paper_trading_enabled = paper_trading_enabled
-    bot.paper_min_entry_score = 55
+    bot.min_entry_score = 55
     bot.live_orders_enabled = live_orders_enabled
     bot.benchmark_symbol = "NIFTY"
     bot.news_monitor = None
@@ -2396,7 +2424,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     bot._record_decision = Mock()
     bot._handle_buy_signal = Mock(return_value=buy_outcome)
     bot.accuracy_filters = Mock()
-    bot.accuracy_filters.min_score_floor = 70
+    bot.accuracy_filters.min_score_floor = 55
     bot.accuracy_filters.validate_entry_with_reason.side_effect = (
         lambda **kwargs: (
             kwargs["score"] >= kwargs["min_score"],
@@ -2417,34 +2445,27 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         "volume_confirmation_history"
     ] == [{"volume": 10}] * len(underlying_bars)
     assert score_market_mock.call_args.kwargs[
-        "paper_allow_trend_continuation"
-    ] is paper_trading_enabled
+        "allow_trend_continuation"
+    ] is True
     assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "min_score"
-    ] == (55 if paper_trading_enabled else 70)
+    ] == 55
     assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "record_entry"
     ] is False
-    if paper_trading_enabled:
-        bot._handle_buy_signal.assert_called_once()
-        assert bot._handle_buy_signal.call_args.kwargs[
-            "minimum_signal_score"
-        ] == 55
-        if entry_recorded:
-            bot.accuracy_filters.record_entry.assert_called_once_with(
-                "NIFTY_CE",
-                bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
-                    "current_time"
-                ],
-            )
-        else:
-            bot.accuracy_filters.record_entry.assert_not_called()
-    else:
-        bot._handle_buy_signal.assert_not_called()
-        bot.accuracy_filters.record_entry.assert_not_called()
-        assert bot._record_decision.call_args.args[5] == (
-            "accuracy_filter_rejected:score<70"
+    bot._handle_buy_signal.assert_called_once()
+    assert bot._handle_buy_signal.call_args.kwargs[
+        "minimum_signal_score"
+    ] == 55
+    if entry_recorded:
+        bot.accuracy_filters.record_entry.assert_called_once_with(
+            "NIFTY_CE",
+            bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+                "current_time"
+            ],
         )
+    else:
+        bot.accuracy_filters.record_entry.assert_not_called()
     assert not any(
         key.startswith(("paper_shadow_", "allow_paper_shadow"))
         for key in score_market_mock.call_args.kwargs
@@ -2455,7 +2476,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     assert validated_history == [item.to_dict() for item in underlying_bars]
     assert (
         bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs["min_score"]
-        == (55 if paper_trading_enabled else 70)
+        == 55
     )
     assert (
         "require_confirmation"
@@ -2500,12 +2521,12 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         "instrument_tokens": {"NIFTY": 1},
         "benchmark_symbols": [],
         "late_window_enabled": False,
-        "paper_allow_trend_continuation": True,
-        "paper_min_entry_score": 55,
-        "paper_support_reversal_enabled": True,
-        "paper_support_reversal_min_premium": 5.0,
-        "paper_support_reversal_min_score": 75,
-        "paper_support_reversal_min_candle_body_ratio": 0.2,
+        "allow_trend_continuation": True,
+        "min_entry_score": 55,
+        "support_reversal_enabled": True,
+        "support_reversal_min_premium": 5.0,
+        "support_reversal_min_score": 75,
+        "support_reversal_min_candle_body_ratio": 0.2,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -2528,7 +2549,7 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
     bot.intraday_manager.should_exit_all_positions.return_value = False
     bot.use_market_context = False
     bot.paper_trading_enabled = True
-    bot.paper_min_entry_score = 55
+    bot.min_entry_score = 55
     bot.live_orders_enabled = False
     bot.benchmark_symbol = "NIFTY"
     bot.news_monitor = None
@@ -2537,7 +2558,7 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
     bot.latest_prices = {}
     bot.kite_stream = SimpleNamespace(contract_expiries={})
     bot._preferred_option_symbol = Mock(return_value="NIFTY_CE")
-    bot._paper_support_reversal_candidate = Mock(
+    bot._support_reversal_candidate = Mock(
         return_value=SupportResistanceReversal(
             signal="BUY",
             level=25000.0,
@@ -2546,13 +2567,13 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
             bar_time=datetime(2026, 9, 24, 10, 20, tzinfo=ZoneInfo("Asia/Kolkata")),
         )
     )
-    bot._mark_paper_support_reversal_attempt = Mock()
+    bot._mark_support_reversal_attempt = Mock()
     bot._has_option_candle_momentum = Mock(return_value=True)
     bot._option_quality_gate = Mock(return_value=(True, "OK"))
     bot._record_decision = Mock()
     bot._handle_buy_signal = Mock(return_value="trade_opened")
     bot.accuracy_filters = Mock()
-    bot.accuracy_filters.min_score_floor = 70
+    bot.accuracy_filters.min_score_floor = 55
     bot.accuracy_filters.validate_entry_with_reason.return_value = (True, "OK")
 
     with patch(
@@ -2571,7 +2592,7 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
 
     if not expected_trade:
         bot._option_quality_gate.assert_not_called()
-        bot._mark_paper_support_reversal_attempt.assert_not_called()
+        bot._mark_support_reversal_attempt.assert_not_called()
         bot._handle_buy_signal.assert_not_called()
         return
 
@@ -2587,7 +2608,7 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         underlying_bars[-1].to_dict(),
         minimum_body_ratio=0.2,
     )
-    bot._mark_paper_support_reversal_attempt.assert_called_once()
+    bot._mark_support_reversal_attempt.assert_called_once()
     bot._handle_buy_signal.assert_called_once_with(
         "NIFTY_CE",
         option_bars[-1].close,
@@ -2620,15 +2641,16 @@ def test_option_candle_momentum_uses_requested_directional_body_ratio():
     ) is False
 
 
-def test_option_candle_threshold_is_paper_only():
+def test_option_candle_threshold_is_shared_across_modes():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"paper_option_min_candle_body_ratio": 0.40}
-    bot.paper_option_min_candle_body_ratio = 0.40
+    bot.config = {"option_min_candle_body_ratio": 0.40}
+    bot.option_min_candle_body_ratio = 0.40
 
     bot.paper_trading_enabled = True
     assert bot._option_candle_min_body_ratio() == 0.40
     bot.paper_trading_enabled = False
-    assert bot._option_candle_min_body_ratio() == 0.60
+    bot.live_orders_enabled = True
+    assert bot._option_candle_min_body_ratio() == 0.40
 
 
 def test_options_only_underlying_bars_are_context_not_trade_entries():

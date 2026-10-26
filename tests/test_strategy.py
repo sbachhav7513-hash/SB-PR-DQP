@@ -380,7 +380,7 @@ def test_score_market_blocks_entries_at_countertrend_rsi_extremes(
         (False, 24.0, "HOLD"),
     ],
 )
-def test_score_market_uses_relaxed_paper_rsi_entry_thresholds(
+def test_score_market_uses_shared_rsi_entry_thresholds(
     bullish, rsi_value, expected_signal
 ):
     closes = (
@@ -531,7 +531,7 @@ def test_compression_breakout_can_pass_sideways_regime_gate():
     assert "Sideways regime" not in result.reasons
 
 
-def test_paper_trend_continuation_relaxes_only_breakout_candle_checks():
+def test_trend_continuation_relaxes_only_breakout_candle_checks():
     history = [
         {
             "open": 99.9 + index * 0.5,
@@ -577,7 +577,7 @@ def test_paper_trend_continuation_relaxes_only_breakout_candle_checks():
             sideways_range_pct=0.1,
             sideways_net_move_pct=0.1,
             session_state="REGULAR_SESSION",
-            paper_allow_trend_continuation=True,
+            allow_trend_continuation=True,
         )
 
     assert strict.signal == "HOLD"
@@ -585,7 +585,7 @@ def test_paper_trend_continuation_relaxes_only_breakout_candle_checks():
     assert "Breakout lacks close, volume, or ATR confirmation" in strict.reasons
     assert paper.signal == "BUY"
     assert (
-        "Paper-only trend continuation: compression and breakout-candle checks relaxed"
+        "Trend continuation: compression and breakout-candle checks relaxed"
         in paper.reasons
     )
     assert "ADX rising and EMA spread expanding" in paper.reasons

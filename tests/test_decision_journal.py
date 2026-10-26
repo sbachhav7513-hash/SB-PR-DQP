@@ -48,7 +48,7 @@ def test_decision_journal_normalizes_outcome_and_records_ist_session(tmp_path):
     assert record["session_timezone"] == "Asia/Kolkata"
 
 
-def test_decision_journal_preserves_paper_risk_evaluation_and_cutoff_reason(tmp_path):
+def test_decision_journal_normalizes_shared_risk_and_cutoff_outcomes(tmp_path):
     path = tmp_path / "decisions.jsonl"
     journal = DecisionJournal(str(path))
 
@@ -67,6 +67,21 @@ def test_decision_journal_preserves_paper_risk_evaluation_and_cutoff_reason(tmp_
         "signal": "SELL",
         "outcome": "paper_entry_cutoff_blocked:45m_before_close",
     })
+    journal.log_decision({
+        "ticker": "BANKNIFTY_CE",
+        "signal": "BUY",
+        "outcome": "risk_cap_blocked:one_lot_exceeds_1000_rupees",
+        "entry_evaluation": {
+            "risk_cap_rupees": 1000.0,
+            "option_risk_per_lot_rupees": 1200.0,
+            "accepted": False,
+        },
+    })
+    journal.log_decision({
+        "ticker": "BANKNIFTY_PE",
+        "signal": "SELL",
+        "outcome": "entry_cutoff_blocked:45m_before_close",
+    })
 
     records = [
         json.loads(line)
@@ -77,3 +92,7 @@ def test_decision_journal_preserves_paper_risk_evaluation_and_cutoff_reason(tmp_
     assert records[0]["entry_evaluation"]["option_risk_per_lot_rupees"] == 2486.25
     assert records[1]["outcome"] == "paper_entry_cutoff"
     assert records[1]["rejection_reason"] == "45m before close"
+    assert records[2]["outcome"] == "paper_risk_cap"
+    assert records[2]["entry_evaluation"]["risk_cap_rupees"] == 1000.0
+    assert records[3]["outcome"] == "paper_entry_cutoff"
+    assert records[3]["rejection_reason"] == "45m before close"
