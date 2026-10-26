@@ -132,9 +132,12 @@ This keeps the configured lookahead while ensuring current-month expiries are
 within range; it does not guarantee every underlying has a matching contract or
 usable quote. The selected option premium is streamed and scored directly;
 the configured stop and target percentages therefore apply to the option
-premium. `paper_trading_enabled` should remain `true` until this flow has been
-validated with your account and broker settings. A signal can still be HOLD,
-so this mode does not guarantee a trade every day.
+premium. Keep `mode` set to `PAPER` until this flow has been validated with
+your account and broker settings. Select execution with
+`mode: "PAPER"` or `"LIVE"` (or the process-level `MODE` environment
+variable); the strategy configuration is identical in both modes. LIVE also
+requires the explicit `live_orders_confirmed` safety gate. A signal can still
+be HOLD, so this mode does not guarantee a trade every day.
 
 With `staged_option_targets_enabled`, option entries retain the existing
 direction, score, context, and contract-quality gates, and add a momentum gate:
@@ -145,12 +148,11 @@ breakeven for strong scores (82+), at +20% it locks +10%, and each later
 milestone advances the lock by another 10%. Valid but weaker scores tighten
 each lock by an additional 5 percentage points. The per-milestone decision
 window is 10 minutes for a strong entry score and 5 minutes otherwise; it
-restarts after each milestone. In paper mode, expiry is a checkpoint and
-extends the decision window rather than closing the trade; protective stops,
-signal-health exits, and the independent 15:15 forced exit remain in effect.
-Set `paper_extend_option_timebox` to `false` to retain the automatic time-box
-exit. This extension is paper-only; live mode continues to use the automatic
-time-box exit.
+restarts after each milestone. When the shared `extend_option_timebox` setting
+is enabled, expiry is a checkpoint in both modes and extends the decision
+window rather than closing the trade; protective stops, signal-health exits,
+and the independent 15:15 forced exit remain in effect. Set
+`extend_option_timebox` to `false` to retain the automatic time-box exit.
 
 Option sizing targets two lots and allows up to three only within the existing
 per-trade risk budget; if two lots exceed that budget, the entry is skipped.

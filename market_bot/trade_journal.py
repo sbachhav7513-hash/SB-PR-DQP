@@ -58,6 +58,10 @@ def normalize_decision_outcome(value: Any) -> str:
         return "paper_entry_cutoff"
     if outcome.startswith("paper_risk_cap_blocked"):
         return "paper_risk_cap"
+    if outcome.startswith("entry_cutoff_blocked"):
+        return "paper_entry_cutoff"
+    if outcome.startswith("risk_cap_blocked"):
+        return "paper_risk_cap"
     if outcome in {
         "live_order_failed", "protective_stop_failed", "reversal_close_failed",
         "execution_failed",
@@ -110,6 +114,7 @@ class PaperTradingRecorder:
         "paper_entry_quote_is_fresh",
         "paper_entry_risk_rupees",
         "paper_risk_cap_rupees",
+        "risk_cap_rupees",
         "paper_exit_ltp",
         "paper_exit_bid",
         "paper_exit_ask",
@@ -263,9 +268,9 @@ class DecisionJournal:
                 rejection_reason = detail.removeprefix("OPTION_FILTER_").lower().replace("_", " ")
             elif detail.startswith("PAPER_RANGE_BREAKOUT_REJECTED:"):
                 rejection_reason = detail.split(":", 1)[1].replace("_", " ").lower()
-            elif detail.startswith("paper_entry_cutoff_blocked:"):
+            elif detail.startswith(("paper_entry_cutoff_blocked:", "entry_cutoff_blocked:")):
                 rejection_reason = detail.split(":", 1)[1].replace("_", " ")
-            elif detail.startswith("paper_risk_cap_blocked:"):
+            elif detail.startswith(("paper_risk_cap_blocked:", "risk_cap_blocked:")):
                 rejection_reason = detail.split(":", 1)[1].replace("_", " ")
             elif detail == "PAPER_RANGE_BREAKOUT_PAPER_ENTRY_CUTOFF_BLOCKED":
                 rejection_reason = "paper entry cutoff"

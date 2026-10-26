@@ -78,13 +78,13 @@ def test_reentry_confirmation_must_finish_within_ten_minutes():
     ) is None
 
 
-def test_live_paper_candidate_uses_underlying_history_and_is_paper_only():
+def test_ema_reentry_uses_same_underlying_signal_in_both_modes():
     candles = _candles([120 - index for index in range(21)] + [
         99, 98, 99, 101, 104, 108, 113, 119, 126
     ])
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "paper_ema_reentry_enabled": True,
+        "ema_reentry_enabled": True,
         "trading_mode": "intraday_options",
         "bar_interval_seconds": 60,
     }
@@ -100,15 +100,16 @@ def test_live_paper_candidate_uses_underlying_history_and_is_paper_only():
         }
     }
 
-    signal = bot._paper_ema_reentry_candidate("NIFTY_CE", candles)
+    signal = bot._ema_reentry_candidate("NIFTY_CE", candles)
 
     assert signal is not None
     assert signal["original_trade_id"] == "original-1"
     assert signal["signal"] == "BUY"
     assert signal["vwap"] is not None
 
+    bot._ema_reentry_states["NIFTY_CE"]["status"] = "observing"
     bot.live_orders_enabled = True
-    assert bot._paper_ema_reentry_candidate("NIFTY_CE", candles) is None
+    assert bot._ema_reentry_candidate("NIFTY_CE", candles) == signal
 
 
 def test_paper_reentry_gate_allows_one_stop_retry_and_blocks_a_second():
@@ -117,7 +118,7 @@ def test_paper_reentry_gate_allows_one_stop_retry_and_blocks_a_second():
     manager.record_trade_close("NIFTY_CE", "STOP_LOSS", -100)
     bot = object.__new__(KiteTradingBot)
     bot.config = {
-        "paper_ema_reentry_enabled": True,
+        "ema_reentry_enabled": True,
         "trading_mode": "intraday_options",
     }
     bot.paper_trading_enabled = True

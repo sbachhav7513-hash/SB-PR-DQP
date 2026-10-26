@@ -33,6 +33,7 @@ from .intraday_manager import (
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
 from .risk_manager import build_risk_plan
+from .strategy_config import normalize_strategy_config, resolve_execution_mode
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, PaperShadowExitJournal, TradeJournal
 from .weekly_report import (
@@ -56,7 +57,7 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 OPTION_MIN_CANDLE_BODY_RATIO = 0.60
-PAPER_SIGNAL_WEAKEN_CONFIRMATIONS = 2
+SIGNAL_WEAKEN_CONFIRMATIONS = 2
 
 
 def _aligned_option_volume_history(
@@ -110,24 +111,22 @@ class KiteTradingBot:
     def _options_enabled(self) -> bool:
         return self.config.get("trading_mode") in {"intraday_options", "intraday_both"}
 
-    def _paper_option_adaptive_exit_enabled(self, symbol: str) -> bool:
+    def _option_adaptive_exit_enabled(self, symbol: str) -> bool:
         return (
-            bool(getattr(self, "paper_trading_enabled", False))
-            and not bool(getattr(self, "live_orders_enabled", False))
-            and self._options_enabled()
+            self._options_enabled()
             and symbol.endswith(("_CE", "_PE"))
-            and self.config.get("paper_option_adaptive_exit_enabled", True)
+            and self.config.get("option_adaptive_exit_enabled", True)
         )
 
-    def _paper_option_adaptive_exit_r_values(
+    def _option_adaptive_exit_r_values(
         self,
     ) -> tuple[float, float, float, float, float]:
         values = (
-            float(self.config.get("paper_option_adaptive_breakeven_r", 0.5)),
-            float(self.config.get("paper_option_adaptive_trail_activation_r", 1.0)),
-            float(self.config.get("paper_option_adaptive_trail_gap_r", 0.5)),
-            float(self.config.get("paper_option_adaptive_runner_activation_r", 2.0)),
-            float(self.config.get("paper_option_adaptive_runner_gap_r", 1.0)),
+            float(self.config.get("option_adaptive_breakeven_r", 0.5)),
+            float(self.config.get("option_adaptive_trail_activation_r", 1.0)),
+            float(self.config.get("option_adaptive_trail_gap_r", 0.5)),
+            float(self.config.get("option_adaptive_runner_activation_r", 2.0)),
+            float(self.config.get("option_adaptive_runner_gap_r", 1.0)),
         )
         breakeven_r, activation_r, _, runner_r, _ = values
         if (
@@ -135,23 +134,22 @@ class KiteTradingBot:
             or breakeven_r > activation_r
             or activation_r >= runner_r
         ):
-            raise ValueError("Invalid paper adaptive-exit R thresholds")
+            raise ValueError("Invalid adaptive-exit R thresholds")
         return values
 
-    def _paper_entry_risk_cap(self) -> Optional[float]:
-        if not getattr(self, "paper_trading_enabled", False) or getattr(
-            self, "live_orders_enabled", False
-        ):
+    def _entry_risk_cap(self) -> Optional[float]:
+        configured_cap = self.config.get("max_risk_per_trade")
+        if configured_cap is None:
             return None
-        cap = float(self.config.get("paper_max_risk_per_trade", 1000.0))
+        cap = float(configured_cap)
         if not math.isfinite(cap) or cap <= 0:
-            raise ValueError("paper_max_risk_per_trade must be finite and positive")
+            raise ValueError("max_risk_per_trade must be finite and positive")
         return cap
 
     def _calculate_position_size(
         self, symbol: str, entry_price: float, stop_loss_price: float
     ) -> int:
-        risk_cap = self._paper_entry_risk_cap()
+        risk_cap = self._entry_risk_cap()
         if risk_cap is None:
             return self.intraday_manager.calculate_position_size(
                 symbol, entry_price, stop_loss_price
@@ -186,14 +184,14 @@ class KiteTradingBot:
             evaluations = {}
             self._pending_entry_evaluations = evaluations
         evaluation = {
-            "paper_risk_cap_rupees": risk_cap,
+            "max_risk_per_trade": risk_cap,
             "contract_lot_size": lot_size,
             "risk_per_lot_rupees": risk_per_lot,
             "proposed_quantity": quantity,
             "accepted": quantity > 0,
         }
         if quantity == 0 and risk_per_lot > risk_cap:
-            evaluation["rejection_reason"] = "one_lot_exceeds_paper_risk_cap"
+            evaluation["rejection_reason"] = "one_lot_exceeds_trade_risk_cap"
         elif quantity == 0:
             evaluation["rejection_reason"] = (
                 "remaining_session_risk_below_one_lot"
@@ -205,20 +203,15 @@ class KiteTradingBot:
         evaluations[symbol] = evaluation
         return quantity
 
-    def _paper_entry_cutoff_reason(
+    def _entry_cutoff_reason(
         self, now: Optional[datetime] = None
     ) -> Optional[str]:
-        if not getattr(self, "paper_trading_enabled", False) or getattr(
-            self, "live_orders_enabled", False
-        ):
-            return None
-
         minutes = int(
-            self.config.get("paper_entry_cutoff_minutes_before_close", 45)
+            self.config.get("entry_cutoff_minutes_before_close", 45)
         )
         if not 0 <= minutes <= 375:
             raise ValueError(
-                "paper_entry_cutoff_minutes_before_close must be between 0 and 375"
+                "entry_cutoff_minutes_before_close must be between 0 and 375"
             )
         if minutes == 0:
             return None
@@ -239,11 +232,11 @@ class KiteTradingBot:
 
         close_at = datetime.combine(now.date(), market_close, tzinfo=IST)
         if now >= close_at - timedelta(minutes=minutes):
-            return f"paper_entry_cutoff_blocked:{minutes}m_before_close"
+            return f"entry_cutoff_blocked:{minutes}m_before_close"
         return None
 
     @staticmethod
-    def _is_paper_option_dynamic_exit(position: Optional[dict]) -> bool:
+    def _is_option_dynamic_exit(position: Optional[dict]) -> bool:
         return bool(position) and position.get("exit_strategy") in {
             PAPER_OPTION_TRAIL_RUNNER,
             PAPER_OPTION_ADAPTIVE_EXIT,
@@ -266,13 +259,11 @@ class KiteTradingBot:
         return float(self.config.get("option_premium_target_pct", 0.20))
 
     def _option_candle_min_body_ratio(self) -> float:
-        if getattr(self, "paper_trading_enabled", False):
-            return getattr(
-                self,
-                "paper_option_min_candle_body_ratio",
-                OPTION_MIN_CANDLE_BODY_RATIO,
+        return float(
+            self.config.get(
+                "option_min_candle_body_ratio", OPTION_MIN_CANDLE_BODY_RATIO
             )
-        return OPTION_MIN_CANDLE_BODY_RATIO
+        )
 
     @staticmethod
     def _has_option_candle_momentum(
@@ -327,7 +318,7 @@ class KiteTradingBot:
 
         unit_risk = max(premium, 0.01) * premium_stop_pct
         per_lot_risk = unit_risk * lot_size
-        risk_cap = self._paper_entry_risk_cap()
+        risk_cap = self._entry_risk_cap()
         risk_budget = min(
             self.intraday_manager.available_daily_risk(),
             self._option_trade_risk_limit(symbol, premium),
@@ -340,7 +331,7 @@ class KiteTradingBot:
             evaluations = {}
             self._pending_entry_evaluations = evaluations
         evaluation = {
-            "paper_risk_cap_rupees": risk_cap,
+            "risk_cap_rupees": risk_cap,
             "option_lot_size": lot_size,
             "option_risk_per_lot_rupees": per_lot_risk,
             "entry_risk_budget_rupees": risk_budget,
@@ -352,10 +343,10 @@ class KiteTradingBot:
             return 0
         if risk_cap is not None and per_lot_risk > risk_cap:
             evaluation["accepted"] = False
-            evaluation["rejection_reason"] = "one_lot_exceeds_paper_risk_cap"
+            evaluation["rejection_reason"] = "one_lot_exceeds_trade_risk_cap"
             evaluations[symbol] = evaluation
             logger.info(
-                "[%s] Paper entry rejected: one lot risks %.2f, above the %.2f cap",
+                "[%s] Entry rejected: one lot risks %.2f, above the %.2f cap",
                 symbol,
                 per_lot_risk,
                 risk_cap,
@@ -392,27 +383,25 @@ class KiteTradingBot:
             evaluations[symbol] = evaluation
         return quantity
 
-    def _try_paper_option_range_breakout(
+    def _try_option_range_breakout(
         self, symbol: str, bars: list[Bar]
     ) -> Optional[str]:
-        """Open a paper-only long option after a confirmed premium range breakout."""
+        """Open a long option after a confirmed premium range breakout."""
         if (
-            not getattr(self, "paper_trading_enabled", False)
-            or getattr(self, "live_orders_enabled", False)
-            or not self.config.get("paper_option_range_breakout_enabled", False)
+            not self.config.get("option_range_breakout_enabled", False)
             or not self._options_enabled()
             or not symbol.endswith(("_CE", "_PE"))
         ):
             return None
 
         try:
-            lookback = int(self.config.get("paper_option_range_lookback_bars", 15))
+            lookback = int(self.config.get("option_range_lookback_bars", 15))
             confirmation_bars = int(
-                self.config.get("paper_option_range_confirmation_bars", 0)
+                self.config.get("option_range_confirmation_bars", 0)
             )
-            target_r = float(self.config.get("paper_option_range_target_r", 2.0))
+            target_r = float(self.config.get("option_range_target_r", 2.0))
         except (TypeError, ValueError, OverflowError):
-            logger.error("[%s] Invalid paper option range-breakout settings", symbol)
+            logger.error("[%s] Invalid option range-breakout settings", symbol)
             return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
         if (
             lookback < 2
@@ -420,7 +409,7 @@ class KiteTradingBot:
             or not math.isfinite(target_r)
             or target_r <= 0
         ):
-            logger.error("[%s] Invalid paper option range-breakout settings", symbol)
+            logger.error("[%s] Invalid option range-breakout settings", symbol)
             return "PAPER_RANGE_BREAKOUT_INVALID_SETTINGS"
         if len(bars) < lookback + confirmation_bars + 1:
             return None
@@ -532,7 +521,7 @@ class KiteTradingBot:
             symbol,
             entry_price,
             0,
-            strategy_variant="paper_option_range_breakout",
+            strategy_variant="option_range_breakout",
             minimum_signal_score=0,
             paper_range_stop=stop_price,
             paper_range_target_r=target_r,
@@ -550,14 +539,12 @@ class KiteTradingBot:
         )
         return f"PAPER_RANGE_BREAKOUT_{outcome.upper()}"
 
-    def _paper_support_reversal_candidate(
+    def _support_reversal_candidate(
         self, symbol: str, underlying_bars: list[Bar]
     ) -> Optional[SupportResistanceReversal]:
-        """Find a deduplicated paper-only reversal from completed underlying bars."""
+        """Find a deduplicated reversal from completed underlying bars."""
         if (
-            not self.config.get("paper_support_reversal_enabled", False)
-            or not getattr(self, "paper_trading_enabled", False)
-            or getattr(self, "live_orders_enabled", False)
+            not self.config.get("support_reversal_enabled", False)
             or not self._options_enabled()
             or not symbol.endswith(("_CE", "_PE"))
         ):
@@ -567,10 +554,10 @@ class KiteTradingBot:
         try:
             source_interval = int(self.config.get("bar_interval_seconds", 60))
             cooldown_minutes = int(
-                self.config.get("paper_support_reversal_cooldown_minutes", 15)
+                self.config.get("support_reversal_cooldown_minutes", 15)
             )
         except (TypeError, ValueError, OverflowError):
-            logger.error("[%s] Invalid paper support-reversal settings", symbol)
+            logger.error("[%s] Invalid support-reversal settings", symbol)
             return None
         if (
             source_interval <= 0
@@ -578,7 +565,7 @@ class KiteTradingBot:
             or 300 % source_interval != 0
             or not 1 <= cooldown_minutes <= 120
         ):
-            logger.error("[%s] Invalid paper support-reversal settings", symbol)
+            logger.error("[%s] Invalid support-reversal settings", symbol)
             return None
 
         history = aggregate_ohlcv_bars(
@@ -594,7 +581,7 @@ class KiteTradingBot:
             return None
 
         timestamp = candidate.bar_time or history[-1]["time"]
-        last_candidates = getattr(self, "_paper_support_reversal_last_candidate", {})
+        last_candidates = getattr(self, "_support_reversal_last_candidate", {})
         previous = last_candidates.get(underlying)
         if previous is not None:
             previous_time, previous_signal, previous_level = previous
@@ -608,17 +595,17 @@ class KiteTradingBot:
                 return None
         return candidate
 
-    def _mark_paper_support_reversal_attempt(
+    def _mark_support_reversal_attempt(
         self, symbol: str, candidate: SupportResistanceReversal
     ) -> None:
         underlying = symbol.rsplit("_", 1)[0].upper()
-        last_candidates = getattr(self, "_paper_support_reversal_last_candidate", {})
+        last_candidates = getattr(self, "_support_reversal_last_candidate", {})
         last_candidates[underlying] = (
             candidate.bar_time or datetime.now(IST),
             candidate.signal,
             candidate.level,
         )
-        self._paper_support_reversal_last_candidate = last_candidates
+        self._support_reversal_last_candidate = last_candidates
 
     def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
@@ -635,9 +622,9 @@ class KiteTradingBot:
         risk_limit = float(self.intraday_manager.max_risk_per_trade)
         if self._options_enabled() and "_" in symbol:
             risk_limit = min(risk_limit, self._option_trade_risk_limit(symbol, premium))
-        paper_cap = self._paper_entry_risk_cap()
-        if paper_cap is not None:
-            risk_limit = min(risk_limit, paper_cap)
+        trade_risk_cap = self._entry_risk_cap()
+        if trade_risk_cap is not None:
+            risk_limit = min(risk_limit, trade_risk_cap)
         return risk_limit
 
     def _option_quantity_within_lot_bounds(self, symbol: str, quantity: int) -> bool:
@@ -672,7 +659,12 @@ class KiteTradingBot:
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
-        self.config = self._load_config()
+        self.config = normalize_strategy_config(self._load_config())
+        self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
+        self.config.pop("paper_trading_enabled", None)
+        self.config.pop("live_orders_enabled", None)
+        self.paper_trading_enabled = self.mode == "PAPER"
+        self.live_orders_enabled = self.mode == "LIVE"
 
         daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
         options_mode = self.config.get("trading_mode") in {
@@ -680,15 +672,6 @@ class KiteTradingBot:
             "intraday_both",
         }
         max_risk_per_trade = self.config.get("max_risk_per_trade")
-        if options_mode:
-            daily_risk_budget = self.config.get("daily_max_loss")
-            if daily_risk_budget is None:
-                daily_risk_budget = (
-                    float(self.config.get("account_size", 100000))
-                    * float(daily_max_loss_pct)
-                    / 100.0
-                )
-            max_risk_per_trade = max(float(daily_risk_budget), 0.0)
 
         # Initialize intraday manager; option entries apply their premium-based cap below.
         self.intraday_manager = IntradayManager(
@@ -726,27 +709,17 @@ class KiteTradingBot:
             on_connection_change=self._on_connection_change,
         )
         self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
-        self.paper_trading_enabled = bool(
-            self.config.get("paper_trading_enabled", True)
-        )
-        self.live_orders_enabled = bool(self.config.get("live_orders_enabled", False))
-        if self.paper_trading_enabled and self.live_orders_enabled:
-            raise RuntimeError(
-                "paper_trading_enabled and live_orders_enabled cannot both be true"
-            )
         if (
-            self.config.get("paper_ema_reentry_enabled", True)
-            and self.paper_trading_enabled
-            and not self.live_orders_enabled
+            self.config.get("ema_reentry_enabled", True)
             and options_mode
             and int(self.config.get("bar_interval_seconds", 60)) != 60
         ):
             raise ValueError(
-                "paper_ema_reentry_enabled requires 1-minute underlying bars"
+                "ema_reentry_enabled requires 1-minute underlying bars"
             )
         if self.live_orders_enabled and not self.config.get("live_orders_confirmed", False):
             raise RuntimeError(
-                "live_orders_enabled requires live_orders_confirmed=true in kite_config.json"
+                "LIVE mode requires live_orders_confirmed=true in kite_config.json"
             )
         self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
         self._warm_up_bars()
@@ -811,38 +784,30 @@ class KiteTradingBot:
             min_volatility_pct=float(self.config.get("min_volatility_pct", 0.05)),
             max_volatility_pct=float(self.config.get("max_volatility_pct", 5.0)),
         )
-        self.paper_min_entry_score = int(
-            self.config.get(
-                "paper_min_entry_score",
-                self.accuracy_filters.min_score_floor,
-            )
+        self.stop_reentry_min_score = int(
+            self.config.get("stop_reentry_min_score", 75)
         )
-        if not 0 <= self.paper_min_entry_score <= 85:
-            raise ValueError("paper_min_entry_score must be between 0 and 85")
-        self.paper_stop_reentry_min_score = int(
-            self.config.get("paper_stop_reentry_min_score", 75)
+        if not 0 <= self.stop_reentry_min_score <= 85:
+            raise ValueError("stop_reentry_min_score must be between 0 and 85")
+        self.stop_reentry_cooldown_minutes = int(
+            self.config.get("stop_reentry_cooldown_minutes", 15)
         )
-        if not 0 <= self.paper_stop_reentry_min_score <= 85:
-            raise ValueError("paper_stop_reentry_min_score must be between 0 and 85")
-        self.paper_stop_reentry_cooldown_minutes = int(
-            self.config.get("paper_stop_reentry_cooldown_minutes", 15)
-        )
-        if not 1 <= self.paper_stop_reentry_cooldown_minutes <= 240:
+        if not 1 <= self.stop_reentry_cooldown_minutes <= 240:
             raise ValueError(
-                "paper_stop_reentry_cooldown_minutes must be between 1 and 240"
+                "stop_reentry_cooldown_minutes must be between 1 and 240"
             )
-        self.paper_option_min_candle_body_ratio = float(
+        self.option_min_candle_body_ratio = float(
             self.config.get(
-                "paper_option_min_candle_body_ratio",
+                "option_min_candle_body_ratio",
                 OPTION_MIN_CANDLE_BODY_RATIO,
             )
         )
         if (
-            not math.isfinite(self.paper_option_min_candle_body_ratio)
-            or not 0 < self.paper_option_min_candle_body_ratio <= 1
+            not math.isfinite(self.option_min_candle_body_ratio)
+            or not 0 < self.option_min_candle_body_ratio <= 1
         ):
             raise ValueError(
-                "paper_option_min_candle_body_ratio must be greater than 0 and at most 1"
+                "option_min_candle_body_ratio must be greater than 0 and at most 1"
             )
         self.news_monitor = NewsMonitor(
             feeds=self.config.get("news_feeds"),
@@ -850,16 +815,12 @@ class KiteTradingBot:
         ) if self.config.get("news_enabled", True) else None
 
     def _entry_score_floor(self) -> int:
-        """Use a lower configured floor only for paper entries."""
-        standard_floor = getattr(
+        """Return the shared strategy entry-score floor."""
+        return getattr(
             getattr(self, "accuracy_filters", None),
             "min_score_floor",
             int(self.config.get("min_entry_score", 70)),
         )
-        if not getattr(self, "paper_trading_enabled", False):
-            return standard_floor
-        paper_floor = getattr(self, "paper_min_entry_score", standard_floor)
-        return min(standard_floor, paper_floor)
 
     def _can_open_trade_for_signal(
         self,
@@ -869,7 +830,7 @@ class KiteTradingBot:
         *,
         ema_reentry_confirmed: bool = False,
     ) -> tuple[bool, str]:
-        if ema_reentry_confirmed and self._paper_ema_reentry_enabled():
+        if ema_reentry_confirmed and self._ema_reentry_enabled():
             return self.intraday_manager.can_open_trade(
                 symbol,
                 direction,
@@ -879,9 +840,7 @@ class KiteTradingBot:
                 minimum_stop_reentry_score=0,
             )
         allow_stop_reentry = (
-            self.config.get("paper_stop_reentry_enabled", False)
-            and getattr(self, "paper_trading_enabled", False)
-            and not getattr(self, "live_orders_enabled", False)
+            self.config.get("stop_reentry_enabled", False)
             and self._options_enabled()
             and symbol.endswith(("_CE", "_PE"))
         )
@@ -891,24 +850,20 @@ class KiteTradingBot:
             symbol,
             direction,
             allow_stop_reentry=True,
-            stop_reentry_cooldown_seconds=(
-                self.paper_stop_reentry_cooldown_minutes * 60
-            ),
+            stop_reentry_cooldown_seconds=self.stop_reentry_cooldown_minutes * 60,
             signal_score=score,
-            minimum_stop_reentry_score=self.paper_stop_reentry_min_score,
+            minimum_stop_reentry_score=self.stop_reentry_min_score,
         )
 
-    def _paper_ema_reentry_enabled(self) -> bool:
+    def _ema_reentry_enabled(self) -> bool:
         config = getattr(self, "config", {})
         return (
-            bool(config.get("paper_ema_reentry_enabled", True))
-            and bool(getattr(self, "paper_trading_enabled", False))
-            and not bool(getattr(self, "live_orders_enabled", False))
+            bool(config.get("ema_reentry_enabled", True))
             and config.get("trading_mode") in {"intraday_options", "intraday_both"}
         )
 
     def _restore_ema_reentry_states(self, trades: list[dict]) -> None:
-        if not self._paper_ema_reentry_enabled():
+        if not self._ema_reentry_enabled():
             return
         child_original_ids = {
             str(trade.get("original_trade_id"))
@@ -948,14 +903,14 @@ class KiteTradingBot:
                 )
             self._ema_reentry_states[symbol] = state
 
-    def _paper_ema_reentry_candidate(
+    def _ema_reentry_candidate(
         self, symbol: str, underlying_history: list[dict]
     ) -> Optional[dict]:
         active_positions = getattr(
             getattr(self, "intraday_manager", None), "active_positions", {}
         )
         if (
-            not self._paper_ema_reentry_enabled()
+            not self._ema_reentry_enabled()
             or not symbol.endswith(("_CE", "_PE"))
             or (
                 isinstance(active_positions, dict)
@@ -1674,13 +1629,11 @@ class KiteTradingBot:
         min_premium = float(self.config.get("option_min_premium", 12.0))
         if minimum_premium_override is not None:
             if (
-                not self.config.get("paper_support_reversal_enabled", False)
-                or not getattr(self, "paper_trading_enabled", False)
-                or getattr(self, "live_orders_enabled", False)
+                not self.config.get("support_reversal_enabled", False)
                 or not self._options_enabled()
                 or not symbol.endswith(("_CE", "_PE"))
             ):
-                return False, "paper support-reversal premium override unavailable"
+                return False, "support-reversal premium override unavailable"
             try:
                 min_premium = float(minimum_premium_override)
             except (TypeError, ValueError, OverflowError):
@@ -1816,7 +1769,7 @@ class KiteTradingBot:
 
         # Get last N bars for signal evaluation
         bars = self.bar_builder.get_bars(token, limit=50)
-        range_outcome = self._try_paper_option_range_breakout(symbol, bars)
+        range_outcome = self._try_option_range_breakout(symbol, bars)
         if range_outcome is not None:
             self._record_decision(
                 symbol,
@@ -1825,7 +1778,7 @@ class KiteTradingBot:
                 None,
                 "BUY",
                 range_outcome,
-                strategy_variant="paper_option_range_breakout",
+                strategy_variant="option_range_breakout",
             )
             if range_outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
                 self.accuracy_filters.record_entry(symbol, time.time())
@@ -1868,11 +1821,7 @@ class KiteTradingBot:
                 )
                 return
             signal_bars = underlying_bars
-            if (
-                self.config.get("paper_support_reversal_enabled", False)
-                and getattr(self, "paper_trading_enabled", False)
-                and not getattr(self, "live_orders_enabled", False)
-            ):
+            if self.config.get("support_reversal_enabled", False):
                 support_underlying_bars = self.bar_builder.get_bars(
                     underlying_token, limit=100
                 )
@@ -1943,19 +1892,14 @@ class KiteTradingBot:
                     self.config.get("signal_proximity_pct", 0.005)
                 ),
                 volume_confirmation_history=volume_confirmation_history,
-                paper_allow_trend_continuation=(
-                    getattr(self, "paper_trading_enabled", False)
-                    and bool(self.config.get("paper_allow_trend_continuation", False))
+                allow_trend_continuation=bool(
+                    self.config.get("allow_trend_continuation", False)
                 ),
-                rsi_buy_block_above=(
-                    float(self.config.get("paper_rsi_buy_block_above", 80.0))
-                    if getattr(self, "paper_trading_enabled", False)
-                    else 70.0
+                rsi_buy_block_above=float(
+                    self.config.get("rsi_buy_block_above", 80.0)
                 ),
-                rsi_sell_block_below=(
-                    float(self.config.get("paper_rsi_sell_block_below", 25.0))
-                    if getattr(self, "paper_trading_enabled", False)
-                    else 30.0
+                rsi_sell_block_below=float(
+                    self.config.get("rsi_sell_block_below", 25.0)
                 ),
             )
         except Exception:
@@ -1977,7 +1921,7 @@ class KiteTradingBot:
             and support_underlying_bars
             and symbol.endswith(("_CE", "_PE"))
         ):
-            support_candidate = self._paper_support_reversal_candidate(
+            support_candidate = self._support_reversal_candidate(
                 symbol, support_underlying_bars
             )
             active_positions = getattr(
@@ -2027,7 +1971,7 @@ class KiteTradingBot:
 
                 try:
                     support_min_score = int(
-                        self.config.get("paper_support_reversal_min_score", 75)
+                        self.config.get("support_reversal_min_score", 75)
                     )
                 except (TypeError, ValueError, OverflowError):
                     support_min_score = 86
@@ -2057,7 +2001,7 @@ class KiteTradingBot:
                     )
                 elif not 55 <= support_min_score <= 85:
                     logger.error(
-                        "[%s] Invalid paper_support_reversal_min_score", symbol
+                        "[%s] Invalid support_reversal_min_score", symbol
                     )
                 elif support_score >= support_min_score:
                     market_score.signal = support_candidate.signal
@@ -2071,7 +2015,7 @@ class KiteTradingBot:
                         f"({support_candidate.touches} clustered pivots)"
                     )
 
-        ema_reentry_context = self._paper_ema_reentry_candidate(symbol, history)
+        ema_reentry_context = self._ema_reentry_candidate(symbol, history)
         if ema_reentry_context is not None:
             market_score.signal = ema_reentry_context["signal"]
             market_score.score = max(
@@ -2242,7 +2186,7 @@ class KiteTradingBot:
                 try:
                     minimum_body_ratio = float(
                         self.config.get(
-                            "paper_support_reversal_min_candle_body_ratio", 0.20
+                            "support_reversal_min_candle_body_ratio", 0.20
                         )
                     )
                 except (TypeError, ValueError, OverflowError):
@@ -2252,7 +2196,7 @@ class KiteTradingBot:
                     or not 0 < minimum_body_ratio <= 1
                 ):
                     logger.error(
-                        "[%s] Invalid paper support-reversal candle body ratio",
+                        "[%s] Invalid support-reversal candle body ratio",
                         symbol,
                     )
                     self._record_decision(
@@ -2294,7 +2238,7 @@ class KiteTradingBot:
                     market_score.signal,
                     market_score.score,
                     minimum_premium_override=self.config.get(
-                        "paper_support_reversal_min_premium", 5.0
+                        "support_reversal_min_premium", 5.0
                     ),
                 )
             else:
@@ -2373,7 +2317,7 @@ class KiteTradingBot:
                 and getattr(market_score, "strategy_variant", None)
                 == "paper_underlying_support_reversal"
             ):
-                self._mark_paper_support_reversal_attempt(
+                self._mark_support_reversal_attempt(
                     symbol, support_candidate
                 )
 
@@ -2966,11 +2910,8 @@ class KiteTradingBot:
             self._check_position_exit(symbol, tick.last_price)
         self.bar_builder.process_tick(tick)
 
-    def _extend_paper_option_timebox(self, symbol: str, position: dict) -> bool:
-        if (
-            not getattr(self, "paper_trading_enabled", False)
-            or not self.config.get("paper_extend_option_timebox", False)
-        ):
+    def _extend_option_timebox(self, symbol: str, position: dict) -> bool:
+        if not self.config.get("extend_option_timebox", False):
             return False
 
         extended_at = self.intraday_manager.extend_milestone_timebox(symbol)
@@ -2983,9 +2924,9 @@ class KiteTradingBot:
             str(position["direction"]),
         )
         if not persisted:
-            logger.error("[%s] Could not persist paper time-box extension", symbol)
+            logger.error("[%s] Could not persist time-box extension", symbol)
         logger.info(
-            "[%s] Paper time-box checkpoint extended by %d minutes",
+            "[%s] Time-box checkpoint extended by %d minutes",
             symbol,
             int(position.get("decision_window_minutes", 5)),
         )
@@ -2997,7 +2938,7 @@ class KiteTradingBot:
             return None
 
         runner_state_before = None
-        if self._is_paper_option_dynamic_exit(position):
+        if self._is_option_dynamic_exit(position):
             runner_state_before = (
                 position.get("highest_price"),
                 position.get("lowest_price"),
@@ -3023,7 +2964,7 @@ class KiteTradingBot:
                 position.get("max_favorable_r"),
             )
             if (
-                self._is_paper_option_dynamic_exit(position)
+                self._is_option_dynamic_exit(position)
                 and position.get("adaptive_exit_mode") != previous_adaptive_mode
             ):
                 logger.info(
@@ -3057,11 +2998,11 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif (
-                not self._is_paper_option_dynamic_exit(position)
+                not self._is_option_dynamic_exit(position)
                 and position.get("exit_strategy") != "paper_range_breakout_2r"
                 and self.intraday_manager.milestone_timebox_expired(symbol)
             ):
-                if self._extend_paper_option_timebox(symbol, position):
+                if                 self._extend_option_timebox(symbol, position):
                     return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
             else:
@@ -3078,11 +3019,11 @@ class KiteTradingBot:
             ):
                 reason = "TAKE_PROFIT"
             elif (
-                not self._is_paper_option_dynamic_exit(position)
+                not self._is_option_dynamic_exit(position)
                 and position.get("exit_strategy") != "paper_range_breakout_2r"
                 and self.intraday_manager.milestone_timebox_expired(symbol)
             ):
-                if self._extend_paper_option_timebox(symbol, position):
+                if self._extend_option_timebox(symbol, position):
                     return "TIME_BOX_EXTENDED"
                 reason = "TIME_BOX"
             else:
@@ -3196,31 +3137,26 @@ class KiteTradingBot:
         )
         exit_condition = adverse_price_move and (weak_signal or reversed_signal)
 
-        if getattr(self, "paper_trading_enabled", False):
-            previous_checks = int(
-                position.get("weak_signal_adverse_checks", 0) or 0
+        previous_checks = int(position.get("weak_signal_adverse_checks", 0) or 0)
+        confirmation_checks = previous_checks + 1 if exit_condition else 0
+        position["weak_signal_adverse_checks"] = confirmation_checks
+        trade_journal = getattr(self, "trade_journal", None)
+        if trade_journal is None:
+            logger.error(
+                "[%s] Cannot persist signal-exit confirmation state",
+                symbol,
             )
-            confirmation_checks = previous_checks + 1 if exit_condition else 0
-            position["weak_signal_adverse_checks"] = confirmation_checks
-            trade_journal = getattr(self, "trade_journal", None)
-            if trade_journal is None:
-                logger.error(
-                    "[%s] Cannot persist paper signal-exit confirmation state",
+        elif confirmation_checks != previous_checks:
+            if not trade_journal.update_open_trade(
+                symbol,
+                {"weak_signal_adverse_checks": confirmation_checks},
+                str(position["direction"]),
+            ):
+                logger.warning(
+                    "[%s] Could not persist signal-exit confirmation state",
                     symbol,
                 )
-            elif confirmation_checks != previous_checks:
-                if not trade_journal.update_open_trade(
-                    symbol,
-                    {"weak_signal_adverse_checks": confirmation_checks},
-                    str(position["direction"]),
-                ):
-                    logger.warning(
-                        "[%s] Could not persist paper signal-exit confirmation state",
-                        symbol,
-                    )
-            if confirmation_checks >= PAPER_SIGNAL_WEAKEN_CONFIRMATIONS:
-                reason = "SIGNAL_WEAKEN"
-        elif exit_condition:
+        if confirmation_checks >= SIGNAL_WEAKEN_CONFIRMATIONS:
             reason = "SIGNAL_WEAKEN"
 
         if reason:
@@ -3413,7 +3349,7 @@ class KiteTradingBot:
             )
             is_ema_reentry = bool((trade or {}).get("is_ema_reentry"))
             ema_reentry_eligible = (
-                self._paper_ema_reentry_enabled()
+                self._ema_reentry_enabled()
                 and reason == "STOP_LOSS"
                 and pnl < 0
                 and not is_ema_reentry
@@ -3650,7 +3586,7 @@ class KiteTradingBot:
             and self.intraday_manager.active_positions[symbol]["direction"] == "SELL"
         ):
             opposite_position = self.intraday_manager.active_positions.get(symbol)
-            if self._is_paper_option_dynamic_exit(opposite_position):
+            if self._is_option_dynamic_exit(opposite_position):
                 return "runner_position_active"
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
             if (
@@ -3659,9 +3595,9 @@ class KiteTradingBot:
             ):
                 return "reversal_close_failed"
         if open_trade is None:
-            cutoff_reason = self._paper_entry_cutoff_reason()
+            cutoff_reason = self._entry_cutoff_reason()
             if cutoff_reason:
-                logger.info("[%s] Paper entry rejected: %s", symbol, cutoff_reason)
+                logger.info("[%s] Entry rejected: %s", symbol, cutoff_reason)
                 return cutoff_reason
             if not self._live_entry_allowed(symbol):
                 return "live_entry_paused"
@@ -3687,30 +3623,28 @@ class KiteTradingBot:
                 paper_range_stop is not None or paper_range_target_r is not None
             )
             if range_breakout_plan and (
-                not getattr(self, "paper_trading_enabled", False)
-                or getattr(self, "live_orders_enabled", False)
-                or paper_range_stop is None
+                paper_range_stop is None
                 or paper_range_target_r is None
                 or not self._options_enabled()
                 or "_" not in symbol
             ):
-                raise ValueError("Range-breakout exit plans are paper-options only")
-            paper_option_adaptive_exit = (
+                raise ValueError("Range-breakout exit plans require option contracts")
+            option_adaptive_exit = (
                 not range_breakout_plan
-                and self._paper_option_adaptive_exit_enabled(symbol)
+                and self._option_adaptive_exit_enabled(symbol)
             )
             adaptive_exit_values = None
-            if paper_option_adaptive_exit:
+            if option_adaptive_exit:
                 try:
                     adaptive_exit_values = (
-                        self._paper_option_adaptive_exit_r_values()
+                        self._option_adaptive_exit_r_values()
                     )
                 except (TypeError, ValueError, OverflowError):
-                    logger.exception("[%s] Invalid paper adaptive-exit settings", symbol)
+                    logger.exception("[%s] Invalid adaptive-exit settings", symbol)
                     return "invalid_option_adaptive_exit_config"
             staged_option_targets = (
                 False
-                if range_breakout_plan or paper_option_adaptive_exit
+                if range_breakout_plan or option_adaptive_exit
                 else self._staged_option_targets_enabled(symbol)
             )
             if self._options_enabled() and "_" in symbol:
@@ -3772,10 +3706,10 @@ class KiteTradingBot:
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
-                if evaluation.get("rejection_reason") == "one_lot_exceeds_paper_risk_cap":
-                    cap = float(evaluation["paper_risk_cap_rupees"])
+                if evaluation.get("rejection_reason") == "one_lot_exceeds_trade_risk_cap":
+                    cap = float(evaluation["risk_cap_rupees"])
                     return (
-                        "paper_risk_cap_blocked:"
+                        "risk_cap_blocked:"
                         f"one_lot_exceeds_{cap:g}_rupees"
                     )
                 return "position_size_zero"
@@ -3827,12 +3761,12 @@ class KiteTradingBot:
                     self.config.get("option_weak_signal_lockin_pct", 0.05)
                 ),
                 trailing_enabled=(
-                    True if paper_option_adaptive_exit
+                    True if option_adaptive_exit
                     else False if range_breakout_plan
                     else None
                 ),
                 exit_strategy=(
-                    PAPER_OPTION_ADAPTIVE_EXIT if paper_option_adaptive_exit
+                    PAPER_OPTION_ADAPTIVE_EXIT if option_adaptive_exit
                     else "paper_range_breakout_2r" if range_breakout_plan
                     else None
                 ),
@@ -3904,7 +3838,7 @@ class KiteTradingBot:
                 trading_symbol=trading_symbol,
                 trailing_enabled=(
                     True
-                    if paper_option_adaptive_exit
+                    if option_adaptive_exit
                     else False
                     if range_breakout_plan
                     else self.intraday_manager.trailing_enabled
@@ -3955,7 +3889,7 @@ class KiteTradingBot:
                         symbol, quantity, price, stop_loss
                     )
                 )
-                alert["paper_risk_cap_rupees"] = self._paper_entry_risk_cap()
+                alert["risk_cap_rupees"] = self._entry_risk_cap()
             if staged_option_targets:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
@@ -3972,7 +3906,7 @@ class KiteTradingBot:
                     }
                 )
             elif self._options_enabled() and "_" in symbol:
-                if paper_option_adaptive_exit:
+                if option_adaptive_exit:
                     alert["exit_strategy"] = PAPER_OPTION_ADAPTIVE_EXIT
                     alert["trailing_enabled"] = True
                 elif range_breakout_plan:
@@ -3988,7 +3922,7 @@ class KiteTradingBot:
             if protection_order_id:
                 alert["protection_order_id"] = protection_order_id
 
-            if paper_option_adaptive_exit:
+            if option_adaptive_exit:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
                     {
@@ -4006,7 +3940,7 @@ class KiteTradingBot:
                     }
                 )
             self.trade_journal.log_trade(alert)
-            if paper_option_adaptive_exit:
+            if option_adaptive_exit:
                 self._start_paper_shadow_runner(
                     symbol,
                     str(alert["trade_id"]),
@@ -4016,7 +3950,7 @@ class KiteTradingBot:
                     str(alert["timestamp"]),
                 )
             self._persist_current_live_risk_state()
-            target_label = "adaptive_exit_ref" if paper_option_adaptive_exit else "TP"
+            target_label = "adaptive_exit_ref" if option_adaptive_exit else "TP"
             logger.info(
                 f"[{symbol}] BUY ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
                 f"SL={alert['stop_loss']:.2f}, "
@@ -4045,7 +3979,7 @@ class KiteTradingBot:
             and self.intraday_manager.active_positions[symbol]["direction"] == "BUY"
         ):
             opposite_position = self.intraday_manager.active_positions.get(symbol)
-            if self._is_paper_option_dynamic_exit(opposite_position):
+            if self._is_option_dynamic_exit(opposite_position):
                 return "runner_position_active"
             self._close_position(symbol, price, "SIGNAL_REVERSAL")
             if (
@@ -4054,9 +3988,9 @@ class KiteTradingBot:
             ):
                 return "reversal_close_failed"
         if open_trade is None:
-            cutoff_reason = self._paper_entry_cutoff_reason()
+            cutoff_reason = self._entry_cutoff_reason()
             if cutoff_reason:
-                logger.info("[%s] Paper entry rejected: %s", symbol, cutoff_reason)
+                logger.info("[%s] Entry rejected: %s", symbol, cutoff_reason)
                 return cutoff_reason
             if not self._live_entry_allowed(symbol):
                 return "live_entry_paused"
@@ -4070,19 +4004,19 @@ class KiteTradingBot:
                     if strategy_variant == "paper_underlying_support_reversal"
                     else "paper_stop_reentry"
                 )
-            paper_option_adaptive_exit = self._paper_option_adaptive_exit_enabled(symbol)
+            option_adaptive_exit = self._option_adaptive_exit_enabled(symbol)
             adaptive_exit_values = None
-            if paper_option_adaptive_exit:
+            if option_adaptive_exit:
                 try:
                     adaptive_exit_values = (
-                        self._paper_option_adaptive_exit_r_values()
+                        self._option_adaptive_exit_r_values()
                     )
                 except (TypeError, ValueError, OverflowError):
-                    logger.exception("[%s] Invalid paper adaptive-exit settings", symbol)
+                    logger.exception("[%s] Invalid adaptive-exit settings", symbol)
                     return "invalid_option_adaptive_exit_config"
             staged_option_targets = (
                 False
-                if paper_option_adaptive_exit
+                if option_adaptive_exit
                 else self._staged_option_targets_enabled(symbol)
             )
             if self._options_enabled() and "_" in symbol:
@@ -4127,10 +4061,10 @@ class KiteTradingBot:
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
-                if evaluation.get("rejection_reason") == "one_lot_exceeds_paper_risk_cap":
-                    cap = float(evaluation["paper_risk_cap_rupees"])
+                if evaluation.get("rejection_reason") == "one_lot_exceeds_trade_risk_cap":
+                    cap = float(evaluation["risk_cap_rupees"])
                     return (
-                        "paper_risk_cap_blocked:"
+                        "risk_cap_blocked:"
                         f"one_lot_exceeds_{cap:g}_rupees"
                     )
                 return "position_size_zero"
@@ -4181,9 +4115,9 @@ class KiteTradingBot:
                 weak_signal_lockin_pct=float(
                     self.config.get("option_weak_signal_lockin_pct", 0.05)
                 ),
-                trailing_enabled=True if paper_option_adaptive_exit else None,
+                trailing_enabled=True if option_adaptive_exit else None,
                 exit_strategy=(
-                    PAPER_OPTION_ADAPTIVE_EXIT if paper_option_adaptive_exit else None
+                    PAPER_OPTION_ADAPTIVE_EXIT if option_adaptive_exit else None
                 ),
                 adaptive_breakeven_r=(
                     adaptive_exit_values[0] if adaptive_exit_values else None
@@ -4253,7 +4187,7 @@ class KiteTradingBot:
                 trading_symbol=trading_symbol,
                 trailing_enabled=(
                     True
-                    if paper_option_adaptive_exit
+                    if option_adaptive_exit
                     else self.intraday_manager.trailing_enabled
                 ),
             )
@@ -4279,7 +4213,7 @@ class KiteTradingBot:
                     }
                 )
             elif self._options_enabled() and "_" in symbol:
-                if paper_option_adaptive_exit:
+                if option_adaptive_exit:
                     alert["exit_strategy"] = PAPER_OPTION_ADAPTIVE_EXIT
                     alert["trailing_enabled"] = True
                 else:
@@ -4292,7 +4226,7 @@ class KiteTradingBot:
             if protection_order_id:
                 alert["protection_order_id"] = protection_order_id
 
-            if paper_option_adaptive_exit:
+            if option_adaptive_exit:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
                     {
@@ -4311,7 +4245,7 @@ class KiteTradingBot:
                 )
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
-            target_label = "adaptive_exit_ref" if paper_option_adaptive_exit else "TP"
+            target_label = "adaptive_exit_ref" if option_adaptive_exit else "TP"
             logger.info(
                 f"[{symbol}] SELL ALERT -> {quantity} qty @ {alert['entry']:.2f}, "
                 f"SL={alert['stop_loss']:.2f}, "

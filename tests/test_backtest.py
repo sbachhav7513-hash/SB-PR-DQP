@@ -226,13 +226,11 @@ def test_indexed_replay_context_matches_reference_and_handles_unsorted_bars():
 
 
 @pytest.mark.parametrize(
-    ("paper_enabled", "allow_continuation", "expected"),
-    [(True, True, True), (False, True, False), (True, False, False)],
+    ("mode", "allow_continuation"),
+    [("PAPER", True), ("LIVE", True), ("PAPER", False)],
 )
-def test_replay_passes_paper_continuation_gate_as_live_strategy_does(
-    paper_enabled,
-    allow_continuation,
-    expected,
+def test_replay_strategy_rules_do_not_depend_on_execution_mode(
+    mode, allow_continuation
 ):
     history = [
         {
@@ -245,7 +243,7 @@ def test_replay_passes_paper_continuation_gate_as_live_strategy_does(
     observed = []
 
     def hold_signal(ticker, bars, **kwargs):
-        observed.append(kwargs["paper_allow_trend_continuation"])
+        observed.append(kwargs["allow_trend_continuation"])
         return TradingScore(ticker, 0, "HOLD")
 
     with patch("market_bot.replay.score_market", side_effect=hold_signal):
@@ -255,22 +253,20 @@ def test_replay_passes_paper_continuation_gate_as_live_strategy_does(
             {
                 "use_market_context": False,
                 "late_window_enabled": False,
-                "paper_trading_enabled": paper_enabled,
-                "paper_allow_trend_continuation": allow_continuation,
+                "mode": mode,
+                "allow_trend_continuation": allow_continuation,
             },
         )
 
     assert observed
-    assert set(observed) == {expected}
+    assert set(observed) == {allow_continuation}
 
 
 @pytest.mark.parametrize(
-    ("paper_enabled", "expected_buy_threshold", "expected_sell_threshold"),
-    [(True, 80.0, 25.0), (False, 70.0, 30.0)],
+    "mode",
+    ["PAPER", "LIVE"],
 )
-def test_replay_uses_relaxed_rsi_thresholds_only_for_paper(
-    paper_enabled, expected_buy_threshold, expected_sell_threshold
-):
+def test_replay_uses_shared_rsi_thresholds_in_both_modes(mode):
     history = [
         {
             **candle(100, 100.5, 99.5, 100, index),
@@ -297,15 +293,15 @@ def test_replay_uses_relaxed_rsi_thresholds_only_for_paper(
             {
                 "use_market_context": False,
                 "late_window_enabled": False,
-                "paper_trading_enabled": paper_enabled,
-                "paper_rsi_buy_block_above": 80,
-                "paper_rsi_sell_block_below": 25,
+                "mode": mode,
+                "rsi_buy_block_above": 80,
+                "rsi_sell_block_below": 25,
             },
         )
 
     assert observed
     assert set(observed) == {
-        (expected_buy_threshold, expected_sell_threshold)
+        (80.0, 25.0)
     }
 
 
@@ -337,7 +333,7 @@ def test_ema_reentry_replay_rejects_non_minute_interval():
             "TEST",
             [],
             {
-                "paper_ema_reentry_enabled": True,
+                "ema_reentry_enabled": True,
                 "bar_interval_seconds": 300,
             },
             signal_fn=lambda ticker, previous: TradingScore(ticker, 0, "HOLD"),

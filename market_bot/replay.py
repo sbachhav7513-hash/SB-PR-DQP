@@ -17,6 +17,7 @@ import pandas as pd
 from .accuracy_filters import AccuracyFilters
 from .backtest import BacktestResult, run_backtest
 from .engine import TradingScore, score_market
+from .strategy_config import normalize_strategy_config
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -279,8 +280,9 @@ def run_replay(
     volume_confirmation_candles: Optional[List[Dict]] = None,
 ) -> BacktestResult:
     """Replay the strategy and shared accuracy filters without broker access."""
+    config = normalize_strategy_config(config)
     ema_reentry_enabled = bool(
-        config.get("paper_ema_reentry_enabled", True)
+        config.get("ema_reentry_enabled", True)
     )
     if (
         ema_reentry_enabled
@@ -336,19 +338,14 @@ def run_replay(
                 if volume_confirmation_candles is not None
                 else None
             ),
-            paper_allow_trend_continuation=(
-                bool(config.get("paper_trading_enabled", False))
-                and bool(config.get("paper_allow_trend_continuation", False))
+            allow_trend_continuation=bool(
+                config.get("allow_trend_continuation", False)
             ),
-            rsi_buy_block_above=(
-                float(config.get("paper_rsi_buy_block_above", 80.0))
-                if bool(config.get("paper_trading_enabled", False))
-                else 70.0
+            rsi_buy_block_above=float(
+                config.get("rsi_buy_block_above", 80.0)
             ),
-            rsi_sell_block_below=(
-                float(config.get("paper_rsi_sell_block_below", 25.0))
-                if bool(config.get("paper_trading_enabled", False))
-                else 30.0
+            rsi_sell_block_below=float(
+                config.get("rsi_sell_block_below", 25.0)
             ),
         )
 
@@ -547,7 +544,7 @@ def main() -> None:
             )
     if args.fee_bps_per_side == 0 or args.slippage_bps_per_side == 0:
         report["warnings"].append("Set fee and slippage assumptions to realistic non-zero values before relying on returns.")
-    if config.get("paper_ema_reentry_enabled", True):
+    if config.get("ema_reentry_enabled", True):
         report["warnings"].append(
             "EMA re-entry replay returns use underlying OHLC directional proxies, "
             "not option-premium P&L or live lot sizing."

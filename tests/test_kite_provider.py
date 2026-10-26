@@ -551,11 +551,11 @@ def test_option_quality_gate_uses_softer_strong_signal_floors_for_ce_and_pe():
         assert reason == "OK"
 
 
-def test_support_reversal_premium_exception_is_paper_only_and_isolated():
+def test_support_reversal_premium_exception_uses_shared_strategy_config():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
-        "paper_support_reversal_enabled": True,
+        "support_reversal_enabled": True,
         "option_min_premium": 12.0,
         "option_max_premium": 150.0,
         "option_min_volume": 200,
@@ -584,8 +584,7 @@ def test_support_reversal_premium_exception_is_paper_only_and_isolated():
     allowed, reason = bot._option_quality_gate(
         "NIFTY_CE", "BUY", minimum_premium_override=5.0
     )
-    assert allowed is False
-    assert "unavailable" in reason
+    assert (allowed, reason) == (True, "OK")
 
 
 def test_option_quality_gate_rejects_invalid_or_unavailable_quotes():

@@ -142,6 +142,29 @@ Edit `kite_config.json` with your credentials:
 }
 ```
 
+Kite execution uses one `mode` setting, `PAPER` or `LIVE`. Set `mode` in
+`kite_config.json`, or override it for one process with `MODE`:
+
+```bash
+MODE=PAPER python run_kite_bot.py
+```
+
+After validating the same strategy in paper trading, select `LIVE` without
+changing strategy settings:
+
+```bash
+MODE=LIVE python run_kite_bot.py
+```
+
+In PowerShell, use `$env:MODE = "PAPER"` (or `"LIVE"`) before running the
+same command.
+
+`MODE` changes order execution and broker interaction only. Strategy,
+filters, thresholds, risk limits, and signal evaluation are shared. The
+existing `live_orders_confirmed` safety gate must also be enabled in
+`kite_config.json` before LIVE orders can start. `trading_mode` remains the
+separate market-scope setting for futures/options/both.
+
 #### 4.3 Running the Kite-Based Bot
 
 ```bash
@@ -161,22 +184,22 @@ This version:
 - Lower latency for signal generation
 - Better suited for intraday trading
 
-#### Paper EMA Stop-Loss Re-entry
+#### Shared EMA Stop-Loss Re-entry
 
-When `paper_ema_reentry_enabled` is true, an option trade that closes at a losing
+When `ema_reentry_enabled` is true, an option trade that closes at a losing
 `STOP_LOSS` starts a single 10-minute observation window for that original trade.
-The feature is paper-only and is disabled whenever live orders are enabled. It
-requires 1-minute underlying candles: CE setups use an EMA(5) cross above EMA(20)
-followed by a later underlying close above the crossover candle high; PE setups
-use the inverse cross and close below the crossover candle low. EMA alignment is
-checked again at confirmation. The underlying session VWAP is recorded as context,
-not used as an extra entry filter.
+The same feature and settings apply in PAPER and LIVE. It requires 1-minute
+underlying candles: CE setups use an EMA(5) cross above EMA(20) followed by a
+later underlying close above the crossover candle high; PE setups use the inverse
+cross and close below the crossover candle low. EMA alignment is checked again
+at confirmation. The underlying session VWAP is recorded as context, not used
+as an extra entry filter.
 
-The re-entry uses the standard paper option sizing and exit handling. Trade rows
-and daily/weekly reports link it to the original trade and record stop/signal
-times, reason, option-premium entry/exit, P&L, outcome, and a baseline comparison.
-For an offline replay, set `paper_ema_reentry_enabled` in the supplied config and
-run:
+The re-entry uses the shared option sizing and exit rules; order placement alone
+depends on `mode`. Trade rows and daily/weekly reports link it to the original
+trade and record stop/signal times, reason, option-premium entry/exit, P&L,
+outcome, and a baseline comparison. For an offline replay, set
+`ema_reentry_enabled` in the supplied config and run:
 
 ```bash
 python -m market_bot.replay underlying_1m.csv --ticker NIFTY --config kite_config.json --output ema_reentry_report.json

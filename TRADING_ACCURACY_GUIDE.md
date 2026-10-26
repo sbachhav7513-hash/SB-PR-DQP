@@ -5,7 +5,9 @@
 > estimates are not supported by reproducible out-of-sample or forward results;
 > treat them as unverified, not as current measurements or live-trading
 > guidance. See [README_RELIABILITY.md](README_RELIABILITY.md) for the current
-> deployment verdict.
+> deployment verdict. Configuration names and mode-specific behavior described
+> below are historical snapshots; current PAPER and LIVE use shared strategy
+> keys and rules documented in `README.md`.
 
 ## Paper-only trend continuation experiment
 

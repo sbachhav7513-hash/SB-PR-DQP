@@ -68,13 +68,52 @@ Each session is written under `data_uploads/kite_daily/YYYY-MM-DD/` and is ignor
 This is a forward data-collection set, not a shortcut to historical expired contracts. Two calendar weeks usually produce about ten market sessions and may not produce ten closed trades. Use it for an initial diagnostic only; continue collecting through at least 30-60 sessions and retain a separate chronological holdout before selecting or promoting a filter. Kite candles provide no historical bid/ask or IV, so replay costs must remain explicit estimates and positive modeled P&L is not confirmation of executable profitability. Keep all changes paper-only until the held-out sample and forward paper results support them.
 
 
-Paper and live trading use the same primary strategy, with separately attributed paper-only experiments. The `SIGNAL_WEAKEN` exit experiment requires two consecutive adverse-premium checks in paper mode; live mode retains the immediate check. That change worsened the October 14 four-trade counterfactual and is not a validated loss-reduction rule.
+## Execution mode and shared strategy
 
-The range-breakout pilot remains available as a separately tagged paper-only option-premium entry variant, but is currently disabled in the active `kite_config.json` after the week-43 review. When enabled, it checks the previous 15 completed one-minute candles for each configured CE/PE contract and requires a breakout close above that rolling high, followed by one completed one-minute close that remains above it; the live quote must still be above the range high at entry. Breakout-candle volume must be positive and at least the average volume of the preceding 15 candles. It does not require an underlying directional score or use the normal 12:00–13:00 late-entry window. It still requires regular market hours, a fresh quote passing the existing option-quality gate, and normal position/risk limits. Stop is one contract tick below the prior range low; target is 2R from the entry-to-stop distance. This pilot keeps its fixed 2R exit even when adaptive exits are enabled for other paper options. Pilot positions do not use staged targets, global trailing, the milestone timebox, or the signal-weakening exit; the fixed stop, 2R target, and market-close exit remain active. Trades and decisions are tagged `paper_option_range_breakout`. The switch is off in both active and example configs; keep `live_orders_enabled` false.
+Set `mode` to `PAPER` or `LIVE` in `kite_config.json`, or override it for one
+process with `MODE`. Both modes read the same strategy, signal, filter, sizing,
+risk, entry, and exit settings. The mode controls execution/broker interaction
+and position handling only. LIVE additionally requires
+`live_orders_confirmed: true`; do not change strategy values when moving from
+paper validation to LIVE. The `paper_*` strategy keys described in older
+entries below are historical names, not current configuration fields.
 
-The active paper config enables one tightly bounded same-symbol retry after a negative `STOP_LOSS` or `TRAILING_STOP` exit: wait at least 15 minutes, require a fresh scored signal of 75 or higher, and allow no more than one retry for that option symbol during the session. Accepted retry trades are tagged `paper_stop_reentry` for separate reporting. This does not apply to live orders, futures, profitable stops, timebox exits, reversals, or unscored range-breakout candidates. Existing direction/RSI, option quote-quality, quantity, stop-risk, daily-loss, and consecutive-loss checks still apply; the retry uses the same risk cap and stop policy as a first entry. The trade count and qualifying stop timestamp are restored from the journal after restart. Paper exit records now include `paper_exit_quote_timestamp` alongside LTP/bid/ask so stale or inconsistent snapshots can be identified. Review retry attempts, scores, rejection reasons, stop exposure, quote quality, fees/slippage, P&L, and drawdown as a separately monitored paper trial; higher entry frequency or a later candle high is not evidence of improved performance.
+The `SIGNAL_WEAKEN` exit requires two consecutive adverse-premium checks in
+both modes. The earlier live-immediate behavior was removed to keep exit rules
+identical; the historical October 14 counterfactual is not validation of the
+shared rule.
 
-The active paper config also enables `paper_support_reversal_enabled` for a separate underlying-derived support/reversal trial. It aggregates complete one-minute bars into five-minute candles and requires clustered support/resistance pivots, a recent level retest, a directional close beyond the prior bar, a minimum score of 75, and a 15-minute same-level cooldown after an entry attempt passes the option-quality and accuracy gates. Only this variant may use `paper_support_reversal_min_premium=5.0`; the standard `option_min_premium=12.0` is unchanged. The lower premium does not relax fresh-quote, minimum-volume, minimum-OI-when-provided, IV-if-present, expiry, position sizing, stop, per-trade ₹1,000 risk, daily-loss, or loss-circuit rules. The generic one-minute body threshold is replaced only for this variant by its configured 0.20 minimum; five-minute directional breakout and one-minute close confirmation remain. Accepted trades are tagged `paper_underlying_support_reversal`; a qualifying stop retry retains both strategy and retry attribution. The example config leaves this trial off, and live orders cannot use it. Review counts and rejection reasons separately; do not infer performance from the October 23 candle replay.
+The option range-breakout variant is controlled by the shared
+`option_range_breakout_enabled` setting and is currently disabled in both
+checked-in Kite configs. When enabled, it checks the previous 15 completed
+one-minute candles for each configured CE/PE contract and requires a breakout
+close above that rolling high, followed by one completed one-minute close that
+remains above it; the live quote must still be above the range high at entry.
+Breakout-candle volume must be positive and at least the average volume of the
+preceding 15 candles. It does not require an underlying directional score or
+use the normal 12:00–13:00 late-entry window. It still requires regular market
+hours, a fresh quote passing the option-quality gate, and normal position/risk
+limits. Stop is one contract tick below the prior range low; target is 2R from
+the entry-to-stop distance. This variant keeps its fixed 2R exit regardless
+of mode. Review historical paper results as evidence only; do not infer a
+durable edge from the October 14 candle replay.
+
+The shared `stop_reentry_enabled` setting allows one same-symbol retry after
+an eligible negative stop exit, subject to its configured cooldown and minimum
+score. Existing direction/RSI, option quote-quality, quantity, stop-risk,
+daily-loss, and consecutive-loss checks still apply. Retry state and timestamps
+are restored from the journal after restart. Paper exit records may include
+`paper_exit_quote_timestamp` to audit quote freshness; this is execution
+telemetry, not a separate strategy rule.
+
+The shared `support_reversal_enabled` setting controls the underlying-derived
+support/reversal variant in both modes. It uses complete one-minute bars
+aggregated into five-minute candles, clustered support/resistance pivots, a
+recent level retest, directional confirmation, the shared minimum score and
+cooldown, option-quality and accuracy gates, and the configured
+`support_reversal_min_premium` override. It does not bypass quantity, stop,
+per-trade risk, daily-loss, or loss-circuit rules. Review counts and rejection
+reasons separately; do not infer performance from the October 23 candle replay.
 
 On the October 14 ICICIBANK 1360 PE minute candles, the first range break with candle-volume and one-lot risk proxies passing those gates was 10:01: close ₹26.20, prior-15 high ₹26.00, prior-15 low ₹24.15, stop ₹24.10, and 2R target ₹30.40. The target was touched by the 13:03 candle (high ₹30.50), modeling ₹2,940 gross for the 700-unit lot before costs. This is a single-contract minute-OHLC counterfactual, not proof of a fresh live quote, executable fill, net profit, or durable edge; earlier breakout candidates failed the configured one-lot risk check. Keep the pilot paper-only and evaluate a larger chronological sample before changing or promoting it. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.
 
@@ -135,16 +174,15 @@ paper mode does not force an oversized minimum lot. The minimum is one lot,
 but a one-lot position is still rejected whenever its planned stop-risk exceeds
 the remaining per-trade or daily risk budget.
 The active ₹100,000 paper account uses a 10% daily loss limit (₹10,000).
-Each option entry is additionally capped at 10% of the selected contract's
-one-lot premium (`premium × lot size`); with the current 10% premium stop,
-that permits at most one lot per entry. For example, a 65-unit NIFTY option at
-₹100 premium has ₹6,500 one-lot premium and a ₹650 planned stop-risk cap.
-Open-position stop-risk and realized losses are reserved against the daily
-budget; in options mode, the static `max_risk_per_trade` setting is not used
-as the entry cap. This is a paper-only risk experiment, not a safe default for
-live trading; slippage, gaps, and costs can make realized losses exceed planned
-stop-risk. The staged first target is also 10%, so the nominal initial
-reward-to-risk is 1:1 before costs. After a restart, same-session open paper
+Option sizing uses the shared `max_risk_per_trade` cap, the configured option
+premium-risk percentage, quantity bounds, and remaining daily risk. With the
+current 10% premium stop and premium-risk percentage, a 65-unit NIFTY option at
+₹100 premium has ₹650 planned stop risk, before the per-trade and daily limits
+are applied. This sizing applies to PAPER and LIVE. Broker fills, slippage,
+gaps, and costs can make realized losses exceed planned stop-risk; LIVE also
+has execution-time post-fill safeguards. The staged first target is 10%, so
+the nominal initial reward-to-risk is 1:1 before costs. After a restart,
+same-session open paper
 positions and realized losses are restored from the trade journal. Active
 paper positions persist a price mark at most once per minute. Prior-session
 open paper records are closed using the last persisted price and its update
@@ -153,15 +191,13 @@ the record at its entry price as a zero-P&L estimate and labels the journal
 reason accordingly. Neither recovery value is guaranteed to be the exchange's
 official session-close price or actual realized performance.
 
-The active paper config currently requires a directional option signal candle
-body/range ratio of 60% (`paper_option_min_candle_body_ratio`), matching the
-default and live threshold. A prior 40% paper-only trial was reverted after a
-two-session historical replay showed worse P/L and did not improve trade count
-on the second session. Monitor today's session at 60%, then review rejection
-counts, entries, exits, and P/L before deciding whether another strategy change
-is warranted. Signal direction, option quote/quality, entry validation, and
-risk limits continue to apply; the threshold does not guarantee an entry or
-demonstrate an edge.
+The shared option signal candle body/range ratio is 60%
+(`option_min_candle_body_ratio`) in both modes. A prior 40% trial was reverted
+after a two-session historical replay showed worse P/L and did not improve
+trade count on the second session. Review rejection counts, entries, exits,
+and P/L before deciding whether another strategy change is warranted. Signal
+direction, option quote/quality, entry validation, and risk limits continue to
+apply; the threshold does not guarantee an entry or demonstrate an edge.
 
 ### VPS systemd setup
 

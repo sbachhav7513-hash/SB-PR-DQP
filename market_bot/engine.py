@@ -606,7 +606,7 @@ def score_market(
     trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.005,
     volume_confirmation_history: Optional[List[Dict]] = None,
-    paper_allow_trend_continuation: bool = False,
+    allow_trend_continuation: bool = False,
     rsi_buy_block_above: float = 70.0,
     rsi_sell_block_below: float = 30.0,
 ) -> TradingScore:
@@ -809,11 +809,11 @@ def score_market(
         quality_reasons: List[str] = []
 
         if (
-            not paper_allow_trend_continuation
+            not allow_trend_continuation
             and not is_compression_breakout(history)
         ):
             quality_reasons.append("No volatility compression before breakout")
-        if not paper_allow_trend_continuation and not breakout_quality(
+        if not allow_trend_continuation and not breakout_quality(
             history, signal, volume_history=volume_confirmation_history
         ):
             quality_reasons.append("Breakout lacks close, volume, or ATR confirmation")
@@ -842,10 +842,9 @@ def score_market(
             signal = "HOLD"
             reasons.extend(quality_reasons)
         else:
-            if paper_allow_trend_continuation:
+            if allow_trend_continuation:
                 reasons.append(
-                    "Paper-only trend continuation: compression and breakout-candle "
-                    "checks relaxed"
+                    "Trend continuation: compression and breakout-candle checks relaxed"
                 )
             else:
                 reasons.extend(
