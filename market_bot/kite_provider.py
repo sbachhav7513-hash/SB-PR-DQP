@@ -50,6 +50,7 @@ class KiteConfig:
     option_strike_step: Dict[str, float] = field(default_factory=dict)
     option_max_strike_distance_pct: float = 0.5
     min_options_volume: int = 0
+    avoid_option_expiry_day: bool = True
 
 
 class KiteHistoricalProvider:
@@ -410,10 +411,19 @@ class KiteMarketStream:
             eligible = sorted(
                 expiry for expiry in expiries if expiry <= expiry_limit
             )
+            if expiry_mode == "nearest" and self.config.avoid_option_expiry_day:
+                eligible = [expiry for expiry in eligible if expiry > today]
             if not eligible:
+                expiry_message = (
+                    "no non-expiry option"
+                    if expiry_mode == "nearest"
+                    and self.config.avoid_option_expiry_day
+                    else "no option expiry"
+                )
                 logger.warning(
-                    "Skipping %s: no option expiry through %s",
+                    "Skipping %s: %s through %s",
                     underlying,
+                    expiry_message,
                     expiry_limit,
                 )
             if expiry_mode == "next_week":
@@ -428,8 +438,14 @@ class KiteMarketStream:
                 selected_expiries[underlying] = eligible[0]
 
         if not selected_expiries:
+            expiry_constraint = (
+                " after today"
+                if expiry_mode == "nearest" and self.config.avoid_option_expiry_day
+                else ""
+            )
             raise RuntimeError(
-                f"No {expiry_mode} NFO option expiry matched option_expiry_days"
+                f"No {expiry_mode} NFO option expiry{expiry_constraint} "
+                "matched option_expiry_days"
             )
 
         candidates = [

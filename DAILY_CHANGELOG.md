@@ -806,3 +806,16 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the deliverable and the first support/reversal outcome without changing strategy settings.
 - Validation and result: Reconciled the trade P&L, win/loss counts, profit factor, and realized drawdown to `trades.parquet`; checked all 7 exact option symbols against available minute bars and computed underlying-context indicators from the supplied one-minute candles. `git diff --check` passed.
 - Limitations and outcome: Gross paper P&L was +INR 1,324.75 on 7 trades (2 wins, 4 losses, 1 flat); costs are not recorded. Only 5 recent bars are stored per populated decision-history row, and rejected candidates have no matched exits, so the requested full what-if/filter attribution is not identifiable. No strategy/configuration change or performance-improvement claim was made; continue the support/reversal evaluation paper-only and require the planned sample before judging it.
+
+#### DLY-2026-10-27-01
+
+- Reason: Audit the reported zero-option-entry session against the complete 2026-10-27 minute archive and current strategy/provider code; run one-variable counterfactual replays across all available prior sessions.
+- Evidence and finding: The active config selects the nearest option expiry, while `avoid_option_expiry_day` defaults to true in the quality gate. All 66 option contracts in the 2026-10-27 manifest expire that day. The core underlying replay still produced five proxy trades (2 wins / 3 losses, -1.0017 summed percentage points), demonstrating that it is not equivalent to the production option pipeline. The expiry picker/gate mismatch is the deterministic production blocker when a fresh quote reaches the expiry check.
+- Files:
+  - `market_bot/kite_provider.py` (modified): Add the expiry-avoidance setting and skip today's expiry in nearest-expiry selection when enabled; fail explicitly if no later expiry is available.
+  - `market_bot/kite_main.py` (modified): Pass the active expiry-avoidance setting into the provider.
+  - `tests/test_kite_provider.py` (modified): Verify nearest selection skips today's expiry when enabled and preserves the prior behavior when disabled.
+  - `STRATEGY_REVIEW_2026-10-27.md` (added): Record the candidate audit, 31 counterfactual iterations, historical comparisons, trade proxy results, exact mismatch, and evidence limitations.
+  - `STRATEGY_CHANGELOG.md` and `DAILY_CHANGELOG.md` (modified): Append the investigation and experiment record.
+- Validation: Focused provider/runtime suite: 145 passed, 1 skipped. Regression cases cover nearest later-expiry selection by default, preservation of same-day selection when explicitly allowed, and explicit failure when no later expiry exists. No strategy parameter changes were retained. All replay P&L excludes fees/slippage and is underlying OHLC proxy performance, not executable option P&L.
+- Outcome / limitation: The 27-Oct archive has no later-expiry options, bid/ask, IV, or timestamped live quotes; therefore final option entries, rupee P&L, and profitability after the provider correction cannot be measured. Preserve expiry avoidance and all strategy/risk gates; do not promote to live from this evidence. Existing local edits changing `late_window_enabled` in both Kite config files were not authored or overwritten.
