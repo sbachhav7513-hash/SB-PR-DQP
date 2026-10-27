@@ -89,7 +89,7 @@
   "ema_fast": 9,
   "ema_slow": 21,
   "rsi_period": 14,
-  "min_entry_score": 60,
+  "min_entry_score": 70,
   "min_volatility_pct": 0.05,
   "max_volatility_pct": 5.0,
   "alert_rsi_low": 30,
