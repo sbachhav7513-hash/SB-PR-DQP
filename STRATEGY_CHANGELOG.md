@@ -665,3 +665,10 @@ No completed experiments recorded yet.
 - Decision and evidence: Keep the trial active in paper mode only, but do not call it a backtest or performance improvement. Seven post-screen candidate events on one session show candidate noise remains a monitoring concern; existing per-symbol session limits cap execution. Live behavior is excluded.
 - Rollback/version if reverted: Set `paper_support_reversal_enabled=false` in `kite_config.json`; the example config is already false. The standard ₹12 option floor and other strategy paths remain unchanged.
 - Follow-up: Review the next 10 comparable paper sessions and at least 10 closed tagged trades. Keep or revert based on observed quote quality, rejection reasons, cost-adjusted expectancy, drawdown, and risk adherence; do not use later candle highs as captured profit.
+
+#### 2026-10-26 follow-up — first support/reversal result
+
+- Evidence: The October 26 journal records one `paper_underlying_support_reversal` trade (NIFTY 22550 PE), score 80, entered at 10:31:09 IST and stopped at 10:31:29 for -INR 497.25. Its underlying proxy had ADX(14) 18.1, a 20-minute move of -0.126%, and a 0.308% 20-minute range. This single observation cannot establish that the variant caused the loss or has negative expectancy.
+- Session context: Seven closed trades netted +INR 1,324.75 gross. The six primary fills netted +INR 1,822.00; the support/reversal fill accounts for the difference. Costs, quote-side fills, and a valid previous-config replay are unavailable.
+- Decision: Keep the trial paper-only and separately tagged while collecting the planned 10 closed tagged trades. Do not promote, retune, or roll back solely on this observation. No code/configuration change was made for this review.
+- Limitations: Decision histories retain only five bars; later OHLC highs/lows are not executable fills. See `FORENSIC_REVIEW_2026-10-26.md` for the full evidence and what-if limits.
