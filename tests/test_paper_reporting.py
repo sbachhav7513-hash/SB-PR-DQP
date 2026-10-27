@@ -17,8 +17,12 @@ from market_bot.weekly_report import (
 def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     timestamp = datetime(2026, 9, 7, 10, 0).isoformat(timespec="seconds")
     paper_dir = tmp_path / "paper"
-    trades = TradeJournal(str(tmp_path / "trades.jsonl"), str(paper_dir))
-    decisions = DecisionJournal(str(tmp_path / "decision_log.jsonl"), str(paper_dir))
+    trades = TradeJournal(
+        str(tmp_path / "trades.jsonl"), str(paper_dir), config_hash="abc123"
+    )
+    decisions = DecisionJournal(
+        str(tmp_path / "decision_log.jsonl"), str(paper_dir), config_hash="abc123"
+    )
 
     decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "BUY"})
     decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "HOLD"})
@@ -37,11 +41,25 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
         orient="records"
     )
     assert rows[0]["status"] == "closed"
+    assert rows[0]["config_hash"] == "abc123"
+    trade_records = [
+        json.loads(line)
+        for line in (tmp_path / "trades.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    decision_records = [
+        json.loads(line)
+        for line in (tmp_path / "decision_log.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert trade_records[0]["config_hash"] == "abc123"
+    assert all(record["config_hash"] == "abc123" for record in decision_records)
     assert rows[0]["exit_price"] == "101"
     assert rows[0]["trading_symbol"] == "NIFTY26SEP25000CE"
     assert (day_dir / "decisions.parquet").exists()
     decision_file = ParquetFile(day_dir / "decisions.parquet")
     assert decision_file.to_pandas()["signal"].tolist() == ["BUY", "HOLD"]
+    assert decision_file.to_pandas()["config_hash"].tolist() == ["abc123", "abc123"]
     assert decision_file.row_groups
 
 

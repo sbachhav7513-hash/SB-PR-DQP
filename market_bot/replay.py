@@ -17,7 +17,11 @@ import pandas as pd
 from .accuracy_filters import AccuracyFilters
 from .backtest import BacktestResult, run_backtest
 from .engine import TradingScore, score_market
-from .strategy_config import normalize_strategy_config
+from .strategy_config import (
+    load_strategy_config,
+    normalize_strategy_config,
+    strategy_config_hash,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -376,7 +380,7 @@ def run_replay(
         )
         return None if allowed else reason
 
-    return run_backtest(
+    result = run_backtest(
         ticker,
         candles,
         stop_loss_pct=float(config.get("stop_loss_pct", 0.75)),
@@ -394,6 +398,11 @@ def run_replay(
         history_limit=50,
         ema_stop_reentry_enabled=ema_reentry_enabled,
     )
+    config_hash = strategy_config_hash(config)
+    for trade in result.trades:
+        trade.config_hash = config_hash
+    result.ema_reentry_statistics["config_hash"] = config_hash
+    return result
 
 
 def _summary(result: BacktestResult) -> Dict:
@@ -472,7 +481,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        config = load_strategy_config(args.config)
         candles = load_candles(args.data)
         data_quality = None
         if args.production_symbol:
@@ -514,6 +523,7 @@ def main() -> None:
         "bars": len(candles),
         "first_bar": candles[0]["time"].isoformat(),
         "last_bar": candles[-1]["time"].isoformat(),
+        "config_hash": strategy_config_hash(config),
         "cost_assumptions_bps_per_side": {
             "fee": args.fee_bps_per_side,
             "slippage": args.slippage_bps_per_side,

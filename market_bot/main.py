@@ -1,6 +1,7 @@
 import requests
 import sys
 import time
+from dataclasses import asdict
 from datetime import datetime
 
 from .config import BotConfig
@@ -9,6 +10,7 @@ from .engine import market_session_label, market_session_state, score_market
 from .live_feed import LiveMarketFeed
 from .risk_manager import build_risk_plan
 from .strategy import Signal
+from .strategy_config import strategy_config_hash
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, TradeJournal
 from .weekly_report import write_daily_summary, write_weekly_report, write_weekly_review
@@ -74,8 +76,13 @@ def run_bot(config: BotConfig) -> None:
         token=config.telegram_token,
         chat_id=config.telegram_chat_id,
     )
-    journal = TradeJournal("trades.jsonl", "paper_trading_data")
-    decisions = DecisionJournal("decision_log.jsonl", "paper_trading_data")
+    config_hash = strategy_config_hash(asdict(config))
+    journal = TradeJournal(
+        "trades.jsonl", "paper_trading_data", config_hash=config_hash
+    )
+    decisions = DecisionJournal(
+        "decision_log.jsonl", "paper_trading_data", config_hash=config_hash
+    )
     print_header(config)
     publish_reports()
     last_heartbeat = time.monotonic() - HEARTBEAT_INTERVAL_SECONDS
