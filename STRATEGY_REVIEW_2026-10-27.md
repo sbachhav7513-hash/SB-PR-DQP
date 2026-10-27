@@ -196,4 +196,42 @@ This code correction is not an instruction to trade a specific contract and is n
 9. **Historical effect?** Prior core proxy: 47 trades, 25 wins, +1.1167 summed return points, 6.8470% max drawdown. No parameter iteration was retained. Later-expiry option selection cannot be performance-validated for 27-Oct because those contracts are missing.
 10. **Deployment recommendation?** Do not promote to live. Keep paper mode and expiry avoidance; collect complete contract/quote logs and re-evaluate after a valid later-expiry replay.
 11. **Did recent changes contribute?** Tested prior ADX 12, sideways net move 0.30, and RSI 70/30 values: no change in replay. Continuation-off eliminated 27-Oct proxy trades, so keep continuation enabled as configured. The Oct-26 support/reversal feature is outside the core replay and cannot be credited with a trade; it cannot bypass the expiry gate.
-12. **Exact code/config change?** `KiteConfig` now carries `avoid_option_expiry_day` (default true), `KiteTradingBot` passes the active setting to the provider, and nearest-expiry selection skips today's date when avoidance is enabled. No active strategy threshold was changed.
+12. **Exact code/config change?** `KiteConfig` now carries `avoid_option_expiry_day` (default true), `KiteTradingBot` passes the active setting to the provider, and nearest-expiry selection skips today's date when avoidance is enabled. The validation addendum below changes only the PAPER `min_entry_score` from 60 to 70.
+
+## Validation addendum — PAPER score floor 70
+
+This addendum extends the earlier review with the October 26 closed trades and a controlled score-floor replay. It supersedes the earlier statement that no score-floor adjustment was indicated; it does not change the expiry safeguard or claim an out-of-sample win-rate forecast.
+
+### New loss autopsies (October 26)
+
+The October 25 loss report covers 52 journal losses through October 23. The October 26 Parquet trade ledger adds four losses:
+
+| Time IST | Trade | Entry reason | Observed loss mechanism | Root-cause assessment |
+|---|---|---|---|---|
+| 09:57:44 | RELIANCE26OCT1190CE BUY, score 85; 9.25 → 9.15, -50 | EMA/MACD/RSI bullish; near recent high; trend, ADX/EMA spread, VWAP and higher-timeframe checks aligned | Closed as trailing stop after 36 seconds; maximum favorable excursion was 0.919R | The recorded exit is below entry despite adaptive breakeven activation at 0.5R. Exit LTP 9.15 was below the logged bid 9.20; quote/fill timing is not sufficient to call this an avoidable signal loss. Audit paper exit fill/quote alignment. |
+| 10:27:40 | TCS26OCT2520PE BUY, score 85; 17.00 → 15.25, -393.75 | EMA/MACD bearish, RSI trend zone, near recent low, trend and VWAP/higher-timeframe checks aligned | Stop loss after 65.9 seconds; max favorable excursion 0R | Fast adverse premium move after a fully qualified signal. Logged exit LTP 15.25 differed from the 16.25 bid snapshot one second earlier, so exact executable loss is uncertain. |
+| 10:30:25 | LT26OCT3650PE BUY, score 85; 22.95 → 20.40, -446.25 | EMA/MACD bearish, RSI trend zone, near recent low, trend and VWAP/higher-timeframe checks aligned | Stop loss after 65.7 seconds; max favorable excursion 0R | Immediate adverse premium move. Logged exit LTP 20.40 differed from the 22.40 bid snapshot one second earlier; do not attribute the full recorded amount to a signal filter without quote/fill reconciliation. |
+| 10:31:09 | NIFTY26OCT22550PE BUY, score 80; 69.90 → 62.25, -497.25 | Paper support/reversal route; three clustered pivots near 22688.68 | Stop loss after 19.7 seconds; max favorable excursion 0R | Fast adverse move; entry qualified under the separate support/reversal route. Logged bid 62.30 was close to exit LTP 62.25. |
+
+These are four additional individual losses, not a basis for loosening stops. Three were stop-outs within 20–66 seconds with zero favorable excursion; the fourth exposed a below-entry trailing exit and quote/mark discrepancy. As of October 26, the journal contains 56 recorded losses: 30 `STOP_LOSS`, 9 `SIGNAL_WEAKEN`, 5 `MARKET_CLOSE_FORCED_EXIT`, 5 `TRAILING_STOP`, 4 `TIME_BOX`, and 3 `SIGNAL_REVERSAL`. See [the earlier report](./backtest_artifacts/LOSING_TRADE_ROOT_CAUSE_REPORT.md) for the other 52 loss rows and its path/data limitations.
+
+### Score-floor experiments
+
+The one-variable replay used `market_bot.replay.run_replay`, the configured scorer and accuracy filters, NIFTY/BANKNIFTY benchmark context, and all archived one-minute underlying sessions: October 14–16, 19, 21–23, 26, and 27. Returns are underlying directional proxies, not option-premium or rupee P&L; costs are zero.
+
+| Entry score floor | Trades | Wins | Losses | Win rate | Sum return | Profit factor | Max drawdown |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 60 (current before change) | 52 | 27 | 25 | 51.9% | +0.115 percentage points | 1.006 | 6.847% |
+| 65 | 52 | 27 | 25 | 51.9% | +0.115 percentage points | 1.006 | 6.847% |
+| 70 (PAPER setting) | 52 | 27 | 25 | 51.9% | +0.115 percentage points | 1.006 | 6.847% |
+| 75 | 0 | 0 | 0 | N/A | 0 (no trades) | N/A | N/A |
+
+The separate recorded-option cohort provides the reason to prefer 70 over 60 for the PAPER trial: among 47 `primary` closed trades, the 20 score-65 trades contained 7 wins and 13 losses and netted -4,127.25 in recorded P&L; the 27 score-85 trades contained 13 wins, 13 losses and 1 flat trade and netted +3,562.25. Filtering out score 65 would change the recorded primary cohort from 20/47 wins (42.6%) and -565.00 P&L to 13/27 wins (48.1%) and +3,562.25 P&L. This is a retrospective cohort filter, **not** a full alternate option replay: it does not simulate replacement entries, overlapping positions, or executable bid/ask fills. The score-floor replays show no proxy degradation, but also no proxy uplift.
+
+On October 27 specifically, the underlying replay remains five trades, two wins, three losses, -1.0017 summed return points. The option decision journal recorded 347 directional events, zero closed trades, and event-level rejections of 149 weak-candle-momentum, 69 expiry-day-risk, 67 late-window, and 38 stale-quote cases; the counts are repeated decision events, not unique trades or labelled future outcomes. All 66 archived option contracts expire that day, so expiry avoidance remains enabled. Later-expiry option bars and timestamped executable quotes are absent.
+
+### PAPER change and guardrails
+
+- Set `min_entry_score` to 70 in the active PAPER config and its example. No entry, exit, ADX, S/R, re-entry, expiry, or risk sizing rule changed.
+- Keep `avoid_option_expiry_day=true`; do not relax it to manufacture same-day option entries.
+- Keep the strategy in PAPER. The recorded-option score cohort is in-sample, and the proxy replay proves non-degradation only on its underlying price basis. Compare the next exact-contract option replay with bid/ask, fees, slippage, trade count, win rate, expectancy, and drawdown before considering any live rollout.
