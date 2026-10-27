@@ -209,6 +209,19 @@ Offline replay signals use the underlying candles and its reported returns are
 underlying-price directional proxies, not option-premium P&L. Paper reports use
 the recorded option trade P&L.
 
+The Kite paper runner and offline replay both load `kite_config.json` through
+the shared strategy-config loader. Trade and decision audit records include a
+SHA-256 `config_hash`; credentials and paper/live mode flags are excluded from
+the hash. Existing journal rows are not retroactively assigned a hash, so
+their configuration cannot be verified from the journal alone.
+
+When an option contract passes the configured option-quality gate for a
+signal, its completed one-minute premium candles are archived under
+`paper_trading_data/option_candles/YYYY-MM-DD/`. The archive contains OHLCV,
+the last valid bid/ask observed during each minute when available, and the
+config hash. Capturing continues for that contract for the remainder of the
+session and resumes after restart from the current day's archive.
+
 ---
 
 ## 📁 Project Structure

@@ -85,7 +85,7 @@ class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
     TRADE_COLUMNS = [
-        "trade_id", "timestamp", "ticker", "trading_symbol",
+        "trade_id", "timestamp", "config_hash", "ticker", "trading_symbol",
         "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
@@ -133,7 +133,7 @@ class PaperTradingRecorder:
         "reentry_outcome",
     ]
     DECISION_COLUMNS = [
-        "timestamp", "ticker", "signal", "outcome", "score", "reasons",
+        "timestamp", "config_hash", "ticker", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
@@ -241,13 +241,21 @@ class DecisionJournal:
 
     MAX_HISTORY_BARS = 5
 
-    def __init__(self, path: str = "decision_log.jsonl", paper_data_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        path: str = "decision_log.jsonl",
+        paper_data_dir: Optional[str] = None,
+        config_hash: Optional[str] = None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.paper_recorder = PaperTradingRecorder(paper_data_dir) if paper_data_dir else None
+        self.config_hash = config_hash
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        if self.config_hash is not None:
+            entry["config_hash"] = self.config_hash
         history = entry.get("history")
         if isinstance(history, list) and len(history) > self.MAX_HISTORY_BARS:
             entry["history"] = history[-self.MAX_HISTORY_BARS:]
@@ -301,9 +309,10 @@ class DecisionJournal:
 class PaperShadowExitJournal:
     """Persist snapshots of independent paper exit experiments."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, config_hash: Optional[str] = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.config_hash = config_hash
         self.latest: Dict[str, Dict[str, Any]] = {}
         if not self.path.exists():
             return
@@ -322,12 +331,16 @@ class PaperShadowExitJournal:
                     self.latest[trade_id] = record
 
     def _append(self, record: Dict[str, Any]) -> None:
+        if self.config_hash is not None:
+            record.setdefault("config_hash", self.config_hash)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, default=str) + "\n")
         self.latest[str(record["trade_id"])] = dict(record)
 
     def start(self, record: Dict[str, Any]) -> None:
         entry = dict(record)
+        if self.config_hash is not None:
+            entry["config_hash"] = self.config_hash
         entry["status"] = "open"
         entry["event"] = "opened"
         self._append(entry)
@@ -374,10 +387,16 @@ class PaperShadowExitJournal:
 class TradeJournal:
     PAPER_MARK_INTERVAL_SECONDS = 60
 
-    def __init__(self, path: str = "trades.jsonl", paper_data_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        path: str = "trades.jsonl",
+        paper_data_dir: Optional[str] = None,
+        config_hash: Optional[str] = None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.paper_recorder = PaperTradingRecorder(paper_data_dir) if paper_data_dir else None
+        self.config_hash = config_hash
         self._last_paper_mark_at: Dict[str, Optional[datetime]] = {}
 
     def _write_trades(self, trades: List[Dict[str, Any]]) -> None:
@@ -385,8 +404,13 @@ class TradeJournal:
             for trade in trades:
                 handle.write(json.dumps(trade, default=str) + "\n")
 
+    def _stamp_config_hash(self, trade: Dict[str, Any]) -> None:
+        if self.config_hash is not None:
+            trade.setdefault("config_hash", self.config_hash)
+
     def log_trade(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        self._stamp_config_hash(entry)
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
@@ -449,6 +473,7 @@ class TradeJournal:
             if action and trade_action != action.upper():
                 continue
 
+            self._stamp_config_hash(trade)
             try:
                 previous_update = datetime.fromisoformat(
                     str(trade.get("updated_at", "")).replace("Z", "+00:00")
@@ -488,6 +513,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
+            self._stamp_config_hash(trade)
 
             entry_price = float(trade.get("entry", 0.0))
             stop_loss = float(trade.get("stop_loss", 0.0))
@@ -571,6 +597,7 @@ class TradeJournal:
             if action and trade_action != action.upper():
                 continue
 
+            self._stamp_config_hash(trade)
             entry_price = float(trade.get("entry", 0.0))
             if trade_action == "BUY":
                 pnl = exit_price - entry_price
@@ -605,6 +632,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
+            self._stamp_config_hash(trade)
             trade.update(fields)
             self._write_trades(trades)
             if self.paper_recorder:
@@ -622,6 +650,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
+            self._stamp_config_hash(trade)
             trade.update(fields)
             self._write_trades(trades)
             if self.paper_recorder:

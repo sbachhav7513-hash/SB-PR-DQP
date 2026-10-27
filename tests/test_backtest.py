@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from market_bot.backtest import run_backtest
+from market_bot.backtest import BacktestResult, BacktestTrade, run_backtest
 from market_bot.engine import TradingScore
 from market_bot.replay import (
     _context_before,
@@ -14,6 +14,7 @@ from market_bot.replay import (
     _zero_signal_diagnostics,
     validate_production_data,
 )
+from market_bot.strategy_config import strategy_config_hash
 
 
 def candle(open_price, high, low, close, index):
@@ -49,6 +50,29 @@ def test_backtest_enters_on_next_open_and_takes_target():
     assert result.trades[0].entry_price == 110
     assert result.trades[0].exit_price == 111.1
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
+
+
+def test_replay_attaches_config_hash_to_trade_and_summary(monkeypatch):
+    config = {"ema_reentry_enabled": False, "min_entry_score": 70}
+    trade = BacktestTrade(
+        action="BUY",
+        entry_time=datetime(2026, 10, 14, 10, 0),
+        exit_time=datetime(2026, 10, 14, 10, 1),
+        entry_price=100.0,
+        exit_price=101.0,
+        return_pct=1.0,
+        exit_reason="test",
+    )
+    result = BacktestResult(trades=[trade])
+    monkeypatch.setattr(
+        "market_bot.replay.run_backtest", lambda *args, **kwargs: result
+    )
+
+    replay_result = run_replay("NIFTY", [], config)
+
+    expected_hash = strategy_config_hash(config)
+    assert replay_result.trades[0].config_hash == expected_hash
+    assert replay_result.ema_reentry_statistics["config_hash"] == expected_hash
 
 
 def test_backtest_uses_stop_when_stop_and_target_hit_same_bar():

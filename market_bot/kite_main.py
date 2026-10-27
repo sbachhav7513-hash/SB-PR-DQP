@@ -32,8 +32,13 @@ from .intraday_manager import (
 )
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
+from .option_candle_store import OptionCandleRecorder
 from .risk_manager import build_risk_plan
-from .strategy_config import normalize_strategy_config, resolve_execution_mode
+from .strategy_config import (
+    load_strategy_config,
+    resolve_execution_mode,
+    strategy_config_hash,
+)
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, PaperShadowExitJournal, TradeJournal
 from .weekly_report import (
@@ -485,6 +490,7 @@ class KiteTradingBot:
                 quality_reason,
             )
             return f"PAPER_RANGE_BREAKOUT_REJECTED:{quality_reason}"
+        self._capture_eligible_option_candles(symbol, bars)
 
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         raw_entry_price = quote.get("last_price", quote.get("premium"))
@@ -659,12 +665,28 @@ class KiteTradingBot:
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self.config_path = Path(config_path)
-        self.config = normalize_strategy_config(self._load_config())
+        self.config = load_strategy_config(self.config_path)
+        self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
+        self.config["kite_access_token"] = os.getenv("KITE_ACCESS_TOKEN")
+        self.config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
+        if not self.config["kite_api_key"] or not self.config["kite_access_token"]:
+            raise RuntimeError(
+                "KITE_API_KEY and KITE_ACCESS_TOKEN must be set as environment variables."
+            )
+        self.config_hash = strategy_config_hash(self.config)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         self.config.pop("paper_trading_enabled", None)
         self.config.pop("live_orders_enabled", None)
         self.paper_trading_enabled = self.mode == "PAPER"
         self.live_orders_enabled = self.mode == "LIVE"
+        self.paper_trading_dir = self.config.get(
+            "paper_trading_dir", "paper_trading_data"
+        )
+        self.option_candle_recorder = OptionCandleRecorder(
+            Path(self.paper_trading_dir) / "option_candles",
+            config_hash=self.config_hash,
+        )
 
         daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
         options_mode = self.config.get("trading_mode") in {
@@ -730,11 +752,13 @@ class KiteTradingBot:
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
         )
-        self.paper_trading_dir = self.config.get("paper_trading_dir", "paper_trading_data")
-        self.trade_journal = TradeJournal("trades.jsonl", self.paper_trading_dir)
+        self.trade_journal = TradeJournal(
+            "trades.jsonl", self.paper_trading_dir, config_hash=self.config_hash
+        )
         self.paper_shadow_exit_journal = (
             PaperShadowExitJournal(
-                str(Path(self.paper_trading_dir) / "shadow_runner_1r.jsonl")
+                str(Path(self.paper_trading_dir) / "shadow_runner_1r.jsonl"),
+                config_hash=self.config_hash,
             )
             if self.paper_trading_enabled and not self.live_orders_enabled
             else None
@@ -757,6 +781,7 @@ class KiteTradingBot:
         self.decision_journal = DecisionJournal(
             self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
+            config_hash=self.config_hash,
         )
         for symbol, state in self._ema_reentry_states.items():
             if state.get("status") == "expired":
@@ -1689,6 +1714,42 @@ class KiteTradingBot:
                     return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
         return True, "OK"
 
+    def _capture_eligible_option_candles(
+        self, symbol: str, bars: list[Bar]
+    ) -> None:
+        if not self._options_enabled() or not symbol.endswith(("_CE", "_PE")):
+            return
+        if int(self.config.get("bar_interval_seconds", 60)) != 60:
+            logger.error(
+                "[%s] Cannot archive option candles: bar_interval_seconds must be 60",
+                symbol,
+            )
+            return
+        recorder = getattr(self, "option_candle_recorder", None)
+        if recorder is None:
+            logger.error("[%s] Option candle recorder is unavailable", symbol)
+            return
+        try:
+            recorder.capture_eligible(symbol, bars, datetime.now(IST))
+        except OSError:
+            logger.exception(
+                "[%s] Could not persist eligible option candles", symbol
+            )
+
+    def _record_active_option_candle(self, symbol: str, bar: Bar) -> None:
+        recorder = getattr(self, "option_candle_recorder", None)
+        if (
+            recorder is None
+            or not self._options_enabled()
+            or not symbol.endswith(("_CE", "_PE"))
+            or int(self.config.get("bar_interval_seconds", 60)) != 60
+        ):
+            return
+        try:
+            recorder.record_active(symbol, bar)
+        except OSError:
+            logger.exception("[%s] Could not persist option candle", symbol)
+
     def _warm_up_bars(self) -> None:
         """Load recent candles so signals do not wait for a fresh session's bars."""
         provider = KiteHistoricalProvider(
@@ -1724,31 +1785,11 @@ class KiteTradingBot:
                 )
         logger.info("Historical warm-up complete: %d bars loaded", seeded)
 
-    def _load_config(self) -> Dict:
-        """Load configuration from JSON file."""
-        if not self.config_path.exists():
-            raise FileNotFoundError(
-                f"Configuration file not found: {self.config_path}\n"
-                f"Create {self.config_path} from kite_config.example.json"
-            )
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        # Kite and Telegram credentials must never be read from the JSON file.
-        config["kite_api_key"] = os.getenv("KITE_API_KEY")
-        config["kite_access_token"] = os.getenv("KITE_ACCESS_TOKEN")
-        config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
-        config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
-        if not config["kite_api_key"] or not config["kite_access_token"]:
-            raise RuntimeError(
-                "KITE_API_KEY and KITE_ACCESS_TOKEN must be set as environment variables."
-            )
-        return config
-
     def on_bar_complete(self, token_str: str, bar: Bar) -> None:
         """Called when a new bar is completed."""
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        self._record_active_option_candle(symbol, bar)
 
         # Check if it's time to exit all positions (3:15 PM)
         if self.intraday_manager.should_exit_all_positions():
@@ -2268,6 +2309,7 @@ class KiteTradingBot:
                     news_context,
                 )
                 return
+            self._capture_eligible_option_candles(symbol, bars)
 
         if self.premarkarket_candidates:
             self.premarkarket_candidates.clear()

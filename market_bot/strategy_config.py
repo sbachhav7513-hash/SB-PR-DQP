@@ -1,4 +1,7 @@
+import hashlib
+import json
 import logging
+from pathlib import Path
 from typing import Dict, Optional
 
 
@@ -33,6 +36,46 @@ LEGACY_PAPER_STRATEGY_KEYS = {
     "paper_entry_cutoff_minutes_before_close": "entry_cutoff_minutes_before_close",
     "paper_extend_option_timebox": "extend_option_timebox",
 }
+
+NON_STRATEGY_CONFIG_KEYS = {
+    "kite_api_key",
+    "kite_access_token",
+    "telegram_token",
+    "telegram_chat_id",
+    "mode",
+    "paper_trading_enabled",
+    "live_orders_enabled",
+    "live_orders_confirmed",
+}
+
+
+def load_strategy_config(path: str | Path) -> Dict:
+    """Load and normalize the shared paper/replay strategy configuration."""
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Strategy configuration file not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"Strategy configuration must be a JSON object: {config_path}"
+        )
+    return normalize_strategy_config(config)
+
+
+def strategy_config_hash(config: Dict) -> str:
+    """Return a stable SHA-256 hash of normalized strategy settings."""
+    strategy_config = normalize_strategy_config(config)
+    for key in NON_STRATEGY_CONFIG_KEYS:
+        strategy_config.pop(key, None)
+    canonical = json.dumps(
+        strategy_config,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def normalize_strategy_config(config: Dict) -> Dict:

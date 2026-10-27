@@ -31,6 +31,7 @@ class BacktestTrade:
     reentry_exit_price: Optional[float] = None
     reentry_pnl_pct: Optional[float] = None
     reentry_outcome: Optional[str] = None
+    config_hash: Optional[str] = None
 
 
 @dataclass

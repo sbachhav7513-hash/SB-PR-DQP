@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -22,6 +23,8 @@ class Bar:
     low: float
     close: float
     volume: int
+    bid: Optional[float] = None
+    ask: Optional[float] = None
 
     def to_dict(self) -> Dict:
         return {
@@ -59,6 +62,8 @@ class BarBuilder:
         previous_volume = self.last_cumulative_volume.get(token)
         volume_delta = 0 if previous_volume is None else max(tick.volume - previous_volume, 0)
         self.last_cumulative_volume[token] = tick.volume
+        bid = self._valid_quote(tick.bid)
+        ask = self._valid_quote(tick.ask)
 
         if token not in self.last_bar_time:
             self.last_bar_time[token] = timestamp
@@ -69,6 +74,8 @@ class BarBuilder:
                 "close": price,
                 "volume": volume_delta,
                 "start_time": timestamp,
+                "bid": bid,
+                "ask": ask,
             }
             return
 
@@ -87,6 +94,8 @@ class BarBuilder:
                     low=completed["low"],
                     close=completed["close"],
                     volume=completed["volume"],
+                    bid=completed.get("bid"),
+                    ask=completed.get("ask"),
                 )
                 self.bars[token].append(bar)
                 
@@ -107,6 +116,8 @@ class BarBuilder:
                 "close": price,
                 "volume": volume_delta,
                 "start_time": bar_end,
+                "bid": bid,
+                "ask": ask,
             }
         else:
             # Update the current bar
@@ -115,6 +126,18 @@ class BarBuilder:
             bar["low"] = min(bar["low"], price)
             bar["close"] = price
             bar["volume"] += volume_delta
+            if bid is not None:
+                bar["bid"] = bid
+            if ask is not None:
+                bar["ask"] = ask
+
+    @staticmethod
+    def _valid_quote(value: object) -> Optional[float]:
+        try:
+            quote = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return quote if quote > 0 and math.isfinite(quote) else None
 
     def _session_bars(self, bars: List[Bar], allow_stale: bool = False) -> List[Bar]:
         """Keep current-session bars, optionally retaining bars for seed storage."""
