@@ -796,3 +796,13 @@ Outcome / follow-up / rollback:
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the implementation, evidence, validation, and forward evaluation criteria.
 - Validation and result: `python -m pytest -q -p no:cacheprovider tests\test_strategy.py tests\test_kite_provider.py tests\test_intraday_manager.py tests\test_paper_reporting.py` passed (182 passed, 1 skipped); Pylance syntax checks passed for all changed Python files; active/example JSON parsed with support enabled only in the paper config and live orders disabled; `git diff --check` passed. The detector replay is diagnostic only and has no executable quote/backtest result.
 - Outcome / follow-up: Keep as a reversible, paper-only trial. Standard ₹12 premium quality floor, fresh quote, volume and available OI/IV, expiry, accuracy, sizing, stop, ₹1,000 per-trade risk, daily-loss, and loss-circuit controls remain in effect. Do not infer profitability from the Oct 23 candle highs; review candidate/rejection counts and at least 10 closed trades with costs before deciding to retain or revert. The example config remains disabled and live orders stay off.
+
+#### DLY-2026-10-26-02
+
+- Reason: Complete a forensic review of the October 26 paper session, including the first observed support/reversal trade.
+- Related entries checked: `DLY-2026-10-25-01` through `DLY-2026-10-25-03` and `DLY-2026-10-26-01`; see `EXP-2026-10-26-01` for the support/reversal trial.
+- Files:
+  - `FORENSIC_REVIEW_2026-10-26.md` (added): Reconciles the 7-trade ledger, 10,623 decision rows, active/prior config, and one-minute underlying/option candles; records market proxies, loss causes, filter counts, scenario limits, and recommendations.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record the deliverable and the first support/reversal outcome without changing strategy settings.
+- Validation and result: Reconciled the trade P&L, win/loss counts, profit factor, and realized drawdown to `trades.parquet`; checked all 7 exact option symbols against available minute bars and computed underlying-context indicators from the supplied one-minute candles. `git diff --check` passed.
+- Limitations and outcome: Gross paper P&L was +INR 1,324.75 on 7 trades (2 wins, 4 losses, 1 flat); costs are not recorded. Only 5 recent bars are stored per populated decision-history row, and rejected candidates have no matched exits, so the requested full what-if/filter attribution is not identifiable. No strategy/configuration change or performance-improvement claim was made; continue the support/reversal evaluation paper-only and require the planned sample before judging it.
