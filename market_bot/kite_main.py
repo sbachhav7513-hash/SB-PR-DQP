@@ -702,6 +702,9 @@ class KiteTradingBot:
                 options_underlyings=self.config.get("options_underlyings", []),
                 option_expiry_days=self.config.get("option_expiry_days", 14),
                 option_expiry_mode=self.config.get("option_expiry_mode", "nearest"),
+                avoid_option_expiry_day=self.config.get(
+                    "avoid_option_expiry_day", True
+                ),
                 option_strike_step=self.config.get("option_strike_step", {}),
                 min_options_volume=self.config.get("min_options_volume", 0),
             ),

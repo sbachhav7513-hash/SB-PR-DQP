@@ -96,6 +96,135 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
 
 
+def test_nearest_options_skip_expiry_day_when_expiry_risk_is_enabled():
+    kite = Mock()
+    today = date.today()
+    instruments = []
+    for expiry, token_base in ((today, 200), (today + timedelta(days=7), 300)):
+        for offset, option_type in enumerate(("CE", "PE")):
+            instruments.append(
+                {
+                    "name": "NIFTY",
+                    "tradingsymbol": f"NIFTY{expiry:%d}25000{option_type}",
+                    "instrument_type": option_type,
+                    "expiry": expiry,
+                    "strike": 25000,
+                    "instrument_token": token_base + offset,
+                    "lot_size": 65,
+                }
+            )
+    kite.instruments.return_value = instruments
+    kite.ltp.side_effect = [
+        {"100": {"last_price": 25010.0}},
+        {"300": {"last_price": 120.0}, "301": {"last_price": 110.0}},
+    ]
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_expiry_days=14,
+                option_expiry_mode="nearest",
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {
+        "NIFTY": 100,
+        "NIFTY_CE": 300,
+        "NIFTY_PE": 301,
+    }
+    assert set(stream.contract_expiries.values()) == {today + timedelta(days=7)}
+
+
+def test_nearest_options_keep_expiry_day_when_risk_gate_is_disabled():
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25000{option_type}",
+            "instrument_type": option_type,
+            "expiry": today,
+            "strike": 25000,
+            "instrument_token": token,
+            "lot_size": 65,
+        }
+        for option_type, token in (("CE", 200), ("PE", 201))
+    ]
+    kite.ltp.side_effect = [
+        {"100": {"last_price": 25010.0}},
+        {"200": {"last_price": 120.0}, "201": {"last_price": 110.0}},
+    ]
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_expiry_days=14,
+                option_expiry_mode="nearest",
+                avoid_option_expiry_day=False,
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {
+        "NIFTY": 100,
+        "NIFTY_CE": 200,
+        "NIFTY_PE": 201,
+    }
+    assert set(stream.contract_expiries.values()) == {today}
+
+
+def test_nearest_options_fail_when_only_expiry_day_contracts_are_available():
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25000{option_type}",
+            "instrument_type": option_type,
+            "expiry": today,
+            "strike": 25000,
+            "instrument_token": token,
+            "lot_size": 65,
+        }
+        for option_type, token in (("CE", 200), ("PE", 201))
+    ]
+    kite.ltp.return_value = {"100": {"last_price": 25010.0}}
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_expiry_days=14,
+                option_expiry_mode="nearest",
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="after today"):
+        stream.refresh_instrument_tokens()
+
+
 def test_options_lookahead_includes_expiry_at_calendar_month_end():
     kite = Mock()
     today = date.today()

@@ -33,7 +33,7 @@
   "risk_per_trade_pct": 1.0,
   "max_risk_per_trade": 1000.0,
   "daily_max_loss_pct": 10.0,
-  "late_window_enabled": true,
+  "late_window_enabled": false,
   "late_window_start": "12:00",
   "late_window_end": "13:00",
   "futures_underlyings": [],

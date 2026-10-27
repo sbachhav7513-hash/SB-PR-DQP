@@ -34,7 +34,7 @@
   "option_min_candle_body_ratio": 0.60,
   "live_orders_confirmed": false,
   "market_close_time": "15:15",
-  "late_window_enabled": true,
+  "late_window_enabled": false,
   "late_window_start": "12:00",
   "late_window_end": "13:00",
   "account_size": 100000,
