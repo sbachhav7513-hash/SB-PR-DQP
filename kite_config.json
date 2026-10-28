@@ -41,7 +41,7 @@
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
     "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
   ],
-  "option_expiry_days": 21,
+  "option_expiry_days": 35,
   "option_expiry_mode": "nearest",
   "option_strike_step": {
     "NIFTY": 50,
