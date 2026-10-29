@@ -25,6 +25,21 @@ def test_legacy_paper_strategy_values_become_shared_without_mutating_input(caplo
     assert "using the former paper strategy value" in caplog.text
 
 
+def test_paper_and_shared_adaptive_trail_gap_config_keys_are_equal():
+    shared_config = normalize_strategy_config(
+        {"option_adaptive_trail_gap_r": 1.0}
+    )
+    paper_config = normalize_strategy_config(
+        {"paper_option_adaptive_trail_gap_r": 1.0}
+    )
+
+    assert (
+        shared_config["option_adaptive_trail_gap_r"]
+        == paper_config["option_adaptive_trail_gap_r"]
+        == 1.0
+    )
+
+
 def test_shared_config_loader_normalizes_and_hash_excludes_credentials(tmp_path):
     config_path = tmp_path / "kite_config.json"
     config_path.write_text(

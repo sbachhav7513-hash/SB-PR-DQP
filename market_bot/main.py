@@ -1,3 +1,4 @@
+import logging
 import requests
 import sys
 import time
@@ -5,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from .config import BotConfig
+from .change_tracking import log_startup_identity
 from .data_provider import MarketDataProvider
 from .engine import market_session_label, market_session_state, score_market
 from .live_feed import LiveMarketFeed
@@ -70,6 +72,10 @@ def record_decision(
 
 
 def run_bot(config: BotConfig) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s: %(message)s",
+    )
     provider = MarketDataProvider()
     feed = LiveMarketFeed(provider)
     bot = TelegramNotifier(
@@ -77,11 +83,20 @@ def run_bot(config: BotConfig) -> None:
         chat_id=config.telegram_chat_id,
     )
     config_hash = strategy_config_hash(asdict(config))
+    git_identity = log_startup_identity(config_hash)
     journal = TradeJournal(
-        "trades.jsonl", "paper_trading_data", config_hash=config_hash
+        "trades.jsonl",
+        "paper_trading_data",
+        config_hash=config_hash,
+        git_sha=git_identity.sha,
+        git_dirty=git_identity.dirty,
     )
     decisions = DecisionJournal(
-        "decision_log.jsonl", "paper_trading_data", config_hash=config_hash
+        "decision_log.jsonl",
+        "paper_trading_data",
+        config_hash=config_hash,
+        git_sha=git_identity.sha,
+        git_dirty=git_identity.dirty,
     )
     print_header(config)
     publish_reports()

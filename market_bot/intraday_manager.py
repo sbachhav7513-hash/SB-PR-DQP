@@ -511,7 +511,7 @@ class IntradayManager:
                 1.0
                 if adaptive_trail_activation_r is None
                 else float(adaptive_trail_activation_r),
-                0.5
+                1.0
                 if adaptive_trail_gap_r is None
                 else float(adaptive_trail_gap_r),
                 2.0

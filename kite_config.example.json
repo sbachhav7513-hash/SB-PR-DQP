@@ -24,7 +24,7 @@
   "option_adaptive_exit_enabled": true,
   "option_adaptive_breakeven_r": 0.5,
   "option_adaptive_trail_activation_r": 1.0,
-  "option_adaptive_trail_gap_r": 0.5,
+  "option_adaptive_trail_gap_r": 1.0,
   "option_adaptive_runner_activation_r": 2.0,
   "option_adaptive_runner_gap_r": 1.0,
   "max_risk_per_trade": 1000.0,

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from .accuracy_filters import AccuracyFilters
 from .bar_builder import BarBuilder, Bar
+from .change_tracking import log_startup_identity
 from .engine import (
     SupportResistanceReversal,
     aggregate_ohlcv_bars,
@@ -133,7 +134,7 @@ class KiteTradingBot:
         values = (
             float(self.config.get("option_adaptive_breakeven_r", 0.5)),
             float(self.config.get("option_adaptive_trail_activation_r", 1.0)),
-            float(self.config.get("option_adaptive_trail_gap_r", 0.5)),
+            float(self.config.get("option_adaptive_trail_gap_r", 1.0)),
             float(self.config.get("option_adaptive_runner_activation_r", 2.0)),
             float(self.config.get("option_adaptive_runner_gap_r", 1.0)),
         )
@@ -749,11 +750,12 @@ class KiteTradingBot:
         self.entry_mode = str(self.config.get("entry_mode", "immediate")).strip().lower()
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
+        self.config_hash = strategy_config_hash(self.config)
+        self.git_identity = log_startup_identity(self.config_hash)
         if not self.config["kite_api_key"] or not self.config["kite_access_token"]:
             raise RuntimeError(
                 "KITE_API_KEY and KITE_ACCESS_TOKEN must be set as environment variables."
             )
-        self.config_hash = strategy_config_hash(self.config)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.entry_mode == "confirmed" and self.mode != "PAPER":
             raise ValueError("entry_mode=confirmed is available only in PAPER mode")
@@ -865,12 +867,18 @@ class KiteTradingBot:
             chat_id=self.config.get("telegram_chat_id"),
         )
         self.trade_journal = TradeJournal(
-            "trades.jsonl", self.paper_trading_dir, config_hash=self.config_hash
+            "trades.jsonl",
+            self.paper_trading_dir,
+            config_hash=self.config_hash,
+            git_sha=self.git_identity.sha,
+            git_dirty=self.git_identity.dirty,
         )
         self.paper_shadow_exit_journal = (
             PaperShadowExitJournal(
                 str(Path(self.paper_trading_dir) / "shadow_runner_1r.jsonl"),
                 config_hash=self.config_hash,
+                git_sha=self.git_identity.sha,
+                git_dirty=self.git_identity.dirty,
             )
             if self.paper_trading_enabled and not self.live_orders_enabled
             else None
@@ -894,6 +902,8 @@ class KiteTradingBot:
             self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
             config_hash=self.config_hash,
+            git_sha=self.git_identity.sha,
+            git_dirty=self.git_identity.dirty,
         )
         self._pending_entries: Dict[tuple[str, str], dict] = {}
         self._expire_unfinished_confirmed_entries()

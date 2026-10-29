@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from fastparquet import ParquetFile, write as write_parquet
 
+from .change_tracking import get_git_identity
+
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -85,7 +87,8 @@ class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
     TRADE_COLUMNS = [
-        "trade_id", "timestamp", "config_hash", "ticker", "trading_symbol",
+        "trade_id", "timestamp", "config_hash", "git_sha", "git_dirty",
+        "ticker", "trading_symbol",
         "contract_id",
         "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
@@ -158,7 +161,8 @@ class PaperTradingRecorder:
         "reentry_outcome",
     ]
     DECISION_COLUMNS = [
-        "timestamp", "config_hash", "ticker", "contract_id", "signal", "outcome", "score", "reasons",
+        "timestamp", "config_hash", "git_sha", "git_dirty",
+        "ticker", "contract_id", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
@@ -180,8 +184,29 @@ class PaperTradingRecorder:
         "ema_fast_value", "ema_slow_value",
     ]
 
-    def __init__(self, root: str = "paper_trading_data") -> None:
+    def __init__(
+        self,
+        root: str = "paper_trading_data",
+        config_hash: Optional[str] = None,
+        git_sha: Optional[str] = None,
+        git_dirty: Optional[bool] = None,
+    ) -> None:
         self.root = Path(root)
+        if git_sha is None or git_dirty is None:
+            identity = get_git_identity()
+            git_sha = git_sha or identity.sha
+            git_dirty = git_dirty if git_dirty is not None else identity.dirty
+        self.config_hash = config_hash
+        self.git_sha = git_sha
+        self.git_dirty = git_dirty
+
+    def _stamp_identity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        entry = dict(payload)
+        if self.config_hash is not None:
+            entry.setdefault("config_hash", self.config_hash)
+        entry.setdefault("git_sha", self.git_sha)
+        entry.setdefault("git_dirty", self.git_dirty)
+        return entry
 
     @staticmethod
     def _event_datetime(value: Any) -> datetime:
@@ -247,26 +272,28 @@ class PaperTradingRecorder:
         write_parquet(path, frame, compression="SNAPPY", append=path.exists())
 
     def record_decision(self, payload: Dict[str, Any]) -> None:
-        timestamp = payload.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        self._append(self._day_path(timestamp, "decisions.parquet"), payload, self.DECISION_COLUMNS)
+        entry = self._stamp_identity(payload)
+        timestamp = entry.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self._append(self._day_path(timestamp, "decisions.parquet"), entry, self.DECISION_COLUMNS)
 
     def record_trade(self, payload: Dict[str, Any]) -> None:
-        timestamp = payload.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        entry = self._stamp_identity(payload)
+        timestamp = entry.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         path = self._day_path(timestamp, "trades.parquet")
         rows = self._read_parquet(path)
-        trade_id = str(payload.get("trade_id", ""))
+        trade_id = str(entry.get("trade_id", ""))
         updated = False
         for index, row in enumerate(rows):
             if trade_id and row.get("trade_id") == trade_id:
                 rows[index] = {
-                    column: self._parquet_value(payload.get(column))
+                    column: self._parquet_value(entry.get(column))
                     for column in self.TRADE_COLUMNS
                 }
                 updated = True
                 break
         if not updated:
             rows.append({
-                column: self._parquet_value(payload.get(column))
+                column: self._parquet_value(entry.get(column))
                 for column in self.TRADE_COLUMNS
             })
         self._write_parquet(path, rows, self.TRADE_COLUMNS)
@@ -282,17 +309,33 @@ class DecisionJournal:
         path: str = "decision_log.jsonl",
         paper_data_dir: Optional[str] = None,
         config_hash: Optional[str] = None,
+        git_sha: Optional[str] = None,
+        git_dirty: Optional[bool] = None,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.paper_recorder = PaperTradingRecorder(paper_data_dir) if paper_data_dir else None
         self.config_hash = config_hash
+        if git_sha is None or git_dirty is None:
+            identity = get_git_identity()
+            git_sha = git_sha or identity.sha
+            git_dirty = git_dirty if git_dirty is not None else identity.dirty
+        self.git_sha = git_sha
+        self.git_dirty = git_dirty
+        self.paper_recorder = (
+            PaperTradingRecorder(
+                paper_data_dir, config_hash, self.git_sha, self.git_dirty
+            )
+            if paper_data_dir
+            else None
+        )
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
         entry.setdefault("contract_id", "")
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
+        entry.setdefault("git_sha", self.git_sha)
+        entry.setdefault("git_dirty", self.git_dirty)
         history = entry.get("history")
         if isinstance(history, list) and len(history) > self.MAX_HISTORY_BARS:
             entry["history"] = history[-self.MAX_HISTORY_BARS:]
@@ -346,10 +389,22 @@ class DecisionJournal:
 class PaperShadowExitJournal:
     """Persist snapshots of independent paper exit experiments."""
 
-    def __init__(self, path: str, config_hash: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        path: str,
+        config_hash: Optional[str] = None,
+        git_sha: Optional[str] = None,
+        git_dirty: Optional[bool] = None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.config_hash = config_hash
+        if git_sha is None or git_dirty is None:
+            identity = get_git_identity()
+            git_sha = git_sha or identity.sha
+            git_dirty = git_dirty if git_dirty is not None else identity.dirty
+        self.git_sha = git_sha
+        self.git_dirty = git_dirty
         self.latest: Dict[str, Dict[str, Any]] = {}
         if not self.path.exists():
             return
@@ -370,6 +425,8 @@ class PaperShadowExitJournal:
     def _append(self, record: Dict[str, Any]) -> None:
         if self.config_hash is not None:
             record.setdefault("config_hash", self.config_hash)
+        record.setdefault("git_sha", self.git_sha)
+        record.setdefault("git_dirty", self.git_dirty)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, default=str) + "\n")
         self.latest[str(record["trade_id"])] = dict(record)
@@ -378,6 +435,8 @@ class PaperShadowExitJournal:
         entry = dict(record)
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
+        entry.setdefault("git_sha", self.git_sha)
+        entry.setdefault("git_dirty", self.git_dirty)
         entry["status"] = "open"
         entry["event"] = "opened"
         self._append(entry)
@@ -429,11 +488,25 @@ class TradeJournal:
         path: str = "trades.jsonl",
         paper_data_dir: Optional[str] = None,
         config_hash: Optional[str] = None,
+        git_sha: Optional[str] = None,
+        git_dirty: Optional[bool] = None,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.paper_recorder = PaperTradingRecorder(paper_data_dir) if paper_data_dir else None
         self.config_hash = config_hash
+        if git_sha is None or git_dirty is None:
+            identity = get_git_identity()
+            git_sha = git_sha or identity.sha
+            git_dirty = git_dirty if git_dirty is not None else identity.dirty
+        self.git_sha = git_sha
+        self.git_dirty = git_dirty
+        self.paper_recorder = (
+            PaperTradingRecorder(
+                paper_data_dir, config_hash, self.git_sha, self.git_dirty
+            )
+            if paper_data_dir
+            else None
+        )
         self._last_paper_mark_at: Dict[str, Optional[datetime]] = {}
 
     def _write_trades(self, trades: List[Dict[str, Any]]) -> None:
@@ -441,14 +514,16 @@ class TradeJournal:
             for trade in trades:
                 handle.write(json.dumps(trade, default=str) + "\n")
 
-    def _stamp_config_hash(self, trade: Dict[str, Any]) -> None:
+    def _stamp_trade_identity(self, trade: Dict[str, Any]) -> None:
         if self.config_hash is not None:
             trade.setdefault("config_hash", self.config_hash)
+        trade.setdefault("git_sha", self.git_sha)
+        trade.setdefault("git_dirty", self.git_dirty)
 
     def log_trade(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
         entry.setdefault("contract_id", "")
-        self._stamp_config_hash(entry)
+        self._stamp_trade_identity(entry)
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
@@ -511,7 +586,7 @@ class TradeJournal:
             if action and trade_action != action.upper():
                 continue
 
-            self._stamp_config_hash(trade)
+            self._stamp_trade_identity(trade)
             try:
                 previous_update = datetime.fromisoformat(
                     str(trade.get("updated_at", "")).replace("Z", "+00:00")
@@ -551,7 +626,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
-            self._stamp_config_hash(trade)
+            self._stamp_trade_identity(trade)
 
             entry_price = float(trade.get("entry", 0.0))
             stop_loss = float(trade.get("stop_loss", 0.0))
@@ -635,7 +710,7 @@ class TradeJournal:
             if action and trade_action != action.upper():
                 continue
 
-            self._stamp_config_hash(trade)
+            self._stamp_trade_identity(trade)
             entry_price = float(trade.get("entry", 0.0))
             if trade_action == "BUY":
                 pnl = exit_price - entry_price
@@ -670,7 +745,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
-            self._stamp_config_hash(trade)
+            self._stamp_trade_identity(trade)
             trade.update(fields)
             self._write_trades(trades)
             if self.paper_recorder:
@@ -688,7 +763,7 @@ class TradeJournal:
                 continue
             if action and trade.get("action") != action:
                 continue
-            self._stamp_config_hash(trade)
+            self._stamp_trade_identity(trade)
             trade.update(fields)
             self._write_trades(trades)
             if self.paper_recorder:
