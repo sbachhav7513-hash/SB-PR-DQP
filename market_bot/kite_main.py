@@ -42,6 +42,7 @@ from .strategy_config import (
     resolve_execution_mode,
     strategy_config_hash,
 )
+from .strategy import ema
 from .telegram_notifier import TelegramNotifier
 from .trade_journal import DecisionJournal, PaperShadowExitJournal, TradeJournal
 from .weekly_report import (
@@ -745,12 +746,17 @@ class KiteTradingBot:
         self.config["kite_access_token"] = os.getenv("KITE_ACCESS_TOKEN")
         self.config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
         self.config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
+        self.entry_mode = str(self.config.get("entry_mode", "immediate")).strip().lower()
+        if self.entry_mode not in {"immediate", "confirmed"}:
+            raise ValueError("entry_mode must be immediate or confirmed")
         if not self.config["kite_api_key"] or not self.config["kite_access_token"]:
             raise RuntimeError(
                 "KITE_API_KEY and KITE_ACCESS_TOKEN must be set as environment variables."
             )
         self.config_hash = strategy_config_hash(self.config)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
+        if self.entry_mode == "confirmed" and self.mode != "PAPER":
+            raise ValueError("entry_mode=confirmed is available only in PAPER mode")
         self.config.pop("paper_trading_enabled", None)
         self.config.pop("live_orders_enabled", None)
         self.paper_trading_enabled = self.mode == "PAPER"
@@ -768,6 +774,16 @@ class KiteTradingBot:
             "intraday_options",
             "intraday_both",
         }
+        if (
+            self.entry_mode == "confirmed"
+            and options_mode
+            and int(self.config.get("bar_interval_seconds", 60)) != 60
+        ):
+            raise ValueError("entry_mode=confirmed requires 1-minute bars")
+        if self.entry_mode == "confirmed" and not options_mode:
+            raise ValueError(
+                "entry_mode=confirmed requires intraday_options or intraday_both"
+            )
         if options_mode:
             option_risk_pct = float(
                 self.config.get("option_max_risk_per_lot_pct", MAX_TRADE_RISK_PCT)
@@ -879,6 +895,8 @@ class KiteTradingBot:
             self.paper_trading_dir,
             config_hash=self.config_hash,
         )
+        self._pending_entries: Dict[tuple[str, str], dict] = {}
+        self._expire_unfinished_confirmed_entries()
         for symbol, state in self._ema_reentry_states.items():
             if state.get("status") == "expired":
                 self._log_ema_reentry_event(
@@ -1771,10 +1789,16 @@ class KiteTradingBot:
         signal: str,
         score: Optional[int] = None,
         minimum_premium_override: Optional[float] = None,
+        now: Optional[datetime] = None,
     ) -> tuple[bool, str]:
         """Require a fresh option quote and enforce contract-quality limits."""
         if not self._options_enabled():
             return True, "OK"
+        now = now or datetime.now(IST)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=IST)
+        else:
+            now = now.astimezone(IST)
 
         quote_data = getattr(self, "option_quote_cache", {}).get(symbol, {})
         if not quote_data:
@@ -1793,7 +1817,7 @@ class KiteTradingBot:
             return False, "invalid option quote age setting"
         if not math.isfinite(max_quote_age) or max_quote_age <= 0:
             return False, "invalid option quote age setting"
-        quote_age = (datetime.now(IST) - quote_timestamp).total_seconds()
+        quote_age = (now - quote_timestamp).total_seconds()
         if quote_age < 0 or quote_age > max_quote_age:
             return False, f"option quote stale: {quote_age:.1f}s"
 
@@ -1802,7 +1826,7 @@ class KiteTradingBot:
         if (
             expiry is not None
             and self.config.get("avoid_option_expiry_day", True)
-            and expiry <= datetime.now(IST).date()
+            and expiry <= now.date()
         ):
             return False, "option expiry-day risk"
 
@@ -1898,7 +1922,12 @@ class KiteTradingBot:
         return f"{exchange}:{trading_symbol}"
 
     def _capture_eligible_option_candles(
-        self, symbol: str, bars: list[Bar]
+        self,
+        symbol: str,
+        bars: list[Bar],
+        *,
+        signal_time: Optional[datetime] = None,
+        contract_id: Optional[str] = None,
     ) -> None:
         if not self._options_enabled() or not symbol.endswith(("_CE", "_PE")):
             return
@@ -1914,7 +1943,10 @@ class KiteTradingBot:
             return
         try:
             recorder.capture_eligible(
-                symbol, bars, datetime.now(IST), self._contract_id(symbol)
+                symbol,
+                bars,
+                signal_time or datetime.now(IST),
+                contract_id if contract_id is not None else self._contract_id(symbol),
             )
         except OSError:
             logger.exception(
@@ -1934,6 +1966,633 @@ class KiteTradingBot:
             recorder.record_active(symbol, bar, self._contract_id(symbol))
         except OSError:
             logger.exception("[%s] Could not persist option candle", symbol)
+
+    def _log_entry_confirmation_event(
+        self, pending: dict, event: str, timestamp: datetime, **fields
+    ) -> None:
+        journal = getattr(self, "decision_journal", None)
+        if journal is None:
+            logger.error(
+                "[%s] Cannot journal confirmed-entry event %s",
+                pending.get("symbol"),
+                event,
+            )
+            return
+        payload = {
+            "timestamp": timestamp.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": event,
+            "signal_id": pending["signal_id"],
+            "ticker": pending["symbol"],
+            "contract_id": pending["contract_id"],
+            "signal": pending["signal"],
+            "score": pending["score"],
+            "route": pending["route"],
+            "entry_mode": "confirmed",
+            "signal_time": pending["signal_time"].isoformat(),
+            "signal_close": pending["signal_close"],
+            "signal_bar": pending["signal_bar"],
+            "signal_premium": pending["signal_premium"],
+            "signal_bid": pending["signal_bid"],
+            "signal_ask": pending["signal_ask"],
+            "signal_ltp": pending["signal_ltp"],
+            "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
+            "reasons": pending["reasons"],
+            "support_resistance_level": pending["support_resistance_level"],
+            "support_resistance_touches": pending["support_resistance_touches"],
+            "ema_fast_value": pending["ema_fast_value"],
+            "ema_slow_value": pending["ema_slow_value"],
+            **fields,
+        }
+        journal.log_decision(payload)
+
+    def _expire_unfinished_confirmed_entries(self) -> None:
+        """Log in-memory pending signals left unfinished by the prior process."""
+        journal = getattr(self, "decision_journal", None)
+        path = getattr(journal, "path", None)
+        if path is None or not path.exists():
+            return
+
+        pending_signals: Dict[str, dict] = {}
+        terminal_events = {
+            "confirmed_trade",
+            "rejected_by_confirmation",
+            "filter_failed_after_confirmation",
+            "expired_signal",
+            "confirmation_error",
+        }
+        try:
+            with path.open("r", encoding="utf-8") as source:
+                for line_number, line in enumerate(source, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping invalid decision journal line %s during "
+                            "pending-entry recovery",
+                            line_number,
+                        )
+                        continue
+                    signal_id = record.get("signal_id")
+                    event = record.get("confirmation_event")
+                    if not signal_id or not event:
+                        continue
+                    if event == "signal_generated":
+                        pending_signals[str(signal_id)] = record
+                    elif event in terminal_events:
+                        pending_signals.pop(str(signal_id), None)
+        except OSError:
+            logger.exception("Could not inspect pending-entry journal on startup")
+            return
+
+        now = datetime.now(IST)
+        for record in pending_signals.values():
+            signal_time = self._journal_datetime(record.get("signal_time"))
+            if signal_time is None:
+                logger.error(
+                    "Cannot expire prior confirmed-entry signal with invalid time: %s",
+                    record.get("signal_id"),
+                )
+                continue
+            pending = {
+                **record,
+                "symbol": str(record.get("ticker", "")),
+                "contract_id": str(record.get("contract_id", "")),
+                "signal": str(record.get("signal", "")),
+                "score": int(record.get("score") or 0),
+                "route": str(record.get("route", "scored")),
+                "signal_id": str(record["signal_id"]),
+                "signal_time": signal_time,
+                "signal_close": record.get("signal_close"),
+                "signal_bar": record.get("signal_bar", {}),
+                "signal_premium": record.get("signal_premium"),
+                "signal_bid": record.get("signal_bid"),
+                "signal_ask": record.get("signal_ask"),
+                "signal_ltp": record.get("signal_ltp"),
+                "signal_quote_age_seconds": record.get("signal_quote_age_seconds"),
+                "reasons": record.get("reasons", []),
+                "support_resistance_level": record.get(
+                    "support_resistance_level"
+                ),
+                "support_resistance_touches": record.get(
+                    "support_resistance_touches"
+                ),
+                "ema_fast_value": record.get("ema_fast_value"),
+                "ema_slow_value": record.get("ema_slow_value"),
+            }
+            self._log_entry_confirmation_event(
+                pending,
+                "expired_signal",
+                now,
+                cancellation_reason="expired_signal",
+                cancellation_sub_reason="restart",
+            )
+
+    def _queue_confirmed_entry(
+        self,
+        *,
+        symbol: str,
+        score: int,
+        signal: str,
+        strategy_variant: Optional[str],
+        signal_bars: list[Bar],
+        history: list[dict],
+        reasons: list[str],
+        support_candidate: Optional[SupportResistanceReversal],
+        now: datetime,
+    ) -> str:
+        leg = "CE" if symbol.endswith("_CE") else "PE"
+        key = (symbol, leg)
+        existing = getattr(self, "_pending_entries", {}).get(key)
+        if existing is not None:
+            self._log_entry_confirmation_event(
+                existing,
+                "signal_ignored_pending",
+                now,
+                ignored_signal_time=signal_bars[-1].timestamp.isoformat(),
+                ignored_score=score,
+            )
+            return "signal_ignored_pending"
+        if not signal_bars:
+            logger.error("[%s] Cannot queue confirmed entry without a signal bar", symbol)
+            return "signal_missing_bar"
+
+        signal_bar = signal_bars[-1]
+        signal_time = self._journal_datetime(signal_bar.timestamp)
+        if signal_time is None:
+            logger.error("[%s] Cannot queue confirmed entry with invalid bar time", symbol)
+            return "signal_invalid_time"
+        closes = [float(item["close"]) for item in history if "close" in item]
+        fast_values = ema(closes, int(self.config.get("ema_fast", 9)))
+        slow_values = ema(closes, int(self.config.get("ema_slow", 21)))
+        quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        quote_metrics = self._option_quote_metrics(quote, now=now)
+        contract_id = self._contract_id(symbol)
+        signal_id = f"{symbol}|{leg}|{signal_time.isoformat()}"
+        support_route = strategy_variant == "paper_underlying_support_reversal"
+        signal_bar_payload = signal_bar.to_dict()
+        signal_bar_payload["time"] = signal_time
+        pending = {
+            "signal_id": signal_id,
+            "symbol": symbol,
+            "underlying": symbol.rsplit("_", 1)[0].upper(),
+            "leg": leg,
+            "signal": signal,
+            "score": int(score),
+            "route": "support_reversal" if support_route else "scored",
+            "strategy_variant": strategy_variant,
+            "signal_time": signal_time,
+            "signal_bar": signal_bar_payload,
+            "signal_close": float(signal_bar.close),
+            "signal_bars": [item.to_dict() for item in signal_bars],
+            "history": list(history),
+            "reasons": list(reasons),
+            "contract_id": contract_id,
+            "signal_premium": quote_metrics["ltp"],
+            "signal_bid": quote_metrics["bid"],
+            "signal_ask": quote_metrics["ask"],
+            "signal_ltp": quote_metrics["ltp"],
+            "signal_quote_age_seconds": quote_metrics["age_seconds"],
+            "support_resistance_level": (
+                support_candidate.level if support_route and support_candidate else None
+            ),
+            "support_resistance_touches": (
+                support_candidate.touches if support_route and support_candidate else None
+            ),
+            "support_resistance_time": (
+                support_candidate.bar_time
+                if support_route and support_candidate
+                else None
+            ),
+            "ema_fast_value": fast_values[-1] if fast_values else None,
+            "ema_slow_value": slow_values[-1] if slow_values else None,
+            "minimum_signal_score": self._entry_score_floor(),
+            "minimum_premium_override": (
+                self.config.get("support_reversal_min_premium", 5.0)
+                if support_route
+                else None
+            ),
+            "confirmation_start": signal_time + timedelta(minutes=1),
+        }
+        self._capture_eligible_option_candles(
+            symbol,
+            getattr(self, "bar_builder", None).get_bars(
+                self.config["instrument_tokens"].get(symbol), limit=50
+            )
+            if getattr(self, "bar_builder", None)
+            and self.config.get("instrument_tokens", {}).get(symbol) is not None
+            else [],
+            signal_time=signal_time,
+            contract_id=contract_id,
+        )
+        self._pending_entries[key] = pending
+        self._log_entry_confirmation_event(
+            pending,
+            "signal_generated",
+            now,
+            confirmation_result="pending",
+        )
+        logger.info(
+            "[%s] Pending confirmed entry queued: leg=%s score=%s signal_bar_start=%s "
+            "contract=%s",
+            symbol,
+            leg,
+            score,
+            signal_time.isoformat(),
+            contract_id,
+        )
+        return "entry_pending_confirmation"
+
+    def _cancel_confirmed_entry(
+        self,
+        key: tuple[str, str],
+        pending: dict,
+        now: datetime,
+        *,
+        reason: str,
+        sub_reason: Optional[str] = None,
+        confirmation_bar: Optional[Bar] = None,
+        confirmation_close: Optional[float] = None,
+        confirmation_result: Optional[str] = None,
+        confirmation_quote: Optional[dict] = None,
+    ) -> None:
+        metrics = self._option_quote_metrics(
+            confirmation_quote
+            if confirmation_quote is not None
+            else getattr(self, "option_quote_cache", {}).get(pending["symbol"], {}),
+            now=now,
+        )
+        event = (
+            "rejected_by_confirmation"
+            if reason.startswith("confirmation_failed_")
+            else "expired_signal"
+            if reason == "expired_signal"
+            else "filter_failed_after_confirmation"
+            if reason == "filter_failed_after_confirmation"
+            else "confirmation_error"
+        )
+        confirmation_bar_time = (
+            self._journal_datetime(confirmation_bar.timestamp)
+            if confirmation_bar is not None
+            else None
+        )
+        self._pending_entries.pop(key, None)
+        self._log_entry_confirmation_event(
+            pending,
+            event,
+            now,
+            confirmation_candle_time=(
+                confirmation_bar_time.isoformat()
+                if confirmation_bar_time is not None
+                else None
+            ),
+            confirmation_close=confirmation_close,
+            confirmation_result=confirmation_result or "cancelled",
+            confirmation_bid=metrics["bid"],
+            confirmation_ask=metrics["ask"],
+            confirmation_ltp=metrics["ltp"],
+            confirmation_quote_age_seconds=metrics["age_seconds"],
+            cancellation_reason=reason,
+            cancellation_sub_reason=sub_reason,
+        )
+
+    def _confirmed_entry_filter_failure(
+        self, pending: dict, now: datetime
+    ) -> Optional[str]:
+        symbol = pending["symbol"]
+        if now.time() >= datetime.strptime("14:45", "%H:%M").time():
+            return "cutoff"
+        if market_session_state([], now=now) != "REGULAR_SESSION":
+            return "filter"
+        if self._late_window_blocked(now):
+            return "filter"
+
+        if self._contract_id(symbol) != pending["contract_id"] or not pending[
+            "contract_id"
+        ]:
+            return "instrument"
+        stream = getattr(self, "kite_stream", None)
+        if (
+            stream is None
+            or symbol not in getattr(stream, "contract_symbols", {})
+            or symbol not in self.config.get("instrument_tokens", {})
+            or not self._option_leg_is_active(symbol, pending["signal"])
+        ):
+            return "instrument"
+
+        quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        metrics = self._option_quote_metrics(quote, now=now)
+        if not metrics["valid"] or metrics["ask"] is None:
+            return "stale_quote"
+
+        signal_bars = pending["signal_bars"]
+        if len(signal_bars) < 2:
+            return "filter"
+        current_bar = pending["signal_bar"]
+        previous_bar = signal_bars[-2]
+        allowed, reason = self.accuracy_filters.validate_entry_with_reason(
+            symbol=symbol,
+            signal=pending["signal"],
+            score=pending["score"],
+            history=pending["history"],
+            current_bar=current_bar,
+            previous_bar=previous_bar,
+            current_time=now.timestamp(),
+            hour=now.hour,
+            minute=now.minute,
+            record_entry=False,
+            min_score=pending["minimum_signal_score"],
+        )
+        if not allowed:
+            return "filter"
+        if not self._has_option_candle_momentum(
+            pending["signal"],
+            current_bar,
+            minimum_body_ratio=(
+                float(self.config.get("support_reversal_min_candle_body_ratio", 0.20))
+                if pending["route"] == "support_reversal"
+                else self._option_candle_min_body_ratio()
+            ),
+        ):
+            return "filter"
+        allowed, _ = self._option_quality_gate(
+            symbol,
+            pending["signal"],
+            pending["score"],
+            minimum_premium_override=pending["minimum_premium_override"],
+            now=now,
+        )
+        if not allowed:
+            return "premium"
+
+        if not self._live_entry_allowed(symbol):
+            return "filter"
+        can_open, reason = self._can_open_trade_for_signal(
+            symbol, "BUY", pending["score"]
+        )
+        if not can_open:
+            lowered = reason.lower()
+            if "daily loss cap" in lowered or "risk budget" in lowered:
+                return "loss_cap"
+            if "already traded" in lowered or "position" in lowered:
+                return "position_limit"
+            return "filter"
+        return None
+
+    def _process_confirmed_entries(
+        self, underlying: str, confirmation_bar: Bar, now: datetime
+    ) -> None:
+        confirmation_time = self._journal_datetime(confirmation_bar.timestamp)
+        if confirmation_time is None:
+            logger.error("[%s] Ignoring confirmation with invalid bar timestamp", underlying)
+            return
+        due = sorted(
+            (
+                (key, pending)
+                for key, pending in getattr(self, "_pending_entries", {}).items()
+                if pending["underlying"] == underlying
+                and confirmation_time >= pending["confirmation_start"]
+            ),
+            key=lambda item: (-item[1]["score"], item[1]["signal_time"]),
+        )
+        for key, pending in due:
+            expected_start = pending["confirmation_start"]
+            expected_close = expected_start + timedelta(minutes=1)
+            if confirmation_time > expected_start:
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="expired_signal",
+                    sub_reason="missing_candle",
+                )
+                continue
+            if now < expected_close:
+                continue
+            if (now - expected_close).total_seconds() > 5:
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="expired_signal",
+                    sub_reason="missing_candle",
+                    confirmation_bar=confirmation_bar,
+                )
+                continue
+            if now.time() >= datetime.strptime("14:45", "%H:%M").time():
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="expired_signal",
+                    sub_reason="cutoff",
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=confirmation_bar.close,
+                    confirmation_result="not_evaluated_cutoff",
+                )
+                continue
+            try:
+                close = float(confirmation_bar.close)
+                if not math.isfinite(close):
+                    raise ValueError("confirmation close is not finite")
+            except (TypeError, ValueError, OverflowError):
+                logger.exception(
+                    "[%s] Invalid confirmation close; cancelling pending signal",
+                    pending["symbol"],
+                )
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="confirmation_error",
+                    sub_reason="invalid_confirmation_close",
+                    confirmation_bar=confirmation_bar,
+                )
+                continue
+            passed = (
+                close > pending["signal_close"]
+                if pending["leg"] == "CE"
+                else close < pending["signal_close"]
+            )
+            if not passed:
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason=f"confirmation_failed_{pending['leg'].lower()}",
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=close,
+                    confirmation_result="failed",
+                )
+                continue
+
+            try:
+                failure = self._confirmed_entry_filter_failure(pending, now)
+            except Exception:
+                logger.exception(
+                    "[%s] Confirmation revalidation failed; cancelling without retry",
+                    pending["symbol"],
+                )
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="confirmation_error",
+                    sub_reason="revalidation_exception",
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=close,
+                    confirmation_result="passed",
+                )
+                continue
+            if failure is not None:
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="filter_failed_after_confirmation",
+                    sub_reason=failure,
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=close,
+                    confirmation_result="passed",
+                )
+                continue
+
+            quote = self.option_quote_cache[pending["symbol"]]
+            metrics = self._option_quote_metrics(quote, now=now)
+            delay = max(
+                0.0,
+                (now - (pending["signal_time"] + timedelta(minutes=1))).total_seconds(),
+            )
+            metadata = {
+                "entry_mode": "confirmed",
+                "route": pending["route"],
+                "contract_id": pending["contract_id"],
+                "signal_time": pending["signal_time"].isoformat(),
+                "signal_close": pending["signal_close"],
+                "signal_premium": pending["signal_premium"],
+                "signal_bid": pending["signal_bid"],
+                "signal_ask": pending["signal_ask"],
+                "signal_ltp": pending["signal_ltp"],
+                "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
+                "confirmation_candle_time": confirmation_time.isoformat(),
+                "confirmation_close": close,
+                "confirmation_result": "passed",
+                "confirmation_bid": metrics["bid"],
+                "confirmation_ask": metrics["ask"],
+                "confirmation_ltp": metrics["ltp"],
+                "confirmation_quote_age_seconds": metrics["age_seconds"],
+                "confirmation_delay_seconds": delay,
+                "order_premium": metrics["ask"],
+                "order_bid": metrics["bid"],
+                "order_ask": metrics["ask"],
+                "order_ltp": metrics["ltp"],
+                "order_quote_age_seconds": metrics["age_seconds"],
+            }
+            try:
+                outcome = self._handle_buy_signal(
+                    pending["symbol"],
+                    float(metrics["ltp"]),
+                    pending["score"],
+                    strategy_variant=pending["strategy_variant"],
+                    minimum_signal_score=pending["minimum_signal_score"],
+                    confirmed_entry_metadata=metadata,
+                    force_ask_fill=True,
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] Confirmed entry failed; cancelling without retry",
+                    pending["symbol"],
+                )
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="confirmation_error",
+                    sub_reason="entry_exception",
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=close,
+                    confirmation_result="passed",
+                    confirmation_quote=quote,
+                )
+                continue
+            if outcome != "trade_opened":
+                lowered = outcome.lower()
+                if "cutoff" in lowered:
+                    sub_reason = "cutoff"
+                elif "risk_cap" in lowered or "one_lot_exceeds" in lowered:
+                    sub_reason = "risk_cap"
+                elif "daily loss" in lowered:
+                    sub_reason = "loss_cap"
+                elif "position" in lowered or "trade_blocked" in lowered:
+                    sub_reason = "position_limit"
+                else:
+                    sub_reason = "filter"
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="filter_failed_after_confirmation",
+                    sub_reason=sub_reason,
+                    confirmation_bar=confirmation_bar,
+                    confirmation_close=close,
+                    confirmation_result="passed",
+                    confirmation_quote=quote,
+                )
+                continue
+
+            self._pending_entries.pop(key, None)
+            self._log_entry_confirmation_event(
+                pending,
+                "confirmed_trade",
+                now,
+                confirmation_candle_time=confirmation_time.isoformat(),
+                confirmation_close=close,
+                confirmation_result="passed",
+                confirmation_bid=metrics["bid"],
+                confirmation_ask=metrics["ask"],
+                confirmation_ltp=metrics["ltp"],
+                confirmation_quote_age_seconds=metrics["age_seconds"],
+                confirmation_delay_seconds=delay,
+                order_premium=metrics["ask"],
+                order_bid=metrics["bid"],
+                order_ask=metrics["ask"],
+                order_ltp=metrics["ltp"],
+                order_quote_age_seconds=metrics["age_seconds"],
+                outcome_detail=outcome,
+            )
+            self.accuracy_filters.record_entry(
+                pending["symbol"], now.timestamp()
+            )
+            if pending["route"] == "support_reversal":
+                self._mark_support_reversal_attempt(
+                    pending["symbol"],
+                    SupportResistanceReversal(
+                        signal=pending["signal"],
+                        level=float(pending["support_resistance_level"]),
+                        touches=int(pending["support_resistance_touches"]),
+                        bars_since_touch=0,
+                        bar_time=pending["support_resistance_time"]
+                        or pending["signal_time"],
+                    ),
+                )
+
+    def _expire_pending_confirmed_entries(self, now: datetime) -> None:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=IST)
+        else:
+            now = now.astimezone(IST)
+        for key, pending in list(getattr(self, "_pending_entries", {}).items()):
+            expected_close = pending["confirmation_start"] + timedelta(minutes=1)
+            if (now - expected_close).total_seconds() > 5:
+                self._cancel_confirmed_entry(
+                    key,
+                    pending,
+                    now,
+                    reason="expired_signal",
+                    sub_reason="missing_candle",
+                )
 
     def _warm_up_bars(self) -> None:
         """Load recent candles so signals do not wait for a fresh session's bars."""
@@ -1981,6 +2640,14 @@ class KiteTradingBot:
             self._handle_market_close_exit()
             self._record_decision(symbol, bar, [], None, "MARKET_CLOSE", "forced_exit_check")
             return
+
+        if self._options_enabled() and not symbol.endswith(("_CE", "_PE")):
+            callback_time = getattr(self, "_bar_callback_time", None)
+            self._process_confirmed_entries(
+                symbol.upper(),
+                bar,
+                self._journal_datetime(callback_time) or datetime.now(IST),
+            )
 
         logger.info(
             f"[{symbol}] Bar: O={bar.open:.2f} H={bar.high:.2f} L={bar.low:.2f} C={bar.close:.2f} V={bar.volume}"
@@ -2459,6 +3126,18 @@ class KiteTradingBot:
                 return
 
             if (
+                getattr(self, "entry_mode", "immediate") == "confirmed"
+                and ema_reentry_context is None
+                and market_score.signal in {"BUY", "SELL"}
+            ):
+                self._capture_eligible_option_candles(
+                    symbol,
+                    bars,
+                    signal_time=self._journal_datetime(signal_bars[-1].timestamp),
+                    contract_id=self._contract_id(symbol),
+                )
+
+            if (
                 getattr(market_score, "strategy_variant", None)
                 == "paper_underlying_support_reversal"
             ):
@@ -2494,7 +3173,11 @@ class KiteTradingBot:
                     news_context,
                 )
                 return
-            self._capture_eligible_option_candles(symbol, bars)
+            if (
+                getattr(self, "entry_mode", "immediate") != "confirmed"
+                or ema_reentry_context is not None
+            ):
+                self._capture_eligible_option_candles(symbol, bars)
 
         if self.premarkarket_candidates:
             self.premarkarket_candidates.clear()
@@ -2546,6 +3229,7 @@ class KiteTradingBot:
                 support_candidate is not None
                 and getattr(market_score, "strategy_variant", None)
                 == "paper_underlying_support_reversal"
+                and getattr(self, "entry_mode", "immediate") != "confirmed"
             ):
                 self._mark_support_reversal_attempt(
                     symbol, support_candidate
@@ -2553,18 +3237,41 @@ class KiteTradingBot:
 
         trade_action = self._option_trade_action(symbol, market_score.signal)
         if trade_action == "BUY":
-            outcome = self._handle_buy_signal(
-                symbol,
-                bar.close,
-                market_score.score,
-                strategy_variant=market_score.strategy_variant,
-                minimum_signal_score=position_minimum_score,
-                **(
-                    {"ema_reentry_context": ema_reentry_context}
-                    if ema_reentry_context is not None
-                    else {}
-                ),
-            )
+            if (
+                getattr(self, "entry_mode", "immediate") == "confirmed"
+                and self._options_enabled()
+                and symbol.endswith(("_CE", "_PE"))
+                and ema_reentry_context is None
+            ):
+                outcome = self._queue_confirmed_entry(
+                    symbol=symbol,
+                    score=market_score.score,
+                    signal=market_score.signal,
+                    strategy_variant=market_score.strategy_variant,
+                    signal_bars=signal_bars,
+                    history=history,
+                    reasons=market_score.reasons,
+                    support_candidate=support_candidate,
+                    now=now,
+                )
+            else:
+                if ema_reentry_context is not None:
+                    outcome = self._handle_buy_signal(
+                        symbol,
+                        bar.close,
+                        market_score.score,
+                        strategy_variant=market_score.strategy_variant,
+                        minimum_signal_score=position_minimum_score,
+                        ema_reentry_context=ema_reentry_context,
+                    )
+                else:
+                    outcome = self._handle_buy_signal(
+                        symbol,
+                        bar.close,
+                        market_score.score,
+                        strategy_variant=market_score.strategy_variant,
+                        minimum_signal_score=position_minimum_score,
+                    )
         elif trade_action == "SELL":
             outcome = self._handle_sell_signal(
                 symbol,
@@ -3203,7 +3910,12 @@ class KiteTradingBot:
             self._handle_market_close_exit()
         else:
             self._check_position_exit(symbol, tick.last_price)
-        self.bar_builder.process_tick(tick)
+        self._expire_pending_confirmed_entries(tick.timestamp)
+        self._bar_callback_time = tick.timestamp
+        try:
+            self.bar_builder.process_tick(tick)
+        finally:
+            self._bar_callback_time = None
 
     def _extend_option_timebox(self, symbol: str, position: dict) -> bool:
         if not self.config.get("extend_option_timebox", False):
@@ -4089,6 +4801,8 @@ class KiteTradingBot:
         paper_range_stop: Optional[float] = None,
         paper_range_target_r: Optional[float] = None,
         ema_reentry_context: Optional[dict] = None,
+        confirmed_entry_metadata: Optional[dict] = None,
+        force_ask_fill: bool = False,
     ) -> str:
         """Handle a BUY signal."""
         entry_quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
@@ -4168,7 +4882,15 @@ class KiteTradingBot:
                     staged_option_targets
                 )
                 premium = float(self.latest_prices.get(symbol, price))
-                if self.config.get("option_quote_validated_stops_enabled", False):
+                if force_ask_fill and (
+                    not entry_quote_metrics["valid"]
+                    or entry_quote_metrics["ask"] is None
+                ):
+                    return "stale_quote"
+                if (
+                    force_ask_fill
+                    or self.config.get("option_quote_validated_stops_enabled", False)
+                ):
                     if (
                         entry_quote_metrics["valid"]
                         and entry_quote_metrics["ask"] is not None
@@ -4183,6 +4905,8 @@ class KiteTradingBot:
                         )
                 else:
                     price = premium
+                if force_ask_fill and entry_quote_metrics["ltp"] is not None:
+                    premium = entry_quote_metrics["ltp"]
                 if range_breakout_plan:
                     stop_loss = float(paper_range_stop)
                     if (
@@ -4506,6 +5230,26 @@ class KiteTradingBot:
                     }
                 )
             alert["contract_id"] = self._contract_id(symbol)
+            alert["entry_mode"] = (
+                "confirmed"
+                if confirmed_entry_metadata is not None
+                else "ema_reentry"
+                if ema_reentry_context is not None
+                else "immediate"
+                if strategy_variant == "option_range_breakout"
+                else getattr(self, "entry_mode", "immediate")
+            )
+            alert["route"] = (
+                "ema_reentry"
+                if ema_reentry_context is not None
+                else "option_range_breakout"
+                if strategy_variant == "option_range_breakout"
+                else "support_reversal"
+                if strategy_variant == "paper_underlying_support_reversal"
+                else "scored"
+            )
+            if confirmed_entry_metadata is not None:
+                alert.update(confirmed_entry_metadata)
             self.trade_journal.log_trade(alert)
             logger.info(
                 "[%s] Entry quote bid=%s ask=%s LTP=%s timestamp=%s fill=%s",
@@ -4824,6 +5568,12 @@ class KiteTradingBot:
                     }
                 )
             alert["contract_id"] = self._contract_id(symbol)
+            alert["entry_mode"] = getattr(self, "entry_mode", "immediate")
+            alert["route"] = (
+                "support_reversal"
+                if strategy_variant == "paper_underlying_support_reversal"
+                else "scored"
+            )
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
             target_label = "adaptive_exit_ref" if option_adaptive_exit else "TP"

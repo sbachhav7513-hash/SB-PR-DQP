@@ -165,6 +165,14 @@ existing `live_orders_confirmed` safety gate must also be enabled in
 `kite_config.json` before LIVE orders can start. `trading_mode` remains the
 separate market-scope setting for futures/options/both.
 
+`entry_mode` defaults to `immediate`. The optional `confirmed` mode is
+available only with `mode: "PAPER"` and an options trading mode. It waits for
+the next fully closed one-minute underlying candle, requires a strict
+directional close (CE higher, PE lower), then revalidates the entry filters
+and uses the fresh option ask as the paper fill. Bar timestamps are the
+one-minute bar start in IST. Pending entries are memory-only and are expired
+and journaled if the process restarts before confirmation.
+
 #### 4.3 Running the Kite-Based Bot
 
 ```bash

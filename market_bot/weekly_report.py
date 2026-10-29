@@ -738,13 +738,23 @@ def _date_records(
                 "strategy_variant", "is_ema_reentry", "original_trade_id",
                 "ema_reentry_eligible", "ema_reentry_outcome",
                 "reentry_pnl", "reentry_outcome",
+                "entry_mode", "route", "signal_time", "signal_close",
+                "confirmation_candle_time", "confirmation_close",
+                "confirmation_result", "confirmation_delay_seconds",
+                "signal_premium", "order_premium", "after_cost_pnl", "net_pnl",
             ]
             if parquet_name == "trades.parquet"
             else [
                 "timestamp", "signal", "outcome", "score", "reasons",
                 "outcome_detail", "rejection_reason", "trend_shadow_signal",
                 "trend_shadow_rejection_reason", "strategy_variant", "event",
-                "ema_reentry_event",
+                "ema_reentry_event", "confirmation_event", "signal_id",
+                "entry_mode", "route", "signal_time", "signal_close",
+                "confirmation_candle_time", "confirmation_close",
+                "confirmation_result", "confirmation_delay_seconds",
+                "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
+                "order_premium", "order_bid", "order_ask", "order_ltp",
+                "cancellation_reason", "cancellation_sub_reason",
             ]
         ),
     )
@@ -754,6 +764,110 @@ def _date_records(
         record for record in records
         if PaperTradingRecorder._event_datetime(record.get("timestamp")).date() == target_date
     ]
+
+
+def _entry_confirmation_metrics(
+    trades: List[Dict[str, Any]], decisions: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    confirmation_decisions = [
+        item
+        for item in decisions
+        if item.get("event") == "entry_confirmation"
+    ]
+    generated = [
+        item
+        for item in confirmation_decisions
+        if item.get("confirmation_event") == "signal_generated"
+    ]
+    rejected = [
+        item
+        for item in confirmation_decisions
+        if item.get("confirmation_event") == "rejected_by_confirmation"
+    ]
+    passed_count = sum(
+        1
+        for item in confirmation_decisions
+        if item.get("confirmation_result") == "passed"
+    )
+    after_confirmation: Dict[str, int] = defaultdict(int)
+    for item in confirmation_decisions:
+        if item.get("confirmation_event") == "filter_failed_after_confirmation":
+            after_confirmation[
+                str(item.get("cancellation_sub_reason") or "unknown")
+            ] += 1
+
+    confirmed_trade_rows = [
+        trade for trade in trades if trade.get("entry_mode") == "confirmed"
+    ]
+    confirmed_trade_events = [
+        item
+        for item in confirmation_decisions
+        if item.get("confirmation_event") == "confirmed_trade"
+    ]
+    delays = [
+        _number(item.get("confirmation_delay_seconds"))
+        for item in confirmed_trade_events
+        if item.get("confirmation_delay_seconds") not in (None, "")
+    ]
+    if not delays:
+        delays = [
+            _number(trade.get("confirmation_delay_seconds"))
+            for trade in confirmed_trade_rows
+            if trade.get("confirmation_delay_seconds") not in (None, "")
+        ]
+    premium_changes = []
+    premium_records = confirmed_trade_events or confirmed_trade_rows
+    for record in premium_records:
+        signal_premium = _number(record.get("signal_premium"))
+        order_premium = _number(record.get("order_premium"))
+        if signal_premium > 0 and order_premium > 0:
+            premium_changes.append(
+                (order_premium - signal_premium) / signal_premium * 100.0
+            )
+    pnls = [_recorded_trade_pnl(trade) for trade in confirmed_trade_rows]
+    wins = sum(1 for pnl in pnls if pnl > 0)
+    after_cost_values = [
+        _number(
+            trade.get("after_cost_pnl", trade.get("net_pnl"))
+        )
+        for trade in confirmed_trade_rows
+        if trade.get("after_cost_pnl", trade.get("net_pnl")) not in (None, "")
+    ]
+
+    return {
+        "signals_generated": len(generated),
+        "signals_confirmed": passed_count,
+        "rejected_by_confirmation_ce": sum(
+            1 for item in rejected if item.get("cancellation_reason") == "confirmation_failed_ce"
+        ),
+        "rejected_by_confirmation_pe": sum(
+            1 for item in rejected if item.get("cancellation_reason") == "confirmation_failed_pe"
+        ),
+        "filter_failed_after_confirmation": dict(sorted(after_confirmation.items())),
+        "expired_signal": sum(
+            1
+            for item in confirmation_decisions
+            if item.get("confirmation_event") == "expired_signal"
+        ),
+        "confirmed_trades": max(
+            len(confirmed_trade_events), len(confirmed_trade_rows)
+        ),
+        "win_rate_pct": wins / len(confirmed_trade_rows) * 100
+        if confirmed_trade_rows
+        else 0.0,
+        "gross_pnl": round(sum(pnls), 2),
+        "after_cost_pnl": (
+            round(sum(after_cost_values), 2) if after_cost_values else None
+        ),
+        "average_delay_seconds": (
+            sum(delays) / len(delays) if delays else 0.0
+        ),
+        "average_premium_change_pct": (
+            sum(premium_changes) / len(premium_changes)
+            if premium_changes
+            else 0.0
+        ),
+    }
 
 
 def write_daily_summary(
@@ -779,6 +893,7 @@ def write_daily_summary(
     )
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     ema_reentry = _ema_reentry_summary(trades, decisions)
+    entry_confirmation = _entry_confirmation_metrics(trades, decisions)
     values = {
         "date": target_date.isoformat(),
         "closed_trades": len(trades),
@@ -802,7 +917,36 @@ def write_daily_summary(
         "ema_reentry_strategy_pnl": ema_reentry["baseline_comparison"][
             "strategy_pnl"
         ],
+        "entry_confirmation_signals_generated": entry_confirmation[
+            "signals_generated"
+        ],
+        "entry_confirmation_signals_confirmed": entry_confirmation[
+            "signals_confirmed"
+        ],
+        "entry_confirmation_rejected_ce": entry_confirmation[
+            "rejected_by_confirmation_ce"
+        ],
+        "entry_confirmation_rejected_pe": entry_confirmation[
+            "rejected_by_confirmation_pe"
+        ],
+        "entry_confirmation_expired": entry_confirmation["expired_signal"],
+        "entry_confirmation_confirmed_trades": entry_confirmation[
+            "confirmed_trades"
+        ],
+        "entry_confirmation_win_rate_pct": entry_confirmation["win_rate_pct"],
+        "entry_confirmation_gross_pnl": entry_confirmation["gross_pnl"],
+        "entry_confirmation_after_cost_pnl": entry_confirmation["after_cost_pnl"],
+        "entry_confirmation_average_delay_seconds": entry_confirmation[
+            "average_delay_seconds"
+        ],
+        "entry_confirmation_average_premium_change_pct": entry_confirmation[
+            "average_premium_change_pct"
+        ],
     }
+    for reason, count in entry_confirmation[
+        "filter_failed_after_confirmation"
+    ].items():
+        values[f"entry_confirmation_filter_failed_{reason}"] = count
     recorder = PaperTradingRecorder(paper_data_dir)
     destination = recorder._day_path(
         datetime.combine(target_date, datetime.min.time()).isoformat(), "daily_summary.parquet"
@@ -840,6 +984,7 @@ def write_daily_review(
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     wins = sum(1 for pnl in pnls if pnl > 0)
     ema_reentry = _ema_reentry_summary(trades, decisions)
+    entry_confirmation = _entry_confirmation_metrics(trades, decisions)
     signal_counts: Dict[str, int] = defaultdict(int)
     outcome_counts: Dict[str, int] = defaultdict(int)
     rejection_counts: Dict[str, int] = defaultdict(int)
@@ -907,6 +1052,27 @@ def write_daily_review(
         f"- Recorded P&L before unmodeled trading costs: {sum(pnls):.2f}",
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
+        "",
+        "## One-Candle Entry Confirmation",
+        f"- Signals generated: {entry_confirmation['signals_generated']}",
+        f"- Direction confirmed: {entry_confirmation['signals_confirmed']}",
+        "- Rejected by confirmation (CE / PE): "
+        f"{entry_confirmation['rejected_by_confirmation_ce']} / "
+        f"{entry_confirmation['rejected_by_confirmation_pe']}",
+        "- Filter failures after confirmation: "
+        f"{json.dumps(entry_confirmation['filter_failed_after_confirmation'], sort_keys=True)}",
+        f"- Expired signals: {entry_confirmation['expired_signal']}",
+        f"- Confirmed trades: {entry_confirmation['confirmed_trades']}",
+        f"- Win rate: {entry_confirmation['win_rate_pct']:.1f}%",
+        f"- Gross recorded P&L: {entry_confirmation['gross_pnl']:.2f}",
+        (
+            f"- After-cost P&L: {entry_confirmation['after_cost_pnl']:.2f}"
+            if entry_confirmation["after_cost_pnl"] is not None
+            else "- After-cost P&L: unavailable (trade journal has no after-cost field)"
+        ),
+        f"- Average delay: {entry_confirmation['average_delay_seconds']:.1f}s",
+        "- Average premium change from signal to fill: "
+        f"{entry_confirmation['average_premium_change_pct']:.3f}%",
         "",
         "## EMA Stop-Loss Re-entry",
         f"- Eligible stop-loss trades: {ema_reentry['eligible_stop_losses']}",

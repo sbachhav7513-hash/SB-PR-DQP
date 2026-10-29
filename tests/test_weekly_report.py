@@ -6,6 +6,7 @@ from market_bot.trade_journal import PaperTradingRecorder
 from market_bot.weekly_report import (
     build_weekly_report,
     summarize_best_setup_windows,
+    write_daily_review,
     write_weekly_report,
 )
 
@@ -240,3 +241,82 @@ def test_weekly_report_separates_trend_shadow_paper_performance(tmp_path):
 
     assert report["performance_by_strategy_variant"]["primary"]["total_pnl"] == 20.0
     assert report["performance_by_strategy_variant"]["trend_shadow_paper"]["total_pnl"] == -5.0
+
+
+def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(microsecond=0)
+    trades = [
+        {
+            "timestamp": now.isoformat(),
+            "ticker": "NIFTY_CE",
+            "status": "closed",
+            "entry_mode": "confirmed",
+            "pnl_rupees": 10.0,
+            "after_cost_pnl": 8.0,
+            "confirmation_delay_seconds": 62,
+            "signal_premium": 20.0,
+            "order_premium": 21.0,
+        },
+        {
+            "timestamp": now.isoformat(),
+            "ticker": "NIFTY_PE",
+            "status": "closed",
+            "entry_mode": "confirmed",
+            "pnl_rupees": -5.0,
+            "after_cost_pnl": -6.0,
+            "confirmation_delay_seconds": 64,
+            "signal_premium": 10.0,
+            "order_premium": 11.0,
+        },
+    ]
+    decisions = [
+        {
+            "timestamp": now.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "signal_generated",
+        },
+        {
+            "timestamp": now.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "rejected_by_confirmation",
+            "cancellation_reason": "confirmation_failed_ce",
+        },
+        {
+            "timestamp": now.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "filter_failed_after_confirmation",
+            "confirmation_result": "passed",
+            "cancellation_sub_reason": "stale_quote",
+        },
+        {
+            "timestamp": now.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "expired_signal",
+            "cancellation_sub_reason": "missing_candle",
+        },
+    ]
+    (tmp_path / "trades.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in trades) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "decision_log.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in decisions) + "\n",
+        encoding="utf-8",
+    )
+
+    review_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+    review = review_path.read_text(encoding="utf-8")
+
+    assert "- Signals generated: 1" in review
+    assert "- Direction confirmed: 1" in review
+    assert "Rejected by confirmation (CE / PE): 1 / 0" in review
+    assert '{"stale_quote": 1}' in review
+    assert "- Expired signals: 1" in review
+    assert "- Confirmed trades: 2" in review
+    assert "- Gross recorded P&L: 5.00" in review
+    assert "- After-cost P&L: 2.00" in review

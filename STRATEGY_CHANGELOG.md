@@ -38,6 +38,22 @@ Rollback/version if reverted:
 Follow-up or reason to revisit:
 ```
 
+## Operational evidence correction — 2026-10-30
+
+- Classification: Corrective evidence review; not a performance-improving strategy experiment.
+- Problem and evidence: The one-candle confirmation replay was re-evaluated using the persisted `bar.time` signal timestamp and the following one-minute underlying candle. The archived journal totals +₹4,076.25 across 74 closed trades; the claim of A = +₹4,669 and B = +₹18,796 are not reproduced. The corrected directional screen passes 38 and fails 36 raw confirmation candidates; no exact selected-contract exit ledger or B replay artifact exists.
+- Prior related log entries checked: Earlier 2026-09 and 2026-10 strategy experiments and paper-risk entries; none document this exact replay correction or support the +₹18,796 claim.
+- Hypothesis: If the signal timestamp and confirmation candle are aligned to the persisted implementation data, the earlier reported pass/fail labels and cumulative A/B results will be invalid unless exact quote, selected-contract, and exit metadata are available. The corrected evidence must therefore be treated as a reliability and evidence gate, not as a strategy improvement.
+- Single variable being changed: Audit method only: use the exact stored signal-bar time and the next one-minute confirmation candle instead of the later journal timestamp.
+- Code/config before: No production logic change; current live and paper code remain unchanged. Evidence was compared against the archived `kite_daily` window and journal rows only.
+- Baseline period and metrics: Replay window 2026-10-14 through 2026-10-29; 74 journal trades, net +₹4,076.25, win rate 43.24%, gross +₹32,006.25 / -₹27,930.00, 38 raw passes vs 36 failed/canceled. Exact B trade rows remain unavailable.
+- Test method and fixed evaluation period/sample: Use the same archived data and exact implementation timestamps; compare with the journal and known code paths without inventing missing quote/exit metadata. No strategy or risk change is introduced.
+- Change made: Wrote and recorded the corrected replay evidence in `ENTRY_CONFIRMATION_HISTORICAL_REPLAY_REPORT.md` on 2026-10-30.
+- Results: The earlier 33/41 cohort and the +₹18,796 claim are unsupported. No exact B execution ledger is available; the archived data cannot prove a performance benefit or justify replacing production entry logic.
+- Decision: Do not replace production entry logic on this evidence. Keep the current code and configuration until a fully reproducible archive or live-fidelity replay yields exact trade rows.
+- Rollback: None required; this is a documentation/evidence correction only.
+- Follow-up: If a complete archival record is recovered, re-run the exact replay with quote freshness, selected-contract, and exit metadata included; do not draw a strategy conclusion from partial confirmation screening alone.
+
 ## Experiment Records
 
 No completed experiments recorded yet.

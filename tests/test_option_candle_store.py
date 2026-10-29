@@ -66,6 +66,40 @@ def test_recorder_uses_contract_id_in_filename_and_rows(tmp_path):
     assert rows[0]["contract_id"] == contract_id
 
 
+def test_active_capture_remains_bound_to_signal_time_contract(tmp_path):
+    timestamp = datetime(2026, 10, 27, 10, 0, tzinfo=IST)
+    selected_contract = "NFO:NIFTY26OCT25000CE"
+    recorder = OptionCandleRecorder(tmp_path, config_hash="abc123")
+    recorder.capture_eligible(
+        "NIFTY_CE",
+        [],
+        timestamp,
+        selected_contract,
+    )
+    candle = Bar(
+        timestamp + timedelta(minutes=1),
+        100,
+        101,
+        99,
+        100.5,
+        1200,
+    )
+
+    assert not recorder.record_active(
+        "NIFTY_CE", candle, "NFO:NIFTY26OCT25100CE"
+    )
+    assert recorder.record_active("NIFTY_CE", candle, selected_contract)
+    path = (
+        tmp_path
+        / "2026-10-27"
+        / "NFO_NIFTY26OCT25000CE__NIFTY_CE.csv"
+    )
+    with path.open(encoding="utf-8", newline="") as source:
+        rows = list(csv.DictReader(source))
+    assert len(rows) == 1
+    assert rows[0]["contract_id"] == selected_contract
+
+
 def test_recorder_resumes_contract_capture_from_existing_session_file(tmp_path):
     timestamp = datetime.now(IST).replace(second=0, microsecond=0)
     existing = OptionCandleRecorder(tmp_path, config_hash="oldhash")
