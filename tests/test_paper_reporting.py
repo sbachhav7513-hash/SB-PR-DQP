@@ -24,12 +24,18 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
         str(tmp_path / "decision_log.jsonl"), str(paper_dir), config_hash="abc123"
     )
 
-    decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "BUY"})
+    decisions.log_decision({
+        "timestamp": timestamp,
+        "ticker": "NIFTY",
+        "contract_id": "NFO:NIFTY26SEP25000CE",
+        "signal": "BUY",
+    })
     decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "HOLD"})
     trades.log_trade({
         "timestamp": timestamp,
         "ticker": "NIFTY",
         "trading_symbol": "NIFTY26SEP25000CE",
+        "contract_id": "NFO:NIFTY26SEP25000CE",
         "action": "BUY",
         "entry": 100,
         "quantity": 50,
@@ -56,10 +62,15 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     assert all(record["config_hash"] == "abc123" for record in decision_records)
     assert rows[0]["exit_price"] == "101"
     assert rows[0]["trading_symbol"] == "NIFTY26SEP25000CE"
+    assert rows[0]["contract_id"] == "NFO:NIFTY26SEP25000CE"
     assert (day_dir / "decisions.parquet").exists()
     decision_file = ParquetFile(day_dir / "decisions.parquet")
     assert decision_file.to_pandas()["signal"].tolist() == ["BUY", "HOLD"]
     assert decision_file.to_pandas()["config_hash"].tolist() == ["abc123", "abc123"]
+    assert decision_file.to_pandas()["contract_id"].tolist() == [
+        "NFO:NIFTY26SEP25000CE",
+        "",
+    ]
     assert decision_file.row_groups
 
 

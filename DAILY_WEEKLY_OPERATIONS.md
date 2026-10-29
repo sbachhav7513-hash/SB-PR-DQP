@@ -191,6 +191,17 @@ the record at its entry price as a zero-P&L estimate and labels the journal
 reason accordingly. Neither recovery value is guaranteed to be the exchange's
 official session-close price or actual realized performance.
 
+Risk limits are enforced identically in PAPER and LIVE: an option stop may
+not risk more than 10% of its deployed premium value, and the daily realized
+loss ceiling may not exceed 10% of account capital. A stricter rupee
+`max_risk_per_trade` or daily limit is allowed; configuration above either
+10% ceiling is rejected. Daily realized losses accumulate gross losing-trade
+P&L and are not offset by winners. At the daily limit, entries remain disabled
+through the current IST session; LIVE cancels pending non-protective orders
+and preserves protective stops attached to open positions. A failed
+cancellation is logged and sent as an urgent notification. Stop execution,
+gaps, costs, and slippage are not guaranteed to stay within the planned cap.
+
 The shared option signal candle body/range ratio is 60%
 (`option_min_candle_body_ratio`) in both modes. A prior 40% trial was reverted
 after a two-session historical replay showed worse P/L and did not improve
@@ -198,6 +209,32 @@ trade count on the second session. Review rejection counts, entries, exits,
 and P/L before deciding whether another strategy change is warranted. Signal
 direction, option quote/quality, entry validation, and risk limits continue to
 apply; the threshold does not guarantee an entry or demonstrate an edge.
+
+### Config v2 option quote execution
+
+For long option positions, config v2 evaluates initial, breakeven, and trailing
+stops against a fresh quote: bid must be at or below the stop, quote age must
+be no more than 60 seconds, and LTP must be inside the bid/ask spread. Invalid
+quotes are ignored. A stale quote at a stop holds for one check; a second
+consecutive stale check exits at the last valid bid with reason
+`feed_failure_exit`.
+
+Paper entries use ask and paper exits use bid when the quote is valid. LIVE
+continues to use MARKET orders; actual broker fills are recorded and may differ
+from the displayed ask or bid. Quote-validated LIVE stops are application
+managed, not broker-side orders. A Kite disconnect pauses entries and warns
+that open quote-managed options need manual protection until quote monitoring
+is restored.
+
+EMA re-entry keeps the existing crossover and close-confirmation rules. After
+a stop-out, at most one re-entry is eligible until the configured entry cutoff;
+a fresh option premium below the stop-out low cancels it. Re-entry trades are
+tagged `ema_reentry`. Config v2 changes the strategy config hash; do not
+compare its trade records as though they used the prior quote/stop behavior.
+
+The configured options universe includes SENSEX. Its contracts are selected
+from BFO and its underlying index quote is resolved from BSE; other configured
+option underlyings continue to use NFO contracts.
 
 ### VPS systemd setup
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+MAX_TRADE_RISK_PCT = 10.0
+MAX_DAILY_LOSS_PCT = 10.0
+
 
 @dataclass
 class RiskPlan:

@@ -819,3 +819,39 @@ Outcome / follow-up / rollback:
   - `STRATEGY_CHANGELOG.md` and `DAILY_CHANGELOG.md` (modified): Append the investigation and experiment record.
 - Validation: Focused provider/runtime suite: 145 passed, 1 skipped. Regression cases cover nearest later-expiry selection by default, preservation of same-day selection when explicitly allowed, and explicit failure when no later expiry exists. No strategy parameter changes were retained. All replay P&L excludes fees/slippage and is underlying OHLC proxy performance, not executable option P&L.
 - Outcome / limitation: The 27-Oct archive has no later-expiry options, bid/ask, IV, or timestamped live quotes; therefore final option entries, rupee P&L, and profitability after the provider correction cannot be measured. Preserve expiry avoidance and all strategy/risk gates; do not promote to live from this evidence. Existing local edits changing `late_window_enabled` in both Kite config files were not authored or overwritten.
+
+### 2026-10-28
+
+#### DLY-2026-10-28-01 — Enforce option risk ceilings and daily shutdown
+
+- Reason: Apply the user's mandatory capital-preservation policy consistently in PAPER and LIVE after reviewing the 2026-10-28 paper trades and current risk paths.
+- Baseline: Active and example configs both specify a 10% daily limit, 10% option premium stop, and 10% option stop-risk percentage; both also retain a stricter ₹1,000 per-trade cap. The runtime previously accepted option stop-risk overrides up to 100%, the manager allowed daily-loss overrides above 10%, and reaching cumulative realized losses did not cancel pending broker orders.
+- Policy interpretation: Measure the per-trade option stop against deployed premium value. Accumulate daily realized losing-trade P&L gross (winning trades do not replenish the daily loss allowance). On trigger, disable entries for the remainder of the IST date, cancel pending non-protective orders, and preserve protective stops on open positions.
+- Changes:
+  - `market_bot/risk_manager.py` (modified): Define shared hard 10% trade and daily risk ceilings.
+  - `market_bot/intraday_manager.py` (modified): Reject daily caps above 10% of account capital, reject option stop sizing above 10%, and track gross realized losses through session restoration, rollover, and trade closes.
+  - `market_bot/kite_main.py` (modified): Reject option risk/stop overrides above 10%; enforce the same stop-risk ceiling in futures sizing; activate the daily shutdown and trigger pending-order cancellation for LIVE while preserving active protective-stop IDs.
+  - `market_bot/kite_provider.py` (modified): Cancel active non-protective orders without canceling completed orders or explicitly identified protective stops; round stop triggers toward entry so tick rounding does not widen planned risk.
+  - `tests/test_intraday_manager.py` and `tests/test_kite_provider.py` (modified): Cover hard limits, cumulative losses not offset by winners, mode-independent entry blocking, and preservation of protective stops.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the limits, shutdown, and execution-risk caveats.
+- Validation: Full test suite passed (`280 passed, 1 skipped`); active/example risk settings match and stay within the 10% ceilings; `git diff --check` passed. No strategy-performance change or profitability claim is made.
+- Operational limitation: Stop orders are not guaranteed fills; gaps, slippage, costs, broker/network failures, or rejected cancellation can exceed planned loss. Shutdown failures are logged and urgently notified; LIVE entries remain blocked.
+
+#### DLY-2026-10-28-02 — Implement config v2 quote-validated option exits
+
+- Reason: Prevent long-option stops from firing on out-of-spread LTPs or stale quotes while preserving existing entries, scoring, targets, trail logic, sizing, and LIVE MARKET order behavior.
+- Changes:
+  - `market_bot/kite_main.py` (modified): Validate option stop quotes by bid, freshness, and LTP spread; use paper ask/bid references; log quote fields; add stale-feed fallback; extend EMA re-entry through entry cutoff with stop-out-low cancellation and route tagging; alert on unprotected quote-managed LIVE positions after disconnect; keep target updates from trying to modify nonexistent broker stops.
+  - `market_bot/ema_reentry.py` and `market_bot/backtest.py` (modified): Replace the fixed 10-minute eligibility window with the entry cutoff while leaving the EMA cross and confirmation rules intact.
+  - `kite_config.json` and `kite_config.example.json` (modified): Set `strategy_config_version` to `v2` and enable quote-validated stops.
+  - `tests/test_config_v2.py` and `tests/test_ema_reentry.py` (modified): Cover quote rejection, fresh bid execution, stale-feed behavior, re-entry cancellation/cutoff/tagging, paper ask/bid references, and config hash versioning.
+  - `DAILY_WEEKLY_OPERATIONS.md` and `STRATEGY_CHANGELOG.md` (modified): Document config v2 semantics and operational limits.
+- Validation: Focused config/re-entry/backtest/provider/runtime suite: 207 passed, 1 skipped. The active strategy config hash is `87ee6afcd5c1ec711497e16daf277e854b486138daddeb64e540f84a5bf0f7fd`.
+- 28-Oct INFY note: The recorded stop quote had LTP 18.05 outside bid 18.20 / ask 18.25 and bid above the 18.04 stop, so config v2 would ignore that stop trigger and create no re-entry state. Descriptively, the previously reviewed sequence also did not satisfy the existing 75-point re-entry floor (maximum observed score 73) even with the extended window.
+- Operational limitation: Quote-validated LIVE stops are application-managed because broker-side LTP-triggered stops are disabled. The bot warns and pauses new entries on a feed disconnect; operators must verify/protect open positions. LIVE entries and exits remain MARKET orders and actual broker fills supersede quote-side references.
+
+#### DLY-2026-10-28-03 — Add SENSEX options to the configured universe
+
+- Changes: Add SENSEX with a 100-point strike interval to the active and example option configurations. Extend option discovery and LIVE order routing to support SENSEX contracts from BFO and resolve its underlying index quote from BSE; all other configured underlyings remain on NFO.
+- Validation: Full test suite passed (`290 passed, 1 skipped`); provider tests include BFO SENSEX option selection and order routing. Both config files parse as JSON and `git diff --check` passes.
+- Active config hash after the universe update: `7028fd9f29705162345a18ec3c4035bf15d39bdfd359812a18088ee1a14bae4d`.

@@ -13,6 +13,7 @@ from .bar_builder import Bar
 
 IST = ZoneInfo("Asia/Kolkata")
 OPTION_CANDLE_FIELDS = [
+    "contract_id",
     "timestamp",
     "open",
     "high",
@@ -53,8 +54,30 @@ class OptionCandleRecorder:
         local_time = self._local_timestamp(timestamp)
         return self.root / local_time.date().isoformat()
 
-    def _candle_path(self, symbol: str, timestamp: datetime) -> Path:
-        return self._day_directory(timestamp) / f"{self._safe_symbol(symbol)}.csv"
+    def _candle_path(
+        self, symbol: str, timestamp: datetime, contract_id: str = ""
+    ) -> Path:
+        filename = self._safe_symbol(symbol)
+        if contract_id:
+            filename = f"{self._safe_symbol(contract_id)}__{filename}"
+        return self._day_directory(timestamp) / f"{filename}.csv"
+
+    @staticmethod
+    def _ensure_schema(path: Path) -> None:
+        if not path.exists() or path.stat().st_size == 0:
+            return
+        with path.open("r", encoding="utf-8", newline="") as source:
+            reader = csv.DictReader(source)
+            if reader.fieldnames == OPTION_CANDLE_FIELDS:
+                return
+            rows = list(reader)
+
+        temporary = path.with_name(f".{path.name}.tmp")
+        with temporary.open("w", encoding="utf-8", newline="") as destination:
+            writer = csv.DictWriter(destination, fieldnames=OPTION_CANDLE_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary.replace(path)
 
     def _load_active_contracts_for_today(self) -> None:
         today = datetime.now(IST).date().isoformat()
@@ -62,10 +85,15 @@ class OptionCandleRecorder:
         if not directory.exists():
             return
         for path in directory.glob("*.csv"):
-            self._active_contracts.setdefault(today, set()).add(path.stem)
+            symbol = path.stem.rsplit("__", 1)[-1]
+            self._active_contracts.setdefault(today, set()).add(symbol)
 
     def capture_eligible(
-        self, symbol: str, candles: Iterable[Bar], signal_time: datetime
+        self,
+        symbol: str,
+        candles: Iterable[Bar],
+        signal_time: datetime,
+        contract_id: str = "",
     ) -> int:
         local_signal_time = self._local_timestamp(signal_time)
         day_key = local_signal_time.date().isoformat()
@@ -74,21 +102,24 @@ class OptionCandleRecorder:
         for candle in candles:
             if self._local_timestamp(candle.timestamp).date().isoformat() != day_key:
                 continue
-            captured += self._append(symbol, candle)
+            captured += self._append(symbol, candle, contract_id)
         return captured
 
     def is_active(self, symbol: str, timestamp: datetime) -> bool:
         day_key = self._local_timestamp(timestamp).date().isoformat()
         return symbol in self._active_contracts.get(day_key, set())
 
-    def record_active(self, symbol: str, candle: Bar) -> bool:
+    def record_active(
+        self, symbol: str, candle: Bar, contract_id: str = ""
+    ) -> bool:
         if not self.is_active(symbol, candle.timestamp):
             return False
-        return bool(self._append(symbol, candle))
+        return bool(self._append(symbol, candle, contract_id))
 
-    def _append(self, symbol: str, candle: Bar) -> int:
+    def _append(self, symbol: str, candle: Bar, contract_id: str = "") -> int:
         timestamp = self._local_timestamp(candle.timestamp)
-        path = self._candle_path(symbol, timestamp)
+        path = self._candle_path(symbol, timestamp, contract_id)
+        self._ensure_schema(path)
         seen = self._seen_timestamps.get(path)
         if seen is None:
             seen = set()
@@ -104,6 +135,7 @@ class OptionCandleRecorder:
             return 0
         path.parent.mkdir(parents=True, exist_ok=True)
         row = {
+            "contract_id": contract_id,
             "timestamp": timestamp_text,
             "open": candle.open,
             "high": candle.high,

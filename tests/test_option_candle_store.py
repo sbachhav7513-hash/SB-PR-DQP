@@ -39,7 +39,31 @@ def test_recorder_saves_minute_candles_quotes_and_config_hash_once(tmp_path):
     assert rows[0]["ask"] == "102.05"
     assert rows[1]["bid"] == ""
     assert rows[1]["ask"] == ""
+    assert {row["contract_id"] for row in rows} == {""}
     assert {row["config_hash"] for row in rows} == {"abc123"}
+
+
+def test_recorder_uses_contract_id_in_filename_and_rows(tmp_path):
+    timestamp = datetime(2026, 10, 27, 10, 0, tzinfo=IST)
+    contract_id = "NFO:NIFTY26OCT25000CE"
+    recorder = OptionCandleRecorder(tmp_path, config_hash="abc123")
+
+    assert recorder.capture_eligible(
+        "NIFTY_CE",
+        [Bar(timestamp, 100, 103, 99, 102, 1500)],
+        timestamp,
+        contract_id,
+    ) == 1
+
+    path = (
+        tmp_path
+        / "2026-10-27"
+        / "NFO_NIFTY26OCT25000CE__NIFTY_CE.csv"
+    )
+    with path.open(encoding="utf-8", newline="") as source:
+        rows = list(csv.DictReader(source))
+    assert len(rows) == 1
+    assert rows[0]["contract_id"] == contract_id
 
 
 def test_recorder_resumes_contract_capture_from_existing_session_file(tmp_path):
@@ -62,6 +86,7 @@ def test_recorder_resumes_contract_capture_from_existing_session_file(tmp_path):
     with path.open(encoding="utf-8", newline="") as source:
         rows = list(csv.DictReader(source))
     assert rows[0]["config_hash"] == "newhash"
+    assert rows[0]["contract_id"] == ""
 
 
 def test_recorder_partitions_by_ist_date_and_skips_other_dates(tmp_path):

@@ -39,6 +39,7 @@ Thumbs.db
 paper_trading_data/**/decisions.csv
 /backtest_artifacts/
 /data_uploads/
+/reports/audit/
 
 # Testing
 .pytest_cache/

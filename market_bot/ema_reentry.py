@@ -80,19 +80,21 @@ def find_ema_reentry_signal(
     option_leg: str,
     stopped_at: datetime,
     *,
-    window_minutes: int = 10,
+    valid_until: Optional[datetime] = None,
 ) -> Optional[EmaReentrySignal]:
     """Find a post-stop EMA(5/20) cross and later close beyond its candle."""
     option_leg = option_leg.upper()
     if option_leg not in {"CE", "PE"}:
         raise ValueError("option_leg must be CE or PE")
-    if window_minutes <= 0:
-        raise ValueError("window_minutes must be positive")
 
     stop_time = _timestamp(stopped_at)
     if stop_time is None:
         return None
-    deadline = stop_time + timedelta(minutes=window_minutes)
+    deadline = _timestamp(valid_until) if valid_until is not None else None
+    if valid_until is not None and deadline is None:
+        return None
+    if deadline is not None and deadline <= stop_time:
+        return None
     candles = []
     for candle in history:
         timestamp = _timestamp(candle.get("time", candle.get("date")))
@@ -120,7 +122,9 @@ def find_ema_reentry_signal(
     for cross_index in range(20, len(candles)):
         cross_bar_time, _, (cross_high, cross_low, _) = candles[cross_index]
         cross_time = cross_bar_time + timedelta(minutes=1)
-        if cross_time <= stop_time or cross_time > deadline:
+        if cross_time <= stop_time or (
+            deadline is not None and cross_time >= deadline
+        ):
             continue
         prior_fast = fast[cross_index - 1]
         prior_slow = slow[cross_index - 1]
@@ -139,7 +143,7 @@ def find_ema_reentry_signal(
         for signal_index in range(cross_index + 1, len(candles)):
             signal_bar_time, _, (_, _, close) = candles[signal_index]
             signal_time = signal_bar_time + timedelta(minutes=1)
-            if signal_time > deadline:
+            if deadline is not None and signal_time >= deadline:
                 break
             trend_valid = (
                 fast[signal_index] is not None

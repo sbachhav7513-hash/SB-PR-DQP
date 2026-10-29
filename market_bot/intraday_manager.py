@@ -9,6 +9,8 @@ import logging
 import math
 from zoneinfo import ZoneInfo
 
+from .risk_manager import MAX_DAILY_LOSS_PCT, MAX_TRADE_RISK_PCT
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 PAPER_OPTION_TRAIL_RUNNER = "paper_option_2r_trail_runner"
@@ -72,16 +74,35 @@ class IntradayManager:
         """
         self.account_size = account_size
         self.risk_per_trade_pct = risk_per_trade_pct
+        if not math.isfinite(float(account_size)) or account_size <= 0:
+            raise ValueError("account_size must be finite and positive")
+        if (
+            not math.isfinite(float(daily_max_loss_pct))
+            or not 0 <= float(daily_max_loss_pct) <= MAX_DAILY_LOSS_PCT
+        ):
+            raise ValueError(
+                f"daily_max_loss_pct must be between 0 and {MAX_DAILY_LOSS_PCT:g}"
+            )
         configured_trade_risk = (
             (account_size * risk_per_trade_pct) / 100.0
             if max_risk_per_trade is None
             else max(float(max_risk_per_trade), 0.0)
         )
-        self.daily_max_loss = (
-            max(account_size * daily_max_loss_pct / 100.0, 0.0)
-            if daily_max_loss is None
-            else max(float(daily_max_loss), 0.0)
-        )
+        maximum_daily_loss = account_size * MAX_DAILY_LOSS_PCT / 100.0
+        if daily_max_loss is None:
+            self.daily_max_loss = max(
+                account_size * daily_max_loss_pct / 100.0, 0.0
+            )
+        else:
+            daily_max_loss = float(daily_max_loss)
+            if (
+                not math.isfinite(daily_max_loss)
+                or not 0 <= daily_max_loss <= maximum_daily_loss
+            ):
+                raise ValueError(
+                    "daily_max_loss must be between 0 and 10% of account_size"
+                )
+            self.daily_max_loss = daily_max_loss
         self.max_risk_per_trade = min(configured_trade_risk, self.daily_max_loss)
         self.trailing_enabled = trailing_enabled
         self.trailing_activation_ratio = trailing_activation_ratio
@@ -93,6 +114,7 @@ class IntradayManager:
         self.max_consecutive_losses = 3
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
+        self.daily_realized_losses = 0.0
         self.loss_cooldown_seconds = 1800
         self.min_symbol_trades_for_cap = 5
         self.symbol_min_win_rate = 35.0
@@ -228,6 +250,11 @@ class IntradayManager:
                 )
         if self.daily_pnl <= -self.daily_max_loss:
             return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
+        if self.daily_loss_limit_reached():
+            return False, (
+                "Daily loss cap reached "
+                f"({self.daily_realized_losses:.0f} >= {self.daily_max_loss:.0f})"
+            )
         available_risk = self.available_daily_risk()
         if available_risk <= 1e-6:
             return False, (
@@ -279,19 +306,23 @@ class IntradayManager:
 
     def available_daily_risk(self) -> float:
         self._refresh_session()
-        realized_losses = max(-self.daily_pnl, 0.0)
         remaining_daily_budget = (
-            self.daily_max_loss - realized_losses - self.open_position_risk()
+            self.daily_max_loss
+            - self.daily_realized_losses
+            - self.open_position_risk()
         )
         return max(0.0, min(self.max_risk_per_trade, remaining_daily_budget))
 
     def daily_risk_exceeded(self) -> bool:
         self._refresh_session()
-        realized_losses = max(-self.daily_pnl, 0.0)
         return (
-            realized_losses + self.open_position_risk()
+            self.daily_realized_losses + self.open_position_risk()
             > self.daily_max_loss + 1e-6
         )
+
+    def daily_loss_limit_reached(self) -> bool:
+        self._refresh_session()
+        return self.daily_realized_losses >= self.daily_max_loss
 
     def record_trade_open(self, symbol: str, direction: str) -> None:
         self._refresh_session()
@@ -365,6 +396,9 @@ class IntradayManager:
 
         closed_today.sort(key=lambda item: item[0])
         self.daily_pnl = sum(pnl for _, pnl in closed_today)
+        self.daily_realized_losses = sum(
+            max(-pnl, 0.0) for _, pnl in closed_today
+        )
         self.consecutive_losses = 0
         for _, pnl in reversed(closed_today):
             if pnl < 0:
@@ -374,7 +408,11 @@ class IntradayManager:
 
     def record_trade_close(self, symbol: str, reason: str, pnl: float) -> None:
         self._refresh_session()
+        pnl = float(pnl)
+        if not math.isfinite(pnl):
+            raise ValueError("Closed-trade P&L must be finite")
         self.daily_pnl += pnl
+        self.daily_realized_losses += max(-pnl, 0.0)
         self.trade_history.append({"symbol": symbol, "reason": reason, "pnl": pnl, "time": datetime.now(IST)})
         if pnl < 0 and reason in {"STOP_LOSS", "TRAILING_STOP"}:
             self.session_loss_stop_times[symbol] = datetime.now(IST)
@@ -404,6 +442,7 @@ class IntradayManager:
         self.daily_trade_count = 0
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
+        self.daily_realized_losses = 0.0
         self.session_trade_symbols.clear()
         self.session_trade_counts.clear()
         self.session_loss_stop_times.clear()
@@ -904,10 +943,22 @@ class IntradayManager:
         symbol: str,
         premium: float,
         max_risk_per_trade: Optional[float] = None,
-        premium_stop_pct: float = 0.20,
+        premium_stop_pct: float = MAX_TRADE_RISK_PCT / 100.0,
     ) -> int:
         """Premium-based sizing for options: risk = premium * quantity * stop_pct."""
-        if premium <= 0:
+        if (
+            not math.isfinite(premium)
+            or premium <= 0
+            or not math.isfinite(premium_stop_pct)
+            or premium_stop_pct <= 0
+            or premium_stop_pct > MAX_TRADE_RISK_PCT / 100.0
+        ):
+            logger.warning(
+                "[%s] Option sizing rejected: premium and stop risk must be "
+                "positive and stop risk cannot exceed %.1f%% of deployed capital",
+                symbol,
+                MAX_TRADE_RISK_PCT,
+            )
             return 0
         risk_budget = (
             max_risk_per_trade
@@ -916,8 +967,12 @@ class IntradayManager:
         )
         if risk_budget <= 0:
             return 0
-        lot_size = int(self.contract_specs.get(symbol, {}).get("lot_size", 1))
-        stop_value_per_lot = premium * premium_stop_pct * lot_size
+        specs = self.contract_specs.get(symbol, {})
+        lot_size = int(specs.get("lot_size", 1))
+        multiplier = float(specs.get("multiplier", self.MULTIPLIERS.get(symbol, 1)))
+        if lot_size <= 0 or not math.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError(f"Option contract {symbol} has invalid risk specifications")
+        stop_value_per_lot = premium * premium_stop_pct * lot_size * multiplier
         max_lots = math.floor(
             risk_budget / max(stop_value_per_lot, 1e-6) + 1e-12
         )

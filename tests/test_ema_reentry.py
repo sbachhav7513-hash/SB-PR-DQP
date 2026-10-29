@@ -64,17 +64,20 @@ def test_pe_reentry_requires_bearish_cross_then_later_close_below_cross_low():
     assert signal.confirmation_close < signal.crossover_level
 
 
-def test_reentry_confirmation_must_finish_within_ten_minutes():
+def test_reentry_can_confirm_after_ten_minutes_but_not_after_entry_cutoff():
     candles = _candles([120 - index for index in range(21)] + [
         99, 98, 99, 101, 104, 108, 113, 119, 126, 134
     ])
-    stop_time = candles[20]["time"] + timedelta(seconds=30)
+    stop_time = candles[20]["time"] - timedelta(minutes=10)
 
-    assert find_ema_reentry_signal(candles, "CE", stop_time) is not None
+    signal = find_ema_reentry_signal(candles, "CE", stop_time)
+    assert signal is not None
+    assert (signal.signal_time - stop_time).total_seconds() > 10 * 60
     assert find_ema_reentry_signal(
         candles,
         "CE",
         stop_time - timedelta(minutes=3),
+        valid_until=signal.signal_time,
     ) is None
 
 
@@ -179,6 +182,7 @@ def test_backtest_adds_at_most_one_reentry_after_stop_and_reports_baseline():
     assert reentry.reentry_entry_price == reentry.entry_price
     assert reentry.reentry_exit_price == reentry.exit_price
     assert reentry.reentry_outcome == "WIN"
+    assert reentry.route == "ema_reentry"
     assert result.ema_reentry_statistics["reentries"] == 1
     assert result.ema_reentry_statistics["baseline_total_return_pct"] == -1
     assert result.ema_reentry_statistics["combined_total_return_pct"] > -1
