@@ -31,7 +31,7 @@
   "allow_trend_continuation": true,
   "option_min_candle_body_ratio": 0.60,
   "live_orders_confirmed": false,
-  "market_close_time": "15:15",
+  "market_close_time": "15:30",
   "account_size": 100000,
   "risk_per_trade_pct": 1.0,
   "max_risk_per_trade": 1000.0,
@@ -42,7 +42,7 @@
   "futures_underlyings": [],
   "options_underlyings": [
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
-    "SBIN", "INFY", "TCS", "LT", "TATAMOTORS", "SENSEX"
+    "SBIN", "INFY", "TCS", "LT"
   ],
   "option_expiry_days": 35,
   "option_expiry_mode": "nearest",
@@ -55,9 +55,7 @@
     "SBIN": 5,
     "INFY": 5,
     "TCS": 5,
-    "LT": 5,
-    "TATAMOTORS": 5,
-    "SENSEX": 100
+    "LT": 5
   },
   "option_max_strike_distance_pct": 1.0,
   "auto_discover_futures": false,
@@ -95,7 +93,7 @@
   "ema_fast": 9,
   "ema_slow": 21,
   "rsi_period": 14,
-  "min_entry_score": 65,
+  "min_entry_score": 70,
   "min_volatility_pct": 0.05,
   "max_volatility_pct": 5.0,
   "alert_rsi_low": 30,
