@@ -25,6 +25,19 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-10-30
+
+#### DLY-2026-10-30-01
+
+- Reason: Correct the evidence trail for the one-candle confirmation replay: the archive does not support an exact-code, trade-level B replay or the claimed +₹18,796 result, so production entry logic should not be replaced on this evidence.
+- Related prior entries checked: Reviewed the current daily and strategy records for October 2026; no prior log entry records this exact replay correction or its evidence set.
+- Files:
+  - `ENTRY_CONFIRMATION_HISTORICAL_REPLAY_REPORT.md` (added): Capture the corrected signal-bar alignment, baseline reconciliation, and the exact B replay limitation.
+  - `DAILY_CHANGELOG.md` (modified): Record the evidence correction and its decision.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the equivalent operational/evidence note so strategy records reflect the corrected replay findings.
+- Validation and result: Reconciled the archived paper journal against the available `kite_daily` data; baseline totals reproduce +₹4,076.25 across 74 trades, not +₹4,669 or +₹18,796. The corrected directional screen yields 38 passes and 36 fails, and the result remains an unverified raw confirmation screen rather than a trade-level B execution cohort.
+- Outcome / follow-up / rollback: Do not replace production entry logic on this evidence. Keep the current code/config in place until a complete archived replay or live-fidelity reconstruction provides exact selected-contract, quote, and exit metadata.
+
 ### 2026-09-30
 
 #### DLY-2026-09-30-01

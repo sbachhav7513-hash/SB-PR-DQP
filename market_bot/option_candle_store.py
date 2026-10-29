@@ -34,6 +34,7 @@ class OptionCandleRecorder:
         self.root.mkdir(parents=True, exist_ok=True)
         self.config_hash = config_hash
         self._active_contracts: Dict[str, Set[str]] = {}
+        self._active_contract_ids: Dict[str, Dict[str, Set[str]]] = {}
         self._seen_timestamps: Dict[Path, Set[str]] = {}
         self._load_active_contracts_for_today()
 
@@ -98,6 +99,11 @@ class OptionCandleRecorder:
         local_signal_time = self._local_timestamp(signal_time)
         day_key = local_signal_time.date().isoformat()
         self._active_contracts.setdefault(day_key, set()).add(symbol)
+        if contract_id:
+            contract_ids = self._active_contract_ids.setdefault(
+                day_key, {}
+            ).setdefault(symbol, set())
+            contract_ids.add(contract_id)
         captured = 0
         for candle in candles:
             if self._local_timestamp(candle.timestamp).date().isoformat() != day_key:
@@ -114,6 +120,14 @@ class OptionCandleRecorder:
     ) -> bool:
         if not self.is_active(symbol, candle.timestamp):
             return False
+        day_key = self._local_timestamp(candle.timestamp).date().isoformat()
+        active_ids = self._active_contract_ids.get(day_key, {}).get(symbol, set())
+        if active_ids:
+            captured = 0
+            for active_contract_id in active_ids:
+                if active_contract_id == contract_id:
+                    captured += self._append(symbol, candle, active_contract_id)
+            return bool(captured)
         return bool(self._append(symbol, candle, contract_id))
 
     def _append(self, symbol: str, candle: Bar, contract_id: str = "") -> int:

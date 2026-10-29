@@ -188,6 +188,8 @@ def test_paper_option_entry_uses_ask_without_changing_ltp_sizing():
     assert logged_trade["entry_quote_ask"] == 18.30
     assert logged_trade["entry_quote_ltp"] == 18.25
     assert logged_trade["entry_fill_source"] == "best_ask"
+    assert logged_trade["entry_mode"] == "immediate"
+    assert logged_trade["route"] == "scored"
 
 
 def test_strategy_config_version_produces_a_new_hash():
