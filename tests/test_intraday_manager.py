@@ -93,7 +93,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["runner_gap_r"] is None
     assert position["adaptive_breakeven_r"] == 0.5
     assert position["adaptive_trail_activation_r"] == 1.0
-    assert position["adaptive_trail_gap_r"] == 0.5
+    assert position["adaptive_trail_gap_r"] == 1.0
     assert position["adaptive_runner_activation_r"] == 2.0
     assert position["adaptive_runner_gap_r"] == 1.0
 
@@ -471,7 +471,7 @@ def test_option_trail_runner_state_is_persisted_when_high_water_changes():
             100.0,
             90.0,
             [105.0, 110.0, 120.0],
-            [100.0, 105.0, 110.0],
+            [100.0, 100.0, 110.0],
             ["breakeven", "profit_trail", "runner"],
         ),
         (
@@ -479,7 +479,7 @@ def test_option_trail_runner_state_is_persisted_when_high_water_changes():
             100.0,
             110.0,
             [95.0, 90.0, 80.0],
-            [100.0, 95.0, 90.0],
+            [100.0, 100.0, 90.0],
             ["breakeven", "profit_trail", "runner"],
         ),
     ],
@@ -499,7 +499,7 @@ def test_adaptive_option_exit_selects_mode_from_trade_progress(
         exit_strategy="paper_option_adaptive",
         adaptive_breakeven_r=0.5,
         adaptive_trail_activation_r=1.0,
-        adaptive_trail_gap_r=0.5,
+        adaptive_trail_gap_r=1.0,
         adaptive_runner_activation_r=2.0,
         adaptive_runner_gap_r=1.0,
     )
@@ -527,10 +527,59 @@ def test_adaptive_option_exit_stop_only_ratchets_tighter():
         exit_strategy="paper_option_adaptive",
     )
 
-    assert manager.update_trailing_stop("NIFTY_CE", 110.0) == 105.0
-    assert manager.update_trailing_stop("NIFTY_CE", 120.0) == 110.0
-    assert manager.update_trailing_stop("NIFTY_CE", 115.0) == 110.0
+    assert manager.update_trailing_stop("NIFTY_CE", 115.0) == 105.0
+    assert manager.update_trailing_stop("NIFTY_CE", 112.0) == 105.0
+    assert manager.update_trailing_stop("NIFTY_CE", 125.0) == 115.0
+    assert manager.update_trailing_stop("NIFTY_CE", 120.0) == 115.0
     assert manager.active_positions["NIFTY_CE"]["adaptive_exit_mode"] == "runner"
+
+
+@pytest.mark.parametrize(
+    ("peak_r", "expected_stop_r"),
+    [(1.0, 0.0), (1.5, 0.5), (2.5, 1.5)],
+)
+def test_adaptive_option_exit_uses_one_r_trail_gap(peak_r, expected_stop_r):
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+    )
+
+    stop = manager.update_trailing_stop("NIFTY_CE", 100.0 + peak_r * 10.0)
+
+    assert stop == pytest.approx(100.0 + expected_stop_r * 10.0)
+    assert manager.active_positions["NIFTY_CE"]["adaptive_trail_gap_r"] == 1.0
+
+
+def test_adaptive_option_exit_behavior_below_one_r_is_unchanged():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+    )
+
+    assert manager.update_trailing_stop("NIFTY_CE", 104.0) is None
+    assert (
+        manager.active_positions["NIFTY_CE"]["adaptive_exit_mode"]
+        == "initial_stop"
+    )
+    assert manager.update_trailing_stop("NIFTY_CE", 105.0) == 100.0
+    assert (
+        manager.active_positions["NIFTY_CE"]["adaptive_exit_mode"]
+        == "breakeven"
+    )
 
 
 def test_adaptive_option_exit_mode_and_mfe_are_persisted():
@@ -1205,7 +1254,7 @@ def test_paper_adaptive_exit_restore_reinstates_mode_and_thresholds():
                 "trailing_enabled": True,
                 "adaptive_breakeven_r": 0.5,
                 "adaptive_trail_activation_r": 1.0,
-                "adaptive_trail_gap_r": 0.5,
+                "adaptive_trail_gap_r": 1.0,
                 "adaptive_runner_activation_r": 2.0,
                 "adaptive_runner_gap_r": 1.0,
                 "adaptive_exit_mode": "profit_trail",
