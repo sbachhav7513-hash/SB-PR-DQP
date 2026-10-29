@@ -119,6 +119,7 @@ class KiteMarketStream:
         self.connection_lock = threading.Lock()
         self.contract_specs: Dict[str, Dict[str, int]] = {}
         self.contract_symbols: Dict[str, str] = {}
+        self.contract_exchanges: Dict[str, str] = {}
         self.contract_expiries: Dict[str, date] = {}
         self.contract_tick_sizes: Dict[str, float] = {}
 
@@ -136,6 +137,7 @@ class KiteMarketStream:
             futures = self._select_current_futures()
             futures_specs = dict(self.contract_specs)
             futures_symbols = dict(self.contract_symbols)
+            futures_exchanges = dict(self.contract_exchanges)
             futures_expiries = dict(self.contract_expiries)
             futures_tick_sizes = dict(self.contract_tick_sizes)
 
@@ -143,6 +145,10 @@ class KiteMarketStream:
             options = self._select_current_options()
             self.contract_specs = {**futures_specs, **self.contract_specs}
             self.contract_symbols = {**futures_symbols, **self.contract_symbols}
+            self.contract_exchanges = {
+                **futures_exchanges,
+                **self.contract_exchanges,
+            }
             self.contract_expiries = {**futures_expiries, **self.contract_expiries}
             self.contract_tick_sizes = {
                 **futures_tick_sizes,
@@ -352,6 +358,10 @@ class KiteMarketStream:
         self.contract_symbols = {
             row["name"].upper(): row["tradingsymbol"] for row in selected_rows
         }
+        self.contract_exchanges = {
+            row["name"].upper(): str(row.get("exchange", "NFO"))
+            for row in selected_rows
+        }
         self.contract_tick_sizes = {
             row["name"].upper(): float(row.get("tick_size", 0.05) or 0.05)
             for row in selected_rows
@@ -372,18 +382,27 @@ class KiteMarketStream:
         """Select the ATM CE and PE contracts for each configured underlying."""
         today = date.today()
         requested = {symbol.upper() for symbol in self.config.options_underlyings}
-        instruments = [
-            row
-            for row in self.kite.instruments("NFO")
-            if row.get("instrument_type") in {"CE", "PE"}
-            and row.get("name", "").upper() in requested
-            and row.get("expiry")
-            and row["expiry"] >= today
-            and row.get("strike") is not None
-            and row.get("instrument_token")
-        ]
+        underlying_exchange = {
+            underlying: "BFO" if underlying == "SENSEX" else "NFO"
+            for underlying in requested
+        }
+        instruments = []
+        for exchange in sorted(set(underlying_exchange.values())):
+            for row in self.kite.instruments(exchange):
+                underlying = str(row.get("name", "")).upper()
+                if (
+                    row.get("instrument_type") in {"CE", "PE"}
+                    and underlying in requested
+                    and underlying_exchange[underlying] == exchange
+                    and row.get("expiry")
+                    and row["expiry"] >= today
+                    and row.get("strike") is not None
+                    and row.get("instrument_token")
+                ):
+                    row.setdefault("exchange", exchange)
+                    instruments.append(row)
         if not instruments:
-            raise RuntimeError("No current NFO options matched options_underlyings")
+            raise RuntimeError("No current options matched options_underlyings")
 
         expiries_by_underlying: Dict[str, List[date]] = defaultdict(list)
         for row in instruments:
@@ -444,7 +463,7 @@ class KiteMarketStream:
                 else ""
             )
             raise RuntimeError(
-                f"No {expiry_mode} NFO option expiry{expiry_constraint} "
+                f"No {expiry_mode} option expiry{expiry_constraint} "
                 "matched option_expiry_days"
             )
 
@@ -460,11 +479,21 @@ class KiteMarketStream:
         }
         missing = sorted(set(selected_expiries) - set(underlying_tokens))
         if missing:
-            spot_master = {
-                str(row.get("tradingsymbol", "")).upper(): int(row["instrument_token"])
-                for row in self.kite.instruments("NSE")
-                if row.get("tradingsymbol") and row.get("instrument_token")
+            spot_master = {}
+            spot_exchanges = {
+                "BSE" if underlying == "SENSEX" else "NSE"
+                for underlying in missing
             }
+            for exchange in sorted(spot_exchanges):
+                spot_master.update(
+                    {
+                        str(row.get("tradingsymbol", "")).upper(): int(
+                            row["instrument_token"]
+                        )
+                        for row in self.kite.instruments(exchange)
+                        if row.get("tradingsymbol") and row.get("instrument_token")
+                    }
+                )
             for underlying in missing:
                 token = spot_master.get(underlying)
                 if token is not None:
@@ -531,7 +560,7 @@ class KiteMarketStream:
                     selected[f"{underlying}_{option_type}"] = chosen
 
         if not selected:
-            raise RuntimeError("No ATM NFO options matched configured underlyings")
+            raise RuntimeError("No ATM options matched configured underlyings")
 
         option_tokens = [str(int(row["instrument_token"])) for row in selected.values()]
         quotes = self.kite.ltp(option_tokens)
@@ -539,11 +568,14 @@ class KiteMarketStream:
         if self.config.min_options_volume > 0:
             try:
                 raw_quotes = self.kite.quote(
-                    [f"NFO:{row['tradingsymbol']}" for row in selected.values()]
+                    [
+                        f"{row.get('exchange', 'NFO')}:{row['tradingsymbol']}"
+                        for row in selected.values()
+                    ]
                 )
                 volume_quotes = {
                     str(int(row["instrument_token"])): raw_quotes.get(
-                        f"NFO:{row['tradingsymbol']}", {}
+                        f"{row.get('exchange', 'NFO')}:{row['tradingsymbol']}", {}
                     )
                     for row in selected.values()
                 }
@@ -580,6 +612,10 @@ class KiteMarketStream:
             symbol: row["tradingsymbol"]
             for symbol, row in eligible.items()
         }
+        self.contract_exchanges = {
+            symbol: str(row.get("exchange", "NFO"))
+            for symbol, row in eligible.items()
+        }
         resolved_options = {
             symbol: int(row["instrument_token"])
             for symbol, row in eligible.items()
@@ -587,14 +623,14 @@ class KiteMarketStream:
         resolved = {**underlying_tokens, **resolved_options}
         self.config.instrument_tokens = resolved
         logger.info(
-            "Selected %d ATM NFO option contracts: %s",
+            "Selected %d ATM option contracts: %s",
             len(resolved_options),
             ", ".join(resolved_options),
         )
         return resolved
 
     def place_market_order(self, symbol: str, side: str, quantity: int) -> str:
-        """Place one validated MIS market order for a selected NFO contract."""
+        """Place one validated MIS market order for a selected derivative."""
         if side not in {"BUY", "SELL"}:
             raise ValueError(f"Unsupported order side: {side}")
         if quantity <= 0:
@@ -602,7 +638,9 @@ class KiteMarketStream:
 
         tradingsymbol = self.contract_symbols.get(symbol)
         if not tradingsymbol:
-            raise RuntimeError(f"No selected NFO contract is available for {symbol}")
+            raise RuntimeError(
+                f"No selected derivative contract is available for {symbol}"
+            )
 
         transaction_type = (
             self.kite.TRANSACTION_TYPE_BUY
@@ -611,7 +649,7 @@ class KiteMarketStream:
         )
         order_id = self.kite.place_order(
             variety=self.kite.VARIETY_REGULAR,
-            exchange=self.kite.EXCHANGE_NFO,
+            exchange=self.contract_exchanges.get(symbol, "NFO"),
             tradingsymbol=tradingsymbol,
             transaction_type=transaction_type,
             quantity=quantity,
@@ -643,13 +681,15 @@ class KiteMarketStream:
 
         tradingsymbol = self.contract_symbols.get(symbol)
         if not tradingsymbol:
-            raise RuntimeError(f"No selected NFO contract is available for {symbol}")
+            raise RuntimeError(
+                f"No selected derivative contract is available for {symbol}"
+            )
 
         tick_size = self.contract_tick_sizes.get(symbol, 0.05)
         if position_side == "BUY":
-            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
-        else:
             trigger_price = math.ceil(trigger_price / tick_size - 1e-9) * tick_size
+        else:
+            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
         trigger_price = round(trigger_price, 10)
         if trigger_price <= 0:
             raise ValueError("Rounded protective stop trigger price must be positive")
@@ -662,7 +702,7 @@ class KiteMarketStream:
         order_type = getattr(self.kite, "ORDER_TYPE_SL_MARKET", "SL-M")
         order_id = self.kite.place_order(
             variety=self.kite.VARIETY_REGULAR,
-            exchange=self.kite.EXCHANGE_NFO,
+            exchange=self.contract_exchanges.get(symbol, "NFO"),
             tradingsymbol=tradingsymbol,
             transaction_type=transaction_type,
             quantity=quantity,
@@ -698,9 +738,9 @@ class KiteMarketStream:
 
         tick_size = self.contract_tick_sizes.get(symbol, 0.05)
         if position_side == "BUY":
-            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
-        else:
             trigger_price = math.ceil(trigger_price / tick_size - 1e-9) * tick_size
+        else:
+            trigger_price = math.floor(trigger_price / tick_size + 1e-9) * tick_size
         trigger_price = round(trigger_price, 10)
         if trigger_price <= 0:
             raise ValueError("Rounded protective stop trigger price must be positive")
@@ -739,9 +779,54 @@ class KiteMarketStream:
             if str(order.get("status", "")).upper() == "COMPLETE"
         ]
 
-    def cancel_order(self, order_id: str) -> None:
-        self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR, order_id=str(order_id))
+    def cancel_order(self, order_id: str, variety: Optional[str] = None) -> None:
+        self.kite.cancel_order(
+            variety=variety or self.kite.VARIETY_REGULAR,
+            order_id=str(order_id),
+        )
         logger.warning("Cancelled remaining quantity for Kite order %s", order_id)
+
+    def cancel_pending_non_protective_orders(
+        self, protected_order_ids: set[str]
+    ) -> list[str]:
+        """Cancel active orders except protective stops for open positions."""
+        active_statuses = {
+            "OPEN",
+            "TRIGGER PENDING",
+            "VALIDATION PENDING",
+            "OPEN PENDING",
+            "PUT ORDER REQ RECEIVED",
+            "AMO REQ RECEIVED",
+            "MODIFY PENDING",
+            "PARTIAL",
+            "PARTIALLY FILLED",
+        }
+        protected = {str(order_id) for order_id in protected_order_ids if order_id}
+        cancelled: list[str] = []
+        failures: list[tuple[str, Exception]] = []
+        for order in self.kite.orders():
+            order_id = str(order.get("order_id", ""))
+            status = str(order.get("status", "")).upper()
+            if not order_id or order_id in protected or status not in active_statuses:
+                continue
+            try:
+                self.cancel_order(
+                    order_id,
+                    variety=str(order.get("variety") or self.kite.VARIETY_REGULAR),
+                )
+                cancelled.append(order_id)
+            except Exception as exc:
+                logger.exception(
+                    "Could not cancel pending Kite order %s during daily shutdown",
+                    order_id,
+                )
+                failures.append((order_id, exc))
+        if failures:
+            order_ids = ", ".join(order_id for order_id, _ in failures)
+            raise RuntimeError(
+                f"Could not cancel pending Kite order(s): {order_ids}"
+            ) from failures[0][1]
+        return cancelled
 
     def wait_for_order_fill(
         self, order_id: str, requested_quantity: int, timeout_seconds: float = 10.0

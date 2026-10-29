@@ -96,6 +96,56 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
 
 
+def test_refresh_instrument_tokens_selects_sensex_options_from_bfo():
+    kite = Mock()
+    expiry = date.today() + timedelta(days=7)
+    sensex_options = [
+        {
+            "exchange": "BFO",
+            "name": "SENSEX",
+            "tradingsymbol": f"SENSEX{expiry:%y%m%d}82000{option_type}",
+            "instrument_type": option_type,
+            "expiry": expiry,
+            "strike": 82000,
+            "instrument_token": token,
+            "lot_size": 10,
+        }
+        for option_type, token in (("CE", 500), ("PE", 501))
+    ]
+    kite.instruments.side_effect = lambda exchange: {
+        "BFO": sensex_options,
+        "BSE": [{"tradingsymbol": "SENSEX", "instrument_token": 265}],
+    }.get(exchange, [])
+    kite.ltp.side_effect = [
+        {"265": {"last_price": 82025.0}},
+        {"500": {"last_price": 150.0}, "501": {"last_price": 140.0}},
+    ]
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                options_underlyings=["SENSEX"],
+                option_strike_step={"SENSEX": 100},
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {
+        "SENSEX": 265,
+        "SENSEX_CE": 500,
+        "SENSEX_PE": 501,
+    }
+    assert stream.contract_exchanges == {
+        "SENSEX_CE": "BFO",
+        "SENSEX_PE": "BFO",
+    }
+    assert stream.contract_specs["SENSEX_CE"] == {"lot_size": 10, "multiplier": 1}
+
+
 def test_nearest_options_skip_expiry_day_when_expiry_risk_is_enabled():
     kite = Mock()
     today = date.today()
@@ -788,10 +838,10 @@ def test_option_position_size_uses_contract_lots_and_respects_risk_budget():
     manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
 
     assert manager.calculate_option_size(
-        "NIFTY_CE", premium=10.0, premium_stop_pct=0.35
-    ) == 260
+        "NIFTY_CE", premium=10.0, premium_stop_pct=0.10
+    ) == 325
     assert manager.calculate_option_size(
-        "NIFTY_CE", premium=100.0, premium_stop_pct=0.35
+        "NIFTY_CE", premium=200.0, premium_stop_pct=0.10
     ) == 0
 
 
@@ -1199,7 +1249,37 @@ def test_place_market_order_uses_selected_nfo_contract():
     )
 
 
-def test_modify_protective_stop_rounds_trigger_to_contract_tick():
+def test_place_market_order_uses_selected_bfo_contract():
+    kite = Mock()
+    kite.TRANSACTION_TYPE_BUY = "BUY"
+    kite.TRANSACTION_TYPE_SELL = "SELL"
+    kite.VARIETY_REGULAR = "regular"
+    kite.ORDER_TYPE_MARKET = "MARKET"
+    kite.PRODUCT_MIS = "MIS"
+    kite.VALIDITY_DAY = "DAY"
+    kite.place_order.return_value = "sensex-order"
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(KiteConfig(api_key="key", access_token="token"))
+    stream.contract_symbols = {"SENSEX_CE": "SENSEX26OCT82000CE"}
+    stream.contract_exchanges = {"SENSEX_CE": "BFO"}
+
+    assert stream.place_market_order("SENSEX_CE", "BUY", 10) == "sensex-order"
+    kite.place_order.assert_called_once_with(
+        variety="regular",
+        exchange="BFO",
+        tradingsymbol="SENSEX26OCT82000CE",
+        transaction_type="BUY",
+        quantity=10,
+        order_type="MARKET",
+        product="MIS",
+        validity="DAY",
+    )
+
+
+def test_modify_protective_stop_rounds_toward_entry():
     stream = object.__new__(KiteMarketStream)
     stream.kite = Mock()
     stream.kite.VARIETY_REGULAR = "regular"
@@ -1212,6 +1292,16 @@ def test_modify_protective_stop_rounds_trigger_to_contract_tick():
     stream.kite.modify_order.assert_called_once_with(
         variety="regular",
         order_id="stop-123",
+        trigger_price=100.05,
+    )
+
+    stream.modify_protective_stop_order(
+        "NIFTY_PE", "SELL", "stop-456", 100.03
+    )
+
+    assert stream.kite.modify_order.call_args_list[-1] == call(
+        variety="regular",
+        order_id="stop-456",
         trigger_price=100.0,
     )
 
@@ -1238,6 +1328,46 @@ def test_wait_for_order_fill_returns_verified_execution_details():
         "average_price": 123.45,
     }
 
+
+def test_daily_shutdown_cancels_pending_orders_except_protective_stops():
+    stream = object.__new__(KiteMarketStream)
+    stream.kite = Mock()
+    stream.kite.VARIETY_REGULAR = "regular"
+    stream.kite.orders.return_value = [
+        {"order_id": "entry-1", "status": "OPEN", "variety": "regular"},
+        {"order_id": "amo-entry", "status": "OPEN", "variety": "amo"},
+        {"order_id": "protect-1", "status": "TRIGGER PENDING"},
+        {"order_id": "partial-1", "status": "PARTIAL"},
+        {"order_id": "filled-1", "status": "COMPLETE"},
+    ]
+    stream.cancel_order = Mock()
+
+    cancelled = stream.cancel_pending_non_protective_orders({"protect-1"})
+
+    assert cancelled == ["entry-1", "amo-entry", "partial-1"]
+    assert stream.cancel_order.call_args_list == [
+        call("entry-1", variety="regular"),
+        call("amo-entry", variety="amo"),
+        call("partial-1", variety="regular"),
+    ]
+
+
+def test_daily_shutdown_attempts_remaining_cancellations_after_one_failure():
+    stream = object.__new__(KiteMarketStream)
+    stream.kite = Mock()
+    stream.kite.VARIETY_REGULAR = "regular"
+    stream.kite.orders.return_value = [
+        {"order_id": "entry-1", "status": "OPEN", "variety": "regular"},
+        {"order_id": "entry-2", "status": "OPEN", "variety": "regular"},
+    ]
+    stream.cancel_order = Mock(
+        side_effect=[RuntimeError("broker unavailable"), None]
+    )
+
+    with pytest.raises(RuntimeError, match="entry-1"):
+        stream.cancel_pending_non_protective_orders(set())
+
+    assert stream.cancel_order.call_count == 2
 
 def test_wait_for_order_fill_rejects_broker_rejection():
     kite = Mock()

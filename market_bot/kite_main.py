@@ -33,7 +33,10 @@ from .intraday_manager import (
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
 from .option_candle_store import OptionCandleRecorder
-from .risk_manager import build_risk_plan
+from .risk_manager import (
+    MAX_TRADE_RISK_PCT,
+    build_risk_plan,
+)
 from .strategy_config import (
     load_strategy_config,
     resolve_execution_mode,
@@ -154,6 +157,26 @@ class KiteTradingBot:
     def _calculate_position_size(
         self, symbol: str, entry_price: float, stop_loss_price: float
     ) -> int:
+        if (
+            not math.isfinite(float(entry_price))
+            or entry_price <= 0
+            or not math.isfinite(float(stop_loss_price))
+        ):
+            raise ValueError(
+                "Entry and stop prices must be finite and entry must be positive"
+            )
+        stop_risk_pct = abs(entry_price - stop_loss_price) / entry_price * 100.0
+        if stop_risk_pct > MAX_TRADE_RISK_PCT + 1e-9:
+            evaluations = getattr(self, "_pending_entry_evaluations", None)
+            if evaluations is None:
+                evaluations = {}
+                self._pending_entry_evaluations = evaluations
+            evaluations[symbol] = {
+                "accepted": False,
+                "rejection_reason": "stop_risk_exceeds_deployed_capital_limit",
+                "stop_risk_pct": stop_risk_pct,
+            }
+            return 0
         risk_cap = self._entry_risk_cap()
         if risk_cap is None:
             return self.intraday_manager.calculate_position_size(
@@ -240,6 +263,22 @@ class KiteTradingBot:
             return f"entry_cutoff_blocked:{minutes}m_before_close"
         return None
 
+    def _ema_reentry_cutoff(self, trade_date) -> datetime:
+        minutes = int(
+            self.config.get("entry_cutoff_minutes_before_close", 45)
+        )
+        if not 0 <= minutes <= 375:
+            raise ValueError(
+                "entry_cutoff_minutes_before_close must be between 0 and 375"
+            )
+        market_close = getattr(
+            self.intraday_manager,
+            "MARKET_CLOSE",
+            datetime.strptime("15:30", "%H:%M").time(),
+        )
+        close_at = datetime.combine(trade_date, market_close, tzinfo=IST)
+        return close_at - timedelta(minutes=minutes)
+
     @staticmethod
     def _is_option_dynamic_exit(position: Optional[dict]) -> bool:
         return bool(position) and position.get("exit_strategy") in {
@@ -321,7 +360,14 @@ class KiteTradingBot:
         if lot_size <= 0 or minimum_lots < 1 or maximum_lots < minimum_lots:
             raise ValueError("Option lot sizing requires valid lot bounds and contract specs")
 
-        unit_risk = max(premium, 0.01) * premium_stop_pct
+        multiplier = float(
+            self.intraday_manager.contract_specs.get(symbol, {}).get(
+                "multiplier", self.intraday_manager.MULTIPLIERS.get(symbol, 1)
+            )
+        )
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError(f"Option contract {symbol} has an invalid multiplier")
+        unit_risk = max(premium, 0.01) * premium_stop_pct * multiplier
         per_lot_risk = unit_risk * lot_size
         risk_cap = self._entry_risk_cap()
         risk_budget = min(
@@ -341,6 +387,17 @@ class KiteTradingBot:
             "option_risk_per_lot_rupees": per_lot_risk,
             "entry_risk_budget_rupees": risk_budget,
         }
+        if (
+            not math.isfinite(premium_stop_pct)
+            or premium_stop_pct <= 0
+            or premium_stop_pct > MAX_TRADE_RISK_PCT / 100.0
+        ):
+            evaluation["accepted"] = False
+            evaluation["rejection_reason"] = (
+                "stop_risk_exceeds_deployed_capital_limit"
+            )
+            evaluations[symbol] = evaluation
+            return 0
         if not math.isfinite(per_lot_risk) or per_lot_risk <= 0:
             evaluation["accepted"] = False
             evaluation["rejection_reason"] = "invalid_entry_stop_risk"
@@ -614,15 +671,33 @@ class KiteTradingBot:
         self._support_reversal_last_candidate = last_candidates
 
     def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
-        lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
+        specs = self.intraday_manager.contract_specs.get(symbol, {})
+        lot_size = int(specs.get("lot_size", 1))
         if lot_size <= 0:
             raise ValueError(f"Option contract {symbol} has an invalid lot size")
+        multiplier = float(
+            specs.get("multiplier", self.intraday_manager.MULTIPLIERS.get(symbol, 1))
+        )
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError(f"Option contract {symbol} has an invalid multiplier")
         max_risk_per_lot_pct = float(
             self.config.get("option_max_risk_per_lot_pct", 10.0)
         )
-        if not math.isfinite(max_risk_per_lot_pct) or not 0 < max_risk_per_lot_pct <= 100:
-            raise ValueError("option_max_risk_per_lot_pct must be between 0 and 100")
-        return max(premium, 0.01) * lot_size * max_risk_per_lot_pct / 100.0
+        if (
+            not math.isfinite(max_risk_per_lot_pct)
+            or not 0 < max_risk_per_lot_pct <= MAX_TRADE_RISK_PCT
+        ):
+            raise ValueError(
+                "option_max_risk_per_lot_pct must be greater than 0 and "
+                f"at most {MAX_TRADE_RISK_PCT:g}"
+            )
+        return (
+            max(premium, 0.01)
+            * lot_size
+            * multiplier
+            * max_risk_per_lot_pct
+            / 100.0
+        )
 
     def _entry_risk_limit(self, symbol: str, premium: float) -> float:
         risk_limit = float(self.intraday_manager.max_risk_per_trade)
@@ -693,6 +768,27 @@ class KiteTradingBot:
             "intraday_options",
             "intraday_both",
         }
+        if options_mode:
+            option_risk_pct = float(
+                self.config.get("option_max_risk_per_lot_pct", MAX_TRADE_RISK_PCT)
+            )
+            option_stop_pct = float(self.config.get("option_premium_stop_pct", 0.10))
+            if (
+                not math.isfinite(option_risk_pct)
+                or not 0 < option_risk_pct <= MAX_TRADE_RISK_PCT
+            ):
+                raise ValueError(
+                    "option_max_risk_per_lot_pct must be greater than 0 and "
+                    f"at most {MAX_TRADE_RISK_PCT:g}"
+                )
+            if (
+                not math.isfinite(option_stop_pct)
+                or not 0 < option_stop_pct <= MAX_TRADE_RISK_PCT / 100.0
+            ):
+                raise ValueError(
+                    "option_premium_stop_pct must be greater than 0 and "
+                    f"at most {MAX_TRADE_RISK_PCT / 100.0:g}"
+                )
         max_risk_per_trade = self.config.get("max_risk_per_trade")
 
         # Initialize intraday manager; option entries apply their premium-based cap below.
@@ -788,9 +884,9 @@ class KiteTradingBot:
                 self._log_ema_reentry_event(
                     symbol,
                     state,
-                    "WINDOW_EXPIRED",
+                    "ENTRY_CUTOFF",
                     current_time=datetime.now(IST),
-                    outcome="no_signal",
+                    outcome="entry_cutoff",
                 )
         self.weekly_report_dir = Path(
             self.config.get("weekly_report_dir", ".")
@@ -799,8 +895,12 @@ class KiteTradingBot:
         self.last_daily_summary_date = None
         self._entries_paused = False
         self._risk_state_reconciled = not self.live_orders_enabled
+        self._daily_shutdown_date = None
+        self._daily_shutdown_cancel_complete = False
         if self.live_orders_enabled:
             self._reconcile_live_state()
+        else:
+            self._activate_daily_loss_shutdown()
         self.symbol_map = {v: k for k, v in self.config["instrument_tokens"].items()}
         self.latest_prices: Dict[str, float] = {}
         self.option_quote_cache: Dict[str, dict] = {}
@@ -919,14 +1019,17 @@ class KiteTradingBot:
             state = {
                 "original_trade_id": original_trade_id,
                 "stop_time": stop_time,
+                "stop_out_low": self._positive_quote_value(
+                    trade.get("ema_reentry_stop_out_low")
+                ),
                 "status": "observing",
             }
-            if (now - stop_time).total_seconds() > 10 * 60:
+            if now >= self._ema_reentry_cutoff(stop_time.date()):
                 state["status"] = "expired"
-                state["outcome"] = "NO_SIGNAL"
+                state["outcome"] = "ENTRY_CUTOFF"
                 self.trade_journal.annotate_trade(
                     symbol,
-                    {"ema_reentry_outcome": "NO_SIGNAL"},
+                    {"ema_reentry_outcome": "ENTRY_CUTOFF"},
                     action="BUY",
                 )
             self._ema_reentry_states[symbol] = state
@@ -958,26 +1061,34 @@ class KiteTradingBot:
         stop_time = state["stop_time"]
         if current_time is None:
             return None
-        if (current_time - stop_time).total_seconds() > 10 * 60:
+        if current_time.date() != stop_time.date():
+            return None
+        current_bar_end = current_time + timedelta(minutes=1)
+        cutoff = self._ema_reentry_cutoff(stop_time.date())
+        if current_bar_end >= cutoff:
             state["status"] = "expired"
-            state["outcome"] = "NO_SIGNAL"
+            state["outcome"] = "ENTRY_CUTOFF"
             self.trade_journal.annotate_trade(
                 symbol,
-                {"ema_reentry_outcome": "NO_SIGNAL"},
+                {"ema_reentry_outcome": "ENTRY_CUTOFF"},
                 action="BUY",
             )
             self._log_ema_reentry_event(
                 symbol,
                 state,
-                "WINDOW_EXPIRED",
-                current_time=current_time,
+                "ENTRY_CUTOFF",
+                current_time=current_bar_end,
             )
+            return None
+
+        if self._ema_reentry_premium_made_new_low(symbol, state):
             return None
 
         signal = find_ema_reentry_signal(
             underlying_history,
             "CE" if symbol.endswith("_CE") else "PE",
             stop_time,
+            valid_until=cutoff,
         )
         if signal is None:
             return None
@@ -994,7 +1105,40 @@ class KiteTradingBot:
             "confirmation_close": signal.confirmation_close,
             "vwap": signal.vwap,
             "signal": signal.signal,
+            "route": "ema_reentry",
         }
+
+    def _ema_reentry_premium_made_new_low(self, symbol: str, state: dict) -> bool:
+        stop_out_low = self._positive_quote_value(state.get("stop_out_low"))
+        if stop_out_low is None:
+            return False
+        quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        metrics = self._option_quote_metrics(quote)
+        premium = metrics["ltp"]
+        if not metrics["valid"] or premium is None or premium >= stop_out_low:
+            return False
+
+        current_time = metrics["timestamp"] or datetime.now(IST)
+        state["status"] = "cancelled"
+        state["outcome"] = "PREMIUM_NEW_LOW"
+        state["new_premium_low"] = premium
+        self.trade_journal.annotate_trade(
+            symbol,
+            {
+                "ema_reentry_outcome": "PREMIUM_NEW_LOW",
+                "ema_reentry_new_low": premium,
+            },
+            action="BUY",
+        )
+        self._log_ema_reentry_event(
+            symbol,
+            state,
+            "CANCELLED_NEW_LOW",
+            current_time=current_time,
+            signal={"premium_new_low": premium},
+            outcome="premium_new_low",
+        )
+        return True
 
     def _log_ema_reentry_event(
         self,
@@ -1015,11 +1159,14 @@ class KiteTradingBot:
                 "event": "ema_stop_reentry",
                 "ema_reentry_event": event,
                 "ticker": symbol,
+                "contract_id": self._contract_id(symbol),
                 "signal": (signal or {}).get("signal", "HOLD"),
                 "outcome": outcome or event.lower(),
                 "strategy_variant": "paper_ema_stop_reentry",
+                "route": "ema_reentry",
                 "original_trade_id": state.get("original_trade_id"),
                 "stop_time": str(state.get("stop_time")),
+                "stop_out_low": state.get("stop_out_low"),
                 "reentry_signal_time": (signal or {}).get("signal_time"),
                 "reentry_reason": (signal or {}).get("reentry_reason"),
                 "reentry_vwap": (signal or {}).get("vwap"),
@@ -1046,6 +1193,7 @@ class KiteTradingBot:
                 ),
                 "ema_reentry_signal_time": signal["signal_time"],
                 "ema_reentry_reason": signal["reentry_reason"],
+                "route": "ema_reentry",
             },
             action="BUY",
         )
@@ -1065,7 +1213,27 @@ class KiteTradingBot:
             logger.error("Kite connection lost; pausing new entries: %s", reason)
             notifier = getattr(self, "telegram_notifier", None)
             if notifier:
-                notifier.send_message(f"URGENT: Kite connection lost; new entries paused.\n{reason}")
+                message = (
+                    "URGENT: Kite connection lost; new entries paused."
+                )
+                positions = getattr(
+                    getattr(self, "intraday_manager", None),
+                    "active_positions",
+                    {},
+                )
+                quote_managed = [
+                    symbol
+                    for symbol, position in positions.items()
+                    if self._quote_validated_long_option(symbol, position)
+                    and not position.get("protection_order_id")
+                ]
+                if quote_managed:
+                    message += (
+                        "\nOpen option positions have no broker-side stop and "
+                        "require quote monitoring/manual protection: "
+                        + ", ".join(sorted(quote_managed))
+                    )
+                notifier.send_message(f"{message}\n{reason}")
             return
 
         logger.info("Kite connection restored; reconciling broker state")
@@ -1525,6 +1693,11 @@ class KiteTradingBot:
             for row in positions
         )
         self.intraday_manager.daily_pnl = realized_pnl
+        self.intraday_manager.daily_realized_losses = max(
+            self.intraday_manager.daily_realized_losses,
+            max(-realized_pnl, 0.0),
+        )
+        self._activate_daily_loss_shutdown()
         if self.intraday_manager.daily_risk_exceeded():
             raise RuntimeError(
                 "Broker positions and realized losses exceed the aggregate daily "
@@ -1714,6 +1887,16 @@ class KiteTradingBot:
                     return False, f"IV out of range: {iv} not in [{iv_min}, {iv_max}]"
         return True, "OK"
 
+    def _contract_id(self, symbol: str) -> str:
+        stream = getattr(self, "kite_stream", None)
+        if stream is None:
+            return ""
+        trading_symbol = getattr(stream, "contract_symbols", {}).get(symbol)
+        exchange = getattr(stream, "contract_exchanges", {}).get(symbol)
+        if not trading_symbol or not exchange:
+            return ""
+        return f"{exchange}:{trading_symbol}"
+
     def _capture_eligible_option_candles(
         self, symbol: str, bars: list[Bar]
     ) -> None:
@@ -1730,7 +1913,9 @@ class KiteTradingBot:
             logger.error("[%s] Option candle recorder is unavailable", symbol)
             return
         try:
-            recorder.capture_eligible(symbol, bars, datetime.now(IST))
+            recorder.capture_eligible(
+                symbol, bars, datetime.now(IST), self._contract_id(symbol)
+            )
         except OSError:
             logger.exception(
                 "[%s] Could not persist eligible option candles", symbol
@@ -1746,7 +1931,7 @@ class KiteTradingBot:
         ):
             return
         try:
-            recorder.record_active(symbol, bar)
+            recorder.record_active(symbol, bar, self._contract_id(symbol))
         except OSError:
             logger.exception("[%s] Could not persist option candle", symbol)
 
@@ -2556,22 +2741,69 @@ class KiteTradingBot:
             return None
         return quote if math.isfinite(quote) and quote > 0 else None
 
-    def _paper_shadow_quote_is_fresh(self, quote: dict) -> bool:
-        quote_timestamp = quote.get("timestamp")
-        if not isinstance(quote_timestamp, datetime):
-            return False
-        if quote_timestamp.tzinfo is None:
-            quote_timestamp = quote_timestamp.replace(tzinfo=IST)
-        else:
-            quote_timestamp = quote_timestamp.astimezone(IST)
-        max_quote_age = float(self.config.get("option_quote_max_age_seconds", 60))
-        return (
-            math.isfinite(max_quote_age)
-            and max_quote_age > 0
-            and 0
-            <= (datetime.now(IST) - quote_timestamp).total_seconds()
-            <= max_quote_age
+    def _option_quote_metrics(
+        self, quote: dict, now: Optional[datetime] = None
+    ) -> dict:
+        bid = self._positive_quote_value(quote.get("bid"))
+        ask = self._positive_quote_value(quote.get("ask"))
+        ltp = self._positive_quote_value(
+            quote.get("last_price", quote.get("premium"))
         )
+        timestamp = self._journal_datetime(quote.get("timestamp"))
+        now = now or datetime.now(IST)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=IST)
+        else:
+            now = now.astimezone(IST)
+        age_seconds = (
+            (now - timestamp).total_seconds() if timestamp is not None else None
+        )
+        try:
+            configured_age = float(
+                getattr(self, "config", {}).get(
+                    "option_quote_max_age_seconds", 60
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            configured_age = 0.0
+        max_age = min(configured_age, 60.0)
+        fresh = (
+            age_seconds is not None
+            and math.isfinite(max_age)
+            and max_age > 0
+            and 0 <= age_seconds <= max_age
+        )
+        in_spread = (
+            bid is not None
+            and ask is not None
+            and ask >= bid
+            and ltp is not None
+            and bid <= ltp <= ask
+        )
+        return {
+            "bid": bid,
+            "ask": ask,
+            "ltp": ltp,
+            "timestamp": timestamp,
+            "age_seconds": age_seconds,
+            "fresh": fresh,
+            "in_spread": in_spread,
+            "valid": fresh and in_spread,
+        }
+
+    def _quote_validated_long_option(self, symbol: str, position: dict) -> bool:
+        return (
+            bool(
+                getattr(self, "config", {}).get(
+                    "option_quote_validated_stops_enabled", False
+                )
+            )
+            and symbol.endswith(("_CE", "_PE"))
+            and str(position.get("direction", "")).upper() == "BUY"
+        )
+
+    def _paper_shadow_quote_is_fresh(self, quote: dict) -> bool:
+        return self._option_quote_metrics(quote)["fresh"]
 
     def _update_paper_shadow_runner(self, symbol: str, tick: Tick) -> None:
         positions = getattr(self, "paper_shadow_positions", {})
@@ -2941,6 +3173,18 @@ class KiteTradingBot:
         }
         self._update_paper_shadow_runner(symbol, tick)
         position = self.intraday_manager.active_positions.get(symbol)
+        if position and self._quote_validated_long_option(symbol, position):
+            quote_metrics = self._option_quote_metrics(
+                self.option_quote_cache[symbol]
+            )
+            if quote_metrics["valid"] and quote_metrics["ltp"] is not None:
+                previous_low = self._positive_quote_value(
+                    position.get("lowest_option_premium")
+                )
+                position["lowest_option_premium"] = min(
+                    quote_metrics["ltp"],
+                    previous_low if previous_low is not None else quote_metrics["ltp"],
+                )
         if self.paper_trading_enabled and position:
             self.trade_journal.update_trade_mark(
                 symbol, tick.last_price, str(position["direction"])
@@ -2949,6 +3193,12 @@ class KiteTradingBot:
             self.option_quote_cache[symbol]["oi"] = int(tick.oi)
         if tick.iv is not None:
             self.option_quote_cache[symbol]["iv"] = float(tick.iv)
+        reentry_state = getattr(self, "_ema_reentry_states", {}).get(symbol)
+        if reentry_state and reentry_state.get("status") in {
+            "observing",
+            "triggered",
+        }:
+            self._ema_reentry_premium_made_new_low(symbol, reentry_state)
         if self.intraday_manager.should_exit_all_positions():
             self._handle_market_close_exit()
         else:
@@ -2998,6 +3248,66 @@ class KiteTradingBot:
             if position.get("trailing_enabled") is not None
             else self.intraday_manager.trailing_enabled
         )
+        quote_validated_option = self._quote_validated_long_option(
+            symbol, position
+        )
+        quote_metrics = None
+        if quote_validated_option:
+            quote_metrics = self._option_quote_metrics(
+                getattr(self, "option_quote_cache", {}).get(symbol, {})
+            )
+            if not quote_metrics["valid"]:
+                bid = quote_metrics["bid"]
+                stop_loss = self._positive_quote_value(position.get("stop_loss"))
+                trailing_level = self._positive_quote_value(
+                    position.get("trailing_stop")
+                )
+                previous_stale_checks = int(
+                    position.get("stale_stop_trigger_checks", 0)
+                )
+                stale_stop_trigger = (
+                    not quote_metrics["fresh"]
+                    and bid is not None
+                    and (
+                        (stop_loss is not None and bid <= stop_loss)
+                        or (
+                            trailing_level is not None
+                            and bid <= trailing_level
+                        )
+                    )
+                )
+                if stale_stop_trigger or (
+                    not quote_metrics["fresh"] and previous_stale_checks > 0
+                ):
+                    stale_checks = previous_stale_checks + 1
+                    position["stale_stop_trigger_checks"] = stale_checks
+                    if stale_checks >= 2:
+                        last_valid_bid = self._positive_quote_value(
+                            position.get("last_valid_bid")
+                        )
+                        if last_valid_bid is None:
+                            logger.error(
+                                "[%s] Repeated stale stop quote but no last valid "
+                                "bid is available; position remains open",
+                                symbol,
+                            )
+                            return None
+                        self._close_position(
+                            symbol, last_valid_bid, "feed_failure_exit"
+                        )
+                        return "feed_failure_exit"
+                    logger.warning(
+                        "[%s] Stop reached on stale quote; holding for one "
+                        "subsequent quote check",
+                        symbol,
+                    )
+                    return None
+                position["stale_stop_trigger_checks"] = 0
+                return None
+
+            position["stale_stop_trigger_checks"] = 0
+            position["last_valid_bid"] = quote_metrics["bid"]
+
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
         if runner_state_before is not None:
             runner_state_after = (
@@ -3032,9 +3342,14 @@ class KiteTradingBot:
                 return "TRAILING_STOP_UPDATE_FAILED"
 
         if position["direction"] == "BUY":
-            if price <= position["stop_loss"]:
+            stop_price = (
+                quote_metrics["bid"]
+                if quote_validated_option and quote_metrics is not None
+                else price
+            )
+            if stop_price <= position["stop_loss"]:
                 reason = "STOP_LOSS"
-            elif trailing_stop is not None and price <= trailing_stop:
+            elif trailing_stop is not None and stop_price <= trailing_stop:
                 reason = "TRAILING_STOP"
             elif (
                 not trailing_enabled
@@ -3074,7 +3389,14 @@ class KiteTradingBot:
             else:
                 return None
 
-        self._close_position(symbol, price, reason)
+        exit_price = (
+            quote_metrics["bid"]
+            if quote_validated_option
+            and quote_metrics is not None
+            and quote_metrics["bid"] is not None
+            else price
+        )
+        self._close_position(symbol, exit_price, reason)
         return reason
 
     def _persist_paper_option_exit_state(
@@ -3208,9 +3530,71 @@ class KiteTradingBot:
             self._close_position(symbol, current_price, reason)
         return reason
 
+    def _activate_daily_loss_shutdown(self) -> bool:
+        """Block the rest of the session and cancel pending non-protective orders."""
+        if not self.intraday_manager.daily_loss_limit_reached():
+            return False
+
+        today = datetime.now(IST).date()
+        is_new_shutdown = getattr(self, "_daily_shutdown_date", None) != today
+        if is_new_shutdown:
+            self._daily_shutdown_date = today
+            self._daily_shutdown_cancel_complete = False
+
+        if getattr(self, "live_orders_enabled", False) and not getattr(
+            self, "_daily_shutdown_cancel_complete", False
+        ):
+            protected_order_ids = {
+                str(position["protection_order_id"])
+                for position in self.intraday_manager.active_positions.values()
+                if position.get("protection_order_id")
+            }
+            try:
+                cancelled = self.kite_stream.cancel_pending_non_protective_orders(
+                    protected_order_ids
+                )
+                self._daily_shutdown_cancel_complete = True
+            except Exception:
+                logger.exception(
+                    "Daily loss limit reached; pending-order cancellation failed"
+                )
+                self.telegram_notifier.send_message(
+                    "URGENT: daily loss limit reached; entries are disabled, but "
+                    "pending-order cancellation failed. Verify Kite orders manually."
+                )
+                return True
+        else:
+            cancelled = []
+            self._daily_shutdown_cancel_complete = True
+
+        if is_new_shutdown:
+            message = (
+                "Daily realized-loss limit reached: "
+                f"₹{self.intraday_manager.daily_realized_losses:.2f} / "
+                f"₹{self.intraday_manager.daily_max_loss:.2f}. "
+                "New entries are disabled until the next session."
+            )
+            if getattr(self, "live_orders_enabled", False):
+                message += (
+                    f" Cancelled {len(cancelled)} pending non-protective order(s); "
+                    "active protective stops remain in place."
+                )
+            logger.warning(message)
+            self.telegram_notifier.send_message(message)
+        return True
+
     def _live_entry_allowed(self, symbol: str) -> bool:
         if not getattr(self, "live_orders_enabled", False):
             return True
+        if self.intraday_manager.daily_loss_limit_reached():
+            self._activate_daily_loss_shutdown()
+            logger.warning(
+                "[%s] Entry blocked by the daily realized-loss shutdown", symbol
+            )
+            return False
+        if getattr(self, "_daily_shutdown_date", None) == datetime.now(IST).date():
+            logger.warning("[%s] Entry blocked until the next trading session", symbol)
+            return False
         if getattr(self, "_entries_paused", False) or not getattr(self, "_risk_state_reconciled", False):
             logger.warning("[%s] Live entry blocked until broker state is safe", symbol)
             return False
@@ -3220,6 +3604,14 @@ class KiteTradingBot:
         return True
 
     def _place_protective_stop(self, symbol: str, position: dict) -> bool:
+        if self._quote_validated_long_option(symbol, position):
+            position["quote_validated_stop_monitoring"] = True
+            logger.info(
+                "[%s] Using quote-validated synthetic stop monitoring; "
+                "native LTP-triggered stop is disabled",
+                symbol,
+            )
+            return True
         try:
             order_id = self.kite_stream.place_protective_stop_order(
                 symbol,
@@ -3251,6 +3643,7 @@ class KiteTradingBot:
             try:
                 self.trade_journal.log_trade({
                     "ticker": symbol,
+                    "contract_id": self._contract_id(symbol),
                     "action": position["direction"],
                     "entry": position["entry_price"],
                     "stop_loss": position["stop_loss"],
@@ -3270,7 +3663,10 @@ class KiteTradingBot:
     ) -> bool:
         """Persist and announce each staged target advance once."""
         action = position["direction"]
-        if getattr(self, "live_orders_enabled", False):
+        if (
+            getattr(self, "live_orders_enabled", False)
+            and not self._quote_validated_long_option(symbol, position)
+        ):
             protection_order_id = position.get("protection_order_id")
             if not protection_order_id or trailing_stop is None:
                 logger.error("[%s] Cannot ratchet a missing protective stop", symbol)
@@ -3354,13 +3750,24 @@ class KiteTradingBot:
                 if remaining > 0 and protection_cancelled:
                     position["quantity"] = remaining
                     protection_restored = self._place_protective_stop(symbol, position)
+                    protection_restored = (
+                        protection_restored
+                        and bool(position.get("protection_order_id"))
+                    )
                 self._entries_paused = True
                 self._risk_state_reconciled = False
-                protection_state = (
-                    "protective stop was restored"
-                    if protection_restored
-                    else "protective stop status is uncertain; manual protection is required"
-                )
+                if protection_restored:
+                    protection_state = "broker protective stop was restored"
+                elif self._quote_validated_long_option(symbol, position):
+                    protection_state = (
+                        "no broker-side stop is active; quote monitoring requires "
+                        "a live feed and manual protection is required during outages"
+                    )
+                else:
+                    protection_state = (
+                        "protective stop status is uncertain; manual protection "
+                        "is required"
+                    )
                 self.telegram_notifier.send_message(
                     f"URGENT: {symbol} is not flat after {max_attempts} exit attempts; "
                     f"{protection_state}. New entries are paused."
@@ -3371,6 +3778,30 @@ class KiteTradingBot:
                 return
         trade = self.trade_journal.get_open_trade(symbol, action)
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        quote_metrics = self._option_quote_metrics(quote)
+        if (
+            reason != "feed_failure_exit"
+            and getattr(self, "config", {}).get(
+                "option_quote_validated_stops_enabled", False
+            )
+            and symbol.endswith(("_CE", "_PE"))
+            and quote_metrics["valid"]
+            and quote_metrics["bid"] is not None
+        ):
+            price = quote_metrics["bid"]
+        logger.info(
+            "[%s] Exit quote bid=%s ask=%s LTP=%s timestamp=%s reason=%s",
+            symbol,
+            quote_metrics["bid"],
+            quote_metrics["ask"],
+            quote_metrics["ltp"],
+            (
+                quote_metrics["timestamp"].isoformat()
+                if quote_metrics["timestamp"] is not None
+                else None
+            ),
+            reason,
+        )
         if getattr(self, "paper_trading_enabled", False) and not getattr(
             self, "live_orders_enabled", False
         ):
@@ -3388,10 +3819,14 @@ class KiteTradingBot:
             return
 
         pnl = exit_info["pnl_rupees"] if exit_info else journal_pnl
+        if exit_info is not None or trade is not None:
+            if pnl is None:
+                raise RuntimeError(
+                    f"Closed trade {symbol} has no realized P&L for daily risk tracking"
+                )
+            self.intraday_manager.record_trade_close(symbol, reason, float(pnl))
+            self._activate_daily_loss_shutdown()
         if exit_info:
-            self.intraday_manager.record_trade_close(
-                symbol, reason, exit_info["pnl_rupees"]
-            )
             is_ema_reentry = bool((trade or {}).get("is_ema_reentry"))
             ema_reentry_eligible = (
                 self._ema_reentry_enabled()
@@ -3433,7 +3868,28 @@ class KiteTradingBot:
                     if position
                     else 0
                 ),
-                "paper_exit_ltp": float(price),
+                "paper_exit_ltp": (
+                    quote_metrics["ltp"]
+                    if quote_metrics["ltp"] is not None
+                    else float(price)
+                ),
+                "exit_quote_ltp": quote_metrics["ltp"],
+                "exit_quote_bid": quote_metrics["bid"],
+                "exit_quote_ask": quote_metrics["ask"],
+                "exit_quote_timestamp": (
+                    quote_metrics["timestamp"].isoformat()
+                    if quote_metrics["timestamp"] is not None
+                    else None
+                ),
+                "paper_exit_fill_source": (
+                    "best_bid"
+                    if quote_metrics["valid"]
+                    else (
+                        "last_valid_bid"
+                        if reason == "feed_failure_exit"
+                        else "existing_exit_reference"
+                    )
+                ),
                 "paper_exit_bid": self._positive_quote_value(
                     quote.get("bid")
                 ),
@@ -3458,10 +3914,16 @@ class KiteTradingBot:
                     }
                 )
             if ema_reentry_eligible:
+                stop_out_low = self._positive_quote_value(
+                    position.get("lowest_option_premium")
+                    if position
+                    else None
+                )
                 exit_annotation.update(
                     {
                         "ema_reentry_eligible": True,
                         "ema_reentry_stop_time": closed_at.isoformat(),
+                        "ema_reentry_stop_out_low": stop_out_low,
                         "ema_reentry_outcome": "PENDING",
                     }
                 )
@@ -3474,6 +3936,7 @@ class KiteTradingBot:
                 state = {
                     "original_trade_id": str(trade["trade_id"]),
                     "stop_time": closed_at,
+                    "stop_out_low": stop_out_low,
                     "status": "observing",
                 }
                 self._ema_reentry_states[symbol] = state
@@ -3566,6 +4029,7 @@ class KiteTradingBot:
                 "event": "bar_decision",
                 "bar": bar.to_dict(),
                 "ticker": symbol,
+                "contract_id": self._contract_id(symbol),
                 "signal": signal,
                 "outcome": outcome,
                 "bars_available": len(bars),
@@ -3609,6 +4073,9 @@ class KiteTradingBot:
                 "ema_reentry_event": (
                     "ENTRY_DECISION" if ema_reentry_context else None
                 ),
+                "route": (
+                    "ema_reentry" if ema_reentry_context else None
+                ),
             }
         )
 
@@ -3624,6 +4091,9 @@ class KiteTradingBot:
         ema_reentry_context: Optional[dict] = None,
     ) -> str:
         """Handle a BUY signal."""
+        entry_quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        entry_quote_metrics = self._option_quote_metrics(entry_quote)
+        entry_fill_source = "last_price"
         open_trade = self.trade_journal.get_open_trade(symbol, "BUY")
         opposite_trade = self.trade_journal.get_open_trade(symbol, "SELL")
         if opposite_trade or (
@@ -3698,21 +4168,42 @@ class KiteTradingBot:
                     staged_option_targets
                 )
                 premium = float(self.latest_prices.get(symbol, price))
-                price = premium
+                if self.config.get("option_quote_validated_stops_enabled", False):
+                    if (
+                        entry_quote_metrics["valid"]
+                        and entry_quote_metrics["ask"] is not None
+                    ):
+                        price = entry_quote_metrics["ask"]
+                        entry_fill_source = "best_ask"
+                    else:
+                        logger.warning(
+                            "[%s] Entry quote is not fresh and inside its spread; "
+                            "using the existing LTP entry reference",
+                            symbol,
+                        )
+                else:
+                    price = premium
                 if range_breakout_plan:
                     stop_loss = float(paper_range_stop)
-                    if not math.isfinite(price) or price <= 0:
+                    if (
+                        not math.isfinite(price)
+                        or price <= 0
+                        or not math.isfinite(premium)
+                        or premium <= 0
+                    ):
                         return "invalid_risk"
                     risk_per_unit = price - stop_loss
+                    sizing_risk_per_unit = premium - stop_loss
                     if (
                         not math.isfinite(stop_loss)
                         or not math.isfinite(paper_range_target_r)
                         or stop_loss <= 0
                         or risk_per_unit <= 0
+                        or sizing_risk_per_unit <= 0
                         or paper_range_target_r <= 0
                     ):
                         return "invalid_risk"
-                    premium_stop_pct = risk_per_unit / price
+                    premium_stop_pct = sizing_risk_per_unit / premium
                     if adaptive_exit_values is not None:
                         take_profit = (
                             price + risk_per_unit * adaptive_exit_values[3]
@@ -3757,6 +4248,10 @@ class KiteTradingBot:
                         "risk_cap_blocked:"
                         f"one_lot_exceeds_{cap:g}_rupees"
                     )
+                if evaluation.get("rejection_reason") == (
+                    "stop_risk_exceeds_deployed_capital_limit"
+                ):
+                    return "risk_blocked:stop_risk_exceeds_deployed_capital_limit"
                 return "position_size_zero"
 
             order_id = None
@@ -3768,6 +4263,7 @@ class KiteTradingBot:
                     fill = self.kite_stream.wait_for_order_fill(order_id, quantity)
                     quantity = int(fill["filled_quantity"])
                     price = float(fill["average_price"])
+                    entry_fill_source = "broker_fill"
                     if self._options_enabled() and "_" in symbol:
                         stop_loss = max(price * (1.0 - premium_stop_pct), 0.01)
                         take_profit = price * (1.0 + premium_target_pct)
@@ -3837,6 +4333,17 @@ class KiteTradingBot:
                     self.config.get("strong_option_milestone_window_minutes", 10)
                 ),
             )
+            if self._quote_validated_long_option(
+                symbol, self.intraday_manager.active_positions[symbol]
+            ):
+                position = self.intraday_manager.active_positions[symbol]
+                position["lowest_option_premium"] = float(
+                    entry_quote_metrics["ltp"]
+                    if entry_quote_metrics["ltp"] is not None
+                    else price
+                )
+                if entry_quote_metrics["valid"]:
+                    position["last_valid_bid"] = entry_quote_metrics["bid"]
             self.intraday_manager.record_trade_open(symbol, "BUY")
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
@@ -3899,6 +4406,7 @@ class KiteTradingBot:
                 alert.update(
                     {
                         "is_ema_reentry": True,
+                        "route": "ema_reentry",
                         "original_trade_id": ema_reentry_context[
                             "original_trade_id"
                         ],
@@ -3914,12 +4422,16 @@ class KiteTradingBot:
                     }
                 )
             if getattr(self, "paper_trading_enabled", False):
-                quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+                quote = entry_quote
                 alert["timestamp"] = datetime.now(IST).isoformat()
                 alert["trade_id"] = (
                     f"{symbol}-{alert['timestamp']}-BUY"
                 )
-                alert["paper_entry_ltp"] = float(price)
+                alert["paper_entry_ltp"] = (
+                    entry_quote_metrics["ltp"]
+                    if entry_quote_metrics["ltp"] is not None
+                    else float(price)
+                )
                 alert["paper_entry_bid"] = self._positive_quote_value(
                     quote.get("bid")
                 )
@@ -3927,7 +4439,7 @@ class KiteTradingBot:
                     quote.get("ask")
                 )
                 alert["paper_entry_quote_is_fresh"] = bool(
-                    self._paper_shadow_quote_is_fresh(quote)
+                    entry_quote_metrics["fresh"]
                 )
                 alert["paper_entry_risk_rupees"] = (
                     self.intraday_manager.estimate_trade_risk(
@@ -3935,6 +4447,15 @@ class KiteTradingBot:
                     )
                 )
                 alert["risk_cap_rupees"] = self._entry_risk_cap()
+            alert["entry_quote_ltp"] = entry_quote_metrics["ltp"]
+            alert["entry_quote_bid"] = entry_quote_metrics["bid"]
+            alert["entry_quote_ask"] = entry_quote_metrics["ask"]
+            alert["entry_quote_timestamp"] = (
+                entry_quote_metrics["timestamp"].isoformat()
+                if entry_quote_metrics["timestamp"] is not None
+                else None
+            )
+            alert["entry_fill_source"] = entry_fill_source
             if staged_option_targets:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
@@ -3984,7 +4505,17 @@ class KiteTradingBot:
                         "trailing_stop": position["trailing_stop"],
                     }
                 )
+            alert["contract_id"] = self._contract_id(symbol)
             self.trade_journal.log_trade(alert)
+            logger.info(
+                "[%s] Entry quote bid=%s ask=%s LTP=%s timestamp=%s fill=%s",
+                symbol,
+                entry_quote_metrics["bid"],
+                entry_quote_metrics["ask"],
+                entry_quote_metrics["ltp"],
+                alert["entry_quote_timestamp"],
+                entry_fill_source,
+            )
             if option_adaptive_exit:
                 self._start_paper_shadow_runner(
                     symbol,
@@ -4112,6 +4643,10 @@ class KiteTradingBot:
                         "risk_cap_blocked:"
                         f"one_lot_exceeds_{cap:g}_rupees"
                     )
+                if evaluation.get("rejection_reason") == (
+                    "stop_risk_exceeds_deployed_capital_limit"
+                ):
+                    return "risk_blocked:stop_risk_exceeds_deployed_capital_limit"
                 return "position_size_zero"
 
             order_id = None
@@ -4288,6 +4823,7 @@ class KiteTradingBot:
                         "trailing_stop": position["trailing_stop"],
                     }
                 )
+            alert["contract_id"] = self._contract_id(symbol)
             self.trade_journal.log_trade(alert)
             self._persist_current_live_risk_state()
             target_label = "adaptive_exit_ref" if option_adaptive_exit else "TP"

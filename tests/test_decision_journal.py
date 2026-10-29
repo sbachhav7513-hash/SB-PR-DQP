@@ -1,6 +1,6 @@
 import json
 
-from market_bot.trade_journal import DecisionJournal
+from market_bot.trade_journal import DecisionJournal, TradeJournal
 
 
 def test_decision_journal_appends_json_without_changing_payload(tmp_path):
@@ -14,6 +14,23 @@ def test_decision_journal_appends_json_without_changing_payload(tmp_path):
     assert record["signal"] == "HOLD"
     assert record["history"] == [{"close": 100}]
     assert record["timestamp"]
+    assert record["contract_id"] == ""
+
+
+def test_trade_journal_records_contract_id(tmp_path):
+    path = tmp_path / "trades.jsonl"
+    journal = TradeJournal(str(path))
+
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "trading_symbol": "NIFTY26OCT25000CE",
+            "contract_id": "NFO:NIFTY26OCT25000CE",
+        }
+    )
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["contract_id"] == "NFO:NIFTY26OCT25000CE"
 
 
 def test_decision_journal_bounds_large_history_payloads(tmp_path):
@@ -34,6 +51,7 @@ def test_decision_journal_normalizes_outcome_and_records_ist_session(tmp_path):
     journal.log_decision({
         "timestamp": "2026-09-26T06:45:00+00:00",
         "ticker": "NIFTY",
+        "contract_id": "NFO:NIFTY26OCT25000CE",
         "signal": "BUY",
         "score": 82,
         "outcome": "accuracy_filter_rejected:volatility",
@@ -41,6 +59,7 @@ def test_decision_journal_normalizes_outcome_and_records_ist_session(tmp_path):
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert record["outcome"] == "accuracy_filter"
+    assert record["contract_id"] == "NFO:NIFTY26OCT25000CE"
     assert record["outcome_detail"] == "accuracy_filter_rejected:volatility"
     assert record["rejection_reason"] == "volatility"
     assert record["market_session"] == "regular_session"

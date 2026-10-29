@@ -86,6 +86,7 @@ class PaperTradingRecorder:
 
     TRADE_COLUMNS = [
         "trade_id", "timestamp", "config_hash", "ticker", "trading_symbol",
+        "contract_id",
         "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
@@ -133,7 +134,7 @@ class PaperTradingRecorder:
         "reentry_outcome",
     ]
     DECISION_COLUMNS = [
-        "timestamp", "config_hash", "ticker", "signal", "outcome", "score", "reasons",
+        "timestamp", "config_hash", "ticker", "contract_id", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
@@ -254,6 +255,7 @@ class DecisionJournal:
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        entry.setdefault("contract_id", "")
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
         history = entry.get("history")
@@ -410,6 +412,7 @@ class TradeJournal:
 
     def log_trade(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        entry.setdefault("contract_id", "")
         self._stamp_config_hash(entry)
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         entry.setdefault("status", "open")

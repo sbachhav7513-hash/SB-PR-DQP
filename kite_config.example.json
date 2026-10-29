@@ -3,6 +3,8 @@
   "kite_access_token": null,
   "trading_mode": "intraday_options",
   "mode": "PAPER",
+  "strategy_config_version": "v2",
+  "option_quote_validated_stops_enabled": true,
   "stop_reentry_enabled": true,
   "stop_reentry_cooldown_minutes": 15,
   "stop_reentry_min_score": 75,
@@ -44,11 +46,12 @@
   "auto_discover_futures": false,
   "max_futures": 0,
   "min_futures_volume": 0,
-  "options_underlyings": ["NIFTY", "BANKNIFTY"],
+  "options_underlyings": ["NIFTY", "BANKNIFTY", "SENSEX"],
   "option_expiry_days": 14,
   "option_strike_step": {
     "NIFTY": 50,
-    "BANKNIFTY": 100
+    "BANKNIFTY": 100,
+    "SENSEX": 100
   },
   "min_options_volume": 0,
   "news_enabled": true,

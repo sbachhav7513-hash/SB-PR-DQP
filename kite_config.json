@@ -3,6 +3,8 @@
   "kite_access_token": null,
   "trading_mode": "intraday_options",
   "mode": "PAPER",
+  "strategy_config_version": "v2",
+  "option_quote_validated_stops_enabled": true,
   "stop_reentry_enabled": true,
   "stop_reentry_cooldown_minutes": 15,
   "stop_reentry_min_score": 75,
@@ -39,7 +41,7 @@
   "futures_underlyings": [],
   "options_underlyings": [
     "NIFTY", "BANKNIFTY", "RELIANCE", "HDFCBANK", "ICICIBANK",
-    "SBIN", "INFY", "TCS", "LT", "TATAMOTORS"
+    "SBIN", "INFY", "TCS", "LT", "TATAMOTORS", "SENSEX"
   ],
   "option_expiry_days": 35,
   "option_expiry_mode": "nearest",
@@ -53,7 +55,8 @@
     "INFY": 5,
     "TCS": 5,
     "LT": 5,
-    "TATAMOTORS": 5
+    "TATAMOTORS": 5,
+    "SENSEX": 100
   },
   "option_max_strike_distance_pct": 1.0,
   "auto_discover_futures": false,

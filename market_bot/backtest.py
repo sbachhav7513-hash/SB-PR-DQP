@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 from .engine import TradingScore, score_market
@@ -32,6 +32,7 @@ class BacktestTrade:
     reentry_pnl_pct: Optional[float] = None
     reentry_outcome: Optional[str] = None
     config_hash: Optional[str] = None
+    route: Optional[str] = None
 
 
 @dataclass
@@ -71,6 +72,7 @@ def run_backtest(
     trailing_distance_ratio: float = 0.25,
     history_limit: Optional[int] = None,
     ema_stop_reentry_enabled: bool = False,
+    entry_cutoff_minutes_before_close: int = 45,
 ) -> BacktestResult:
     """Replay completed-bar signals at the next open with optional live gates and costs."""
     if stop_loss_pct <= 0 or take_profit_pct <= 0:
@@ -83,6 +85,10 @@ def run_backtest(
         raise ValueError("trailing ratios cannot be negative")
     if history_limit is not None and history_limit < 1:
         raise ValueError("history_limit must be positive")
+    if not 0 <= entry_cutoff_minutes_before_close <= 375:
+        raise ValueError(
+            "entry_cutoff_minutes_before_close must be between 0 and 375"
+        )
 
     close_at = time.fromisoformat(market_close_time) if market_close_time else None
 
@@ -115,6 +121,17 @@ def run_backtest(
                         "CE" if closed_position["action"] == "BUY" else "PE"
                     ),
                 }
+                if close_at is not None:
+                    stopped_local = _bar_datetime(candle)
+                    if stopped_local is not None:
+                        cutoff = datetime.combine(
+                            stopped_local.date(),
+                            close_at,
+                            tzinfo=stopped_local.tzinfo or timezone.utc,
+                        ) - timedelta(
+                            minutes=entry_cutoff_minutes_before_close
+                        )
+                        pending_reentry["valid_until"] = cutoff
 
     for index in range(1, len(candles)):
         candle = candles[index]
@@ -177,12 +194,14 @@ def run_backtest(
                     candles[:index],
                     pending_reentry["option_leg"],
                     pending_reentry["stop_time"],
+                    valid_until=pending_reentry.get("valid_until"),
                 )
                 current_time = _utc_datetime(candle)
                 if opportunity is not None and current_time is not None:
-                    if (
-                        current_time - pending_reentry["stop_time"]
-                    ).total_seconds() <= 10 * 60:
+                    valid_until = pending_reentry.get("valid_until")
+                    if valid_until is None or current_time < valid_until.astimezone(
+                        timezone.utc
+                    ):
                         entry_price = float(candle["open"])
                         position = _open_position(
                             pending_reentry["action"],
@@ -206,6 +225,7 @@ def run_backtest(
                                 "reentry_reason": opportunity.reason,
                                 "reentry_vwap": opportunity.vwap,
                                 "reentry_entry_price": entry_price,
+                                "route": "ema_reentry",
                             }
                         )
                         reentry_statistics["signals_confirmed"] += 1
@@ -235,13 +255,15 @@ def run_backtest(
                             pending_reentry = None
                         continue
                     else:
-                        rejection_counts["ema_reentry_entry_after_window"] += 1
+                        rejection_counts["ema_reentry_entry_after_cutoff"] += 1
                         reentry_statistics["expired"] += 1
                         pending_reentry = None
                 elif current_time is not None and (
-                    current_time - pending_reentry["stop_time"]
-                ).total_seconds() > 10 * 60:
-                    rejection_counts["ema_reentry_window_expired"] += 1
+                    pending_reentry.get("valid_until") is not None
+                    and current_time
+                    >= pending_reentry["valid_until"].astimezone(timezone.utc)
+                ):
+                    rejection_counts["ema_reentry_entry_cutoff"] += 1
                     reentry_statistics["expired"] += 1
                     pending_reentry = None
                 if pending_reentry is not None:
@@ -503,4 +525,5 @@ def _close_trade(
         reentry_exit_price=exit_price if is_reentry else None,
         reentry_pnl_pct=reentry_pnl_pct if is_reentry else None,
         reentry_outcome=outcome if is_reentry else None,
+        route=position.get("route"),
     )

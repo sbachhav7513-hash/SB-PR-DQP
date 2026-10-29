@@ -733,8 +733,18 @@ def test_active_config_sizes_options_within_shared_per_trade_risk():
     assert config["option_min_lots"] == 1
     assert config["max_risk_per_trade"] == 1000.0
     assert config["daily_max_loss_pct"] == 10.0
-    assert config["min_entry_score"] == 60
+    assert config["min_entry_score"] == 70
     assert config["option_max_risk_per_lot_pct"] == 10.0
+    for key in (
+        "account_size",
+        "risk_per_trade_pct",
+        "max_risk_per_trade",
+        "daily_max_loss",
+        "daily_max_loss_pct",
+        "option_premium_stop_pct",
+        "option_max_risk_per_lot_pct",
+    ):
+        assert example_config.get(key) == config.get(key)
     assert manager.daily_max_loss == 10_000.0
     assert manager.max_risk_per_trade == 1000.0
     assert quantity == 65
@@ -790,8 +800,8 @@ def test_per_trade_risk_cap_is_separate_from_two_percent_daily_stop():
     assert manager.max_risk_per_trade == 350.0
     assert manager.daily_max_loss == 2_000.0
     assert manager.calculate_option_size(
-        "NIFTY_CE", premium=12.0, premium_stop_pct=0.20
-    ) == 130
+        "NIFTY_CE", premium=12.0, premium_stop_pct=0.10
+    ) == 260
 
     manager.record_trade_close("NIFTY_CE", "STOP_LOSS", pnl=-350.0)
 
@@ -811,6 +821,68 @@ def test_two_percent_daily_loss_stop_blocks_after_cumulative_losses():
 
     assert allowed is False
     assert "daily loss cap" in reason.lower()
+
+
+def test_daily_loss_limit_counts_realized_losses_without_offsetting_wins():
+    manager = IntradayManager(
+        account_size=1_000.0,
+        daily_max_loss_pct=10.0,
+    )
+    manager.record_trade_close("NIFTY_CE", "STOP_LOSS", pnl=-60.0)
+    manager.record_trade_close("BANKNIFTY_CE", "TAKE_PROFIT", pnl=100.0)
+    manager.record_trade_close("INFY_CE", "STOP_LOSS", pnl=-40.0)
+
+    assert manager.daily_pnl == 0.0
+    assert manager.daily_realized_losses == 100.0
+    assert manager.daily_loss_limit_reached() is True
+    assert manager.can_open_trade("TCS_CE", "BUY") == (
+        False,
+        "Daily loss cap reached (100 >= 100)",
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"account_size": 1_000.0, "daily_max_loss_pct": 10.01},
+        {"account_size": 1_000.0, "daily_max_loss": 100.01},
+    ],
+)
+def test_daily_loss_configuration_cannot_exceed_ten_percent(kwargs):
+    with pytest.raises(ValueError, match="daily_max_loss"):
+        IntradayManager(**kwargs)
+
+
+def test_option_sizing_rejects_stop_risk_above_ten_percent():
+    manager = IntradayManager()
+    manager.set_contract_specs({"NIFTY_CE": {"lot_size": 65, "multiplier": 1}})
+
+    assert manager.calculate_option_size(
+        "NIFTY_CE", premium=100.0, premium_stop_pct=0.1001
+    ) == 0
+
+
+def test_live_daily_loss_shutdown_cancels_pending_orders_but_keeps_protection():
+    manager = IntradayManager(account_size=1_000.0, daily_max_loss_pct=10.0)
+    manager.record_trade_close("TCS_CE", "STOP_LOSS", pnl=-100.0)
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot.live_orders_enabled = True
+    bot._daily_shutdown_date = None
+    bot._daily_shutdown_cancel_complete = False
+    bot.kite_stream = Mock()
+    bot.kite_stream.cancel_pending_non_protective_orders.return_value = ["entry-1"]
+    bot.intraday_manager.active_positions = {
+        "NIFTY_CE": {"protection_order_id": "protect-1"}
+    }
+    bot.telegram_notifier = Mock()
+
+    assert bot._activate_daily_loss_shutdown() is True
+    bot.kite_stream.cancel_pending_non_protective_orders.assert_called_once_with(
+        {"protect-1"}
+    )
+    assert bot._daily_shutdown_cancel_complete is True
+    assert bot._live_entry_allowed("INFY_CE") is False
 
 
 def test_one_minute_volatility_floor_uses_configurable_small_percentage():
@@ -949,22 +1021,22 @@ def test_open_positions_and_realized_losses_share_daily_risk_budget():
             "ICICIBANK_CE": {"lot_size": 10, "multiplier": 1},
         }
     )
-    manager.register_position("NIFTY_CE", "BUY", 130, 12.0, 9.6, 14.4)
+    manager.register_position("NIFTY_CE", "BUY", 260, 12.0, 10.8, 14.4)
 
     assert manager.open_position_risk() == pytest.approx(312.0)
     assert manager.available_daily_risk() == pytest.approx(38.0)
     assert (
         manager.calculate_option_size(
-            "BANKNIFTY_CE", 10.0, premium_stop_pct=0.20
+            "BANKNIFTY_CE", 10.0, premium_stop_pct=0.10
         )
-        == 10
+        == 30
     )
 
-    manager.register_position("BANKNIFTY_CE", "BUY", 10, 10.0, 8.0, 12.0)
-    assert manager.available_daily_risk() == pytest.approx(18.0)
+    manager.register_position("BANKNIFTY_CE", "BUY", 30, 10.0, 9.0, 12.0)
+    assert manager.available_daily_risk() == pytest.approx(8.0)
     assert (
         manager.calculate_option_size(
-            "ICICIBANK_CE", 10.0, premium_stop_pct=0.20
+            "ICICIBANK_CE", 10.0, premium_stop_pct=0.10
         )
         == 0
     )
@@ -994,6 +1066,7 @@ def test_session_rollover_resets_daily_loss_and_trade_counters():
     manager = IntradayManager(daily_max_loss=350.0)
     manager._session_date = datetime(2000, 1, 1).date()
     manager.daily_pnl = -125.0
+    manager.daily_realized_losses = 125.0
     manager.daily_trade_count = 2
     manager.consecutive_losses = 2
     manager.session_trade_symbols.add("NIFTY_CE")
@@ -1006,6 +1079,7 @@ def test_session_rollover_resets_daily_loss_and_trade_counters():
     manager._refresh_session()
 
     assert manager.daily_pnl == 0.0
+    assert manager.daily_realized_losses == 0.0
     assert manager.daily_trade_count == 0
     assert manager.consecutive_losses == 0
     assert manager.session_trade_symbols == set()
@@ -2239,23 +2313,23 @@ def test_live_milestone_moves_existing_broker_protective_stop():
     )
 
 
-def test_option_sizing_requires_two_risk_qualified_lots_and_caps_at_three():
+def test_option_sizing_rejects_minimum_lots_above_risk_qualified_size():
     bot = object.__new__(KiteTradingBot)
-    bot.config = {"option_min_lots": 2, "option_max_lots": 3}
+    bot.config = {
+        "option_min_lots": 2,
+        "option_max_lots": 3,
+        "option_max_risk_per_lot_pct": 10.0,
+    }
     bot.intraday_manager = IntradayManager()
     bot.intraday_manager.set_contract_specs(
         {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
     )
-    bot.intraday_manager.calculate_option_size = Mock(return_value=65)
 
-    assert bot._calculate_option_quantity("NIFTY_CE", 50.0, 0.20) == 0
+    assert bot._calculate_option_quantity("NIFTY_CE", 10.0, 0.10) == 0
     assert not bot._option_quantity_within_lot_bounds("NIFTY_CE", 65)
-    bot.intraday_manager.calculate_option_size.return_value = 5 * 65
-    assert bot._calculate_option_quantity("NIFTY_CE", 50.0, 0.20) == 3 * 65
-    assert bot._option_quantity_within_lot_bounds("NIFTY_CE", 3 * 65)
 
 
-def test_option_trade_risk_is_capped_at_one_lot_premium_value():
+def test_option_risk_override_above_ten_percent_is_rejected():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "trading_mode": "intraday_options",
@@ -2272,12 +2346,38 @@ def test_option_trade_risk_is_capped_at_one_lot_premium_value():
         {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
     )
 
-    quantity = bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.20)
+    with pytest.raises(ValueError, match="at most 10"):
+        bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.10)
+
+
+def test_option_stop_risk_cannot_exceed_ten_percent_of_deployed_capital():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+        "option_max_risk_per_lot_pct": 10.0,
+    }
+    bot.intraday_manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss=350.0,
+    )
+    bot.intraday_manager.set_contract_specs(
+        {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
+    )
+
+    quantity = bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.10)
 
     assert quantity == 65
     assert bot.intraday_manager.estimate_trade_risk(
-        "NIFTY_CE", quantity, 12.0, 12.0 * (1.0 - 0.20)
-    ) == pytest.approx(156.0)
+        "NIFTY_CE", quantity, 12.0, 12.0 * (1.0 - 0.10)
+    ) == pytest.approx(78.0)
+
+    assert bot._calculate_option_quantity("NIFTY_CE", 12.0, 0.1001) == 0
+    assert bot._pending_entry_evaluations["NIFTY_CE"][
+        "rejection_reason"
+    ] == "stop_risk_exceeds_deployed_capital_limit"
 
 
 def test_staged_target_does_not_move_back_when_price_retraces():
