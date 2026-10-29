@@ -36,7 +36,7 @@
   "allow_trend_continuation": true,
   "option_min_candle_body_ratio": 0.60,
   "live_orders_confirmed": false,
-  "market_close_time": "15:15",
+  "market_close_time": "15:30",
   "late_window_enabled": false,
   "late_window_start": "12:00",
   "late_window_end": "13:00",
@@ -47,12 +47,11 @@
   "auto_discover_futures": false,
   "max_futures": 0,
   "min_futures_volume": 0,
-  "options_underlyings": ["NIFTY", "BANKNIFTY", "SENSEX"],
+  "options_underlyings": ["NIFTY", "BANKNIFTY"],
   "option_expiry_days": 14,
   "option_strike_step": {
     "NIFTY": 50,
-    "BANKNIFTY": 100,
-    "SENSEX": 100
+    "BANKNIFTY": 100
   },
   "min_options_volume": 0,
   "news_enabled": true,

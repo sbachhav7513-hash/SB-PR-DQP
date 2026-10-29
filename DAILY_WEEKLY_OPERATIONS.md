@@ -145,7 +145,7 @@ Open `kite_config.json` and check:
 {
   "api_key": "your_key_here",
   "access_token": "valid_token",
-  "market_close_time": "15:15",
+  "market_close_time": "15:30",
   "bar_interval_seconds": 60,
   "stop_loss_pct": 0.75,
   "take_profit_pct": 1.5,
@@ -232,9 +232,15 @@ a fresh option premium below the stop-out low cancels it. Re-entry trades are
 tagged `ema_reentry`. Config v2 changes the strategy config hash; do not
 compare its trade records as though they used the prior quote/stop behavior.
 
-The configured options universe includes SENSEX. Its contracts are selected
-from BFO and its underlying index quote is resolved from BSE; other configured
-option underlyings continue to use NFO contracts.
+For the paper period, do not include SENSEX or TATAMOTORS in
+`options_underlyings`. SENSEX BFO/BSE and TATAMOTORS option routing remains
+available in code for future configuration; other configured option
+underlyings use NFO contracts.
+
+The configured entry cutoff is 45 minutes before the 15:30 IST close: no new
+entries are allowed from 14:45 IST onward, including at 14:45. Existing
+positions continue to be managed and follow the configured 15:15 IST forced
+exit.
 
 ### VPS systemd setup
 

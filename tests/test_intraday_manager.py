@@ -734,6 +734,7 @@ def test_active_config_sizes_options_within_shared_per_trade_risk():
     assert config["max_risk_per_trade"] == 1000.0
     assert config["daily_max_loss_pct"] == 10.0
     assert config["min_entry_score"] == 70
+    assert example_config["min_entry_score"] == 70
     assert config["option_max_risk_per_lot_pct"] == 10.0
     for key in (
         "account_size",
