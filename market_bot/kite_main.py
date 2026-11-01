@@ -4695,22 +4695,32 @@ class KiteTradingBot:
         finally:
             self._bar_callback_time = None
 
-    def _process_telegram_commands(self) -> None:
+    def _process_telegram_commands(self, *, read_only_only: bool = False) -> None:
         command_queue = getattr(self, "telegram_command_queue", None)
         reply_queue = getattr(self, "telegram_reply_queue", None)
         if command_queue is None or reply_queue is None:
             return
         lock = getattr(self, "_telegram_execution_lock", None)
         if lock is None:
-            self._process_telegram_commands_locked(command_queue, reply_queue)
+            self._process_telegram_commands_locked(
+                command_queue,
+                reply_queue,
+                read_only_only=read_only_only,
+            )
             return
         with lock:
-            self._process_telegram_commands_locked(command_queue, reply_queue)
+            self._process_telegram_commands_locked(
+                command_queue,
+                reply_queue,
+                read_only_only=read_only_only,
+            )
 
     def _process_telegram_commands_locked(
         self,
         command_queue: queue.Queue[TelegramCommand],
         reply_queue: queue.Queue[tuple[str, str]],
+        *,
+        read_only_only: bool = False,
     ) -> None:
         pending = getattr(self, "_telegram_pending_exit_confirmation", None)
         if pending and time.monotonic() >= pending["expires_at"]:
@@ -4721,11 +4731,30 @@ class KiteTradingBot:
                     "Exit confirmation expired; no order was placed.",
                 )
             )
-        while True:
+        deferred_commands = []
+        commands_to_check = command_queue.qsize()
+        for _ in range(commands_to_check):
             try:
                 command = command_queue.get_nowait()
             except queue.Empty:
-                return
+                break
+            command_parts = command.text.strip().split(maxsplit=1)
+            command_name = (
+                command_parts[0].split("@", 1)[0].lower()
+                if command_parts
+                else ""
+            )
+            if read_only_only and command_name not in {
+                "/help",
+                "/status",
+                "/pnl",
+                "/trades",
+                "/health",
+                "/pause",
+                "/resume",
+            }:
+                deferred_commands.append(command)
+                continue
             try:
                 reply = process_telegram_command(
                     self, command.text, chat_id=command.chat_id
@@ -4757,6 +4786,8 @@ class KiteTradingBot:
                     )
                     reply = f"{reply}\nCommand log could not be persisted."
             reply_queue.put((command.chat_id, reply))
+        for command in deferred_commands:
+            command_queue.put(command)
 
     def _extend_option_timebox(self, symbol: str, position: dict) -> bool:
         if not self.config.get("extend_option_timebox", False):
@@ -7161,8 +7192,7 @@ class KiteTradingBot:
 
                 while True:
                     now_monotonic = time.monotonic()
-                    if getattr(self, "simulation_mode", False):
-                        self._process_telegram_commands()
+                    self._process_telegram_commands(read_only_only=True)
                     if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
                         self.telegram_notifier.send_heartbeat(
                             instruments=len(self.config["instrument_tokens"]),
