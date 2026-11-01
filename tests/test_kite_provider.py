@@ -94,6 +94,128 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
         "NIFTY_PE": "NIFTY26SEP25000PE",
     }
     assert stream.contract_specs["NIFTY_CE"] == {"lot_size": 65, "multiplier": 1}
+    assert stream.capture_contracts_by_symbol["NIFTY_CE"][
+        "underlying_price_at_selection"
+    ] == 25010.0
+    assert stream.capture_opposites_by_token[200]["contract_id"] == (
+        "NFO:NIFTY26SEP25000PE"
+    )
+    assert stream.capture_only_tokens == []
+
+
+def test_untradable_opposite_option_is_subscribed_for_capture_only():
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25000{leg}",
+            "instrument_type": leg,
+            "expiry": today + timedelta(days=7),
+            "strike": 25000,
+            "instrument_token": token,
+            "lot_size": 65,
+        }
+        for leg, token in (("CE", 200), ("PE", 201))
+    ]
+    kite.ltp.side_effect = [
+        {"100": {"last_price": 25010.0}},
+        {"200": {"last_price": 120.0}},
+    ]
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    assert stream.refresh_instrument_tokens() == {
+        "NIFTY": 100,
+        "NIFTY_CE": 200,
+    }
+    assert stream.capture_only_tokens == [201]
+    assert stream.capture_subscription_skipped == []
+    assert stream.capture_opposites_by_token[200]["instrument_token"] == 201
+
+    ws = Mock()
+    ws.MODE_FULL = 3
+    stream.on_connect(ws, {})
+
+    ws.subscribe.assert_called_once_with([100, 200, 201])
+    ws.set_mode.assert_called_once_with(3, [100, 200, 201])
+    assert stream.config.instrument_tokens == {"NIFTY": 100, "NIFTY_CE": 200}
+    assert 201 in stream.capture_subscription_started_at
+
+
+def test_capture_cap_prioritizes_rejected_contracts_before_opposite_legs(monkeypatch):
+    kite = Mock()
+    today = date.today()
+    kite.instruments.return_value = [
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25000CE",
+            "instrument_type": "CE",
+            "expiry": today + timedelta(days=7),
+            "strike": 25000,
+            "instrument_token": 200,
+            "lot_size": 65,
+        },
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25000PE",
+            "instrument_type": "PE",
+            "expiry": today + timedelta(days=7),
+            "strike": 25000,
+            "instrument_token": 201,
+            "lot_size": 65,
+        },
+        {
+            "name": "NIFTY",
+            "tradingsymbol": f"NIFTY{today:%d}25050PE",
+            "instrument_type": "PE",
+            "expiry": today + timedelta(days=7),
+            "strike": 25050,
+            "instrument_token": 202,
+            "lot_size": 65,
+        },
+    ]
+    kite.ltp.side_effect = [
+        {"100": {"last_price": 25030.0}},
+        {"200": {"last_price": 120.0}},
+    ]
+    monkeypatch.setattr(
+        "market_bot.kite_provider.MAX_CAPTURE_ONLY_SUBSCRIPTIONS", 1
+    )
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    stream.refresh_instrument_tokens()
+
+    assert stream.capture_only_tokens == [202]
+    assert stream.capture_subscription_skipped == [
+        {
+            "contract_id": f"NFO:NIFTY{today:%d}25000PE",
+            "reason": "capture_extra_subscription_cap",
+        }
+    ]
 
 
 def test_refresh_instrument_tokens_selects_sensex_options_from_bfo():

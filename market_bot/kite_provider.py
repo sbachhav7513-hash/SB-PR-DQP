@@ -20,6 +20,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+MAX_KITE_TOKENS_PER_CONNECTION = 3000
+MAX_CAPTURE_ONLY_SUBSCRIPTIONS = 128
 
 
 @dataclass
@@ -122,6 +124,12 @@ class KiteMarketStream:
         self.contract_exchanges: Dict[str, str] = {}
         self.contract_expiries: Dict[str, date] = {}
         self.contract_tick_sizes: Dict[str, float] = {}
+        self.capture_contracts_by_token: Dict[int, Dict[str, Any]] = {}
+        self.capture_contracts_by_symbol: Dict[str, Dict[str, Any]] = {}
+        self.capture_opposites_by_token: Dict[int, Dict[str, Any]] = {}
+        self.capture_only_tokens: List[int] = []
+        self.capture_subscription_skipped: List[Dict[str, Any]] = []
+        self.capture_subscription_started_at: Dict[int, datetime] = {}
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
@@ -562,6 +570,44 @@ class KiteMarketStream:
         if not selected:
             raise RuntimeError("No ATM options matched configured underlyings")
 
+        selected_capture_contracts: Dict[str, Dict[str, Any]] = {}
+        capture_contracts_by_token: Dict[int, Dict[str, Any]] = {}
+        capture_opposites_by_token: Dict[int, Dict[str, Any]] = {}
+        for symbol, row in selected.items():
+            underlying = str(row["name"]).upper()
+            underlying_price = float(
+                underlying_prices[
+                    str(underlying_tokens.get(underlying, ""))
+                ].get("last_price", 0)
+            )
+            leg = str(row["instrument_type"]).upper()
+            contract_metadata = self._option_capture_metadata(
+                row, underlying_price
+            )
+            token = int(row["instrument_token"])
+            selected_capture_contracts[symbol] = contract_metadata
+            capture_contracts_by_token[token] = contract_metadata
+            opposite_leg = "PE" if leg == "CE" else "CE"
+            opposite = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if str(candidate["name"]).upper() == underlying
+                    and candidate["expiry"] == row["expiry"]
+                    and float(candidate["strike"]) == float(row["strike"])
+                    and str(candidate["instrument_type"]).upper()
+                    == opposite_leg
+                ),
+                None,
+            )
+            if opposite is not None:
+                opposite_metadata = self._option_capture_metadata(
+                    opposite, underlying_price
+                )
+                opposite_token = int(opposite["instrument_token"])
+                capture_contracts_by_token[opposite_token] = opposite_metadata
+                capture_opposites_by_token[token] = opposite_metadata
+
         option_tokens = [str(int(row["instrument_token"])) for row in selected.values()]
         quotes = self.kite.ltp(option_tokens)
         volume_quotes: Dict[str, Dict] = {}
@@ -621,13 +667,71 @@ class KiteMarketStream:
             for symbol, row in eligible.items()
         }
         resolved = {**underlying_tokens, **resolved_options}
+        trading_tokens = set(resolved.values())
+        selected_tokens = list(
+            dict.fromkeys(
+                int(row["instrument_token"]) for row in selected.values()
+            )
+        )
+        selected_token_set = set(selected_tokens)
+        extras = [
+            token for token in selected_tokens if token not in trading_tokens
+        ] + [
+            token
+            for token in capture_contracts_by_token
+            if token not in trading_tokens and token not in selected_token_set
+        ]
+        available_slots = max(
+            0, MAX_KITE_TOKENS_PER_CONNECTION - len(trading_tokens)
+        )
+        permitted_extra_count = min(
+            len(extras), MAX_CAPTURE_ONLY_SUBSCRIPTIONS, available_slots
+        )
+        self.capture_subscription_skipped = []
+        for token in extras[permitted_extra_count:]:
+            reason = (
+                "websocket_token_limit"
+                if permitted_extra_count >= available_slots
+                else "capture_extra_subscription_cap"
+            )
+            metadata = capture_contracts_by_token[token]
+            self.capture_subscription_skipped.append(
+                {"contract_id": metadata["contract_id"], "reason": reason}
+            )
+            capture_contracts_by_token.pop(token, None)
+            capture_opposites_by_token.pop(token, None)
+        self.capture_contracts_by_token = capture_contracts_by_token
+        self.capture_contracts_by_symbol = selected_capture_contracts
+        self.capture_opposites_by_token = capture_opposites_by_token
+        self.capture_only_tokens = extras[:permitted_extra_count]
         self.config.instrument_tokens = resolved
         logger.info(
-            "Selected %d ATM option contracts: %s",
+            "Selected %d ATM option contracts: %s; capture-only subscriptions=%d skipped=%d",
             len(resolved_options),
             ", ".join(resolved_options),
+            len(self.capture_only_tokens),
+            len(self.capture_subscription_skipped),
         )
         return resolved
+
+    @staticmethod
+    def _option_capture_metadata(
+        row: Dict[str, Any], underlying_price: float
+    ) -> Dict[str, Any]:
+        exchange = str(row.get("exchange", "NFO"))
+        trading_symbol = str(row["tradingsymbol"])
+        leg = str(row["instrument_type"]).upper()
+        return {
+            "instrument_token": int(row["instrument_token"]),
+            "contract_id": f"{exchange}:{trading_symbol}",
+            "underlying": str(row["name"]).upper(),
+            "leg": leg,
+            "strike": float(row["strike"]),
+            "expiry": row["expiry"],
+            "lot_size": int(row.get("lot_size", 1)),
+            "underlying_price_at_selection": underlying_price,
+            "resolved_at": datetime.now(IST).isoformat(timespec="seconds"),
+        }
 
     def place_market_order(self, symbol: str, side: str, quantity: int) -> str:
         """Place one validated MIS market order for a selected derivative."""
@@ -1069,11 +1173,40 @@ class KiteMarketStream:
         self.is_connected = True
         if self.on_connection_change:
             self.on_connection_change(True, "connected")
-        tokens = list(self.config.instrument_tokens.values())
+        trading_tokens = list(dict.fromkeys(self.config.instrument_tokens.values()))
+        capture_tokens = [
+            token
+            for token in self.capture_only_tokens
+            if token not in set(trading_tokens)
+        ]
+        tokens = trading_tokens + capture_tokens
         if tokens:
             ws.subscribe(tokens)
             ws.set_mode(ws.MODE_FULL, tokens)
-            logger.info(f"Subscribed to {len(tokens)} instruments")
+            subscribed_at = datetime.now(IST)
+            self.capture_subscription_started_at = {
+                token: subscribed_at for token in self.capture_contracts_by_token
+                if token in tokens
+            }
+            for token, metadata in self.capture_contracts_by_token.items():
+                if token in self.capture_subscription_started_at:
+                    metadata["subscription_started_at"] = subscribed_at.isoformat(
+                        timespec="seconds"
+                    )
+            logger.info(
+                "WebSocket subscription counts: trading=%d capture_only=%d total=%d "
+                "skipped=%d limit=%d",
+                len(trading_tokens),
+                len(capture_tokens),
+                len(tokens),
+                len(self.capture_subscription_skipped),
+                MAX_KITE_TOKENS_PER_CONNECTION,
+            )
+            if self.capture_subscription_skipped:
+                logger.warning(
+                    "Capture-only contracts skipped due to subscription caps: %d",
+                    len(self.capture_subscription_skipped),
+                )
 
     def on_close(self, ws: any, code: int, reason: str) -> None:
         """Callback when WebSocket closes."""

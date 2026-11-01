@@ -35,7 +35,7 @@ from .intraday_manager import (
 )
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
-from .option_candle_store import OptionCandleRecorder
+from .option_capture import OptionCaptureWriter
 from .risk_manager import (
     MAX_TRADE_RISK_PCT,
     build_risk_plan,
@@ -637,6 +637,9 @@ class KiteTradingBot:
             return "PAPER_RANGE_BREAKOUT_REJECTED:position_already_open"
 
         signal = "BUY" if symbol.endswith("_CE") else "SELL"
+        self._capture_eligible_option_candles(
+            symbol, bars, signal_time=latest_bar.timestamp, signal=signal
+        )
         allowed, quality_reason = self._option_quality_gate(
             symbol, signal, score=None
         )
@@ -647,8 +650,6 @@ class KiteTradingBot:
                 quality_reason,
             )
             return f"PAPER_RANGE_BREAKOUT_REJECTED:{quality_reason}"
-        self._capture_eligible_option_candles(symbol, bars)
-
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         raw_entry_price = quote.get("last_price", quote.get("premium"))
         if raw_entry_price is None:
@@ -853,6 +854,7 @@ class KiteTradingBot:
         self.entry_mode = str(self.config.get("entry_mode", "immediate")).strip().lower()
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
+        self.config.setdefault("capture_all_evaluated_contracts", True)
         self.config_hash = strategy_config_hash(self.config)
         self.git_identity = log_startup_identity(self.config_hash)
         if not self.config["kite_api_key"] or not self.config["kite_access_token"]:
@@ -868,10 +870,6 @@ class KiteTradingBot:
         self.live_orders_enabled = self.mode == "LIVE"
         self.paper_trading_dir = self.config.get(
             "paper_trading_dir", "paper_trading_data"
-        )
-        self.option_candle_recorder = OptionCandleRecorder(
-            Path(self.paper_trading_dir) / "option_candles",
-            config_hash=self.config_hash,
         )
 
         daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
@@ -951,6 +949,19 @@ class KiteTradingBot:
             on_connection_change=self._on_connection_change,
         )
         self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
+        self.option_capture_writer = OptionCaptureWriter(
+            Path(self.paper_trading_dir) / "option_candles",
+            config_hash=self.config_hash,
+            git_sha=self.git_identity.sha,
+            contracts_by_token=self.kite_stream.capture_contracts_by_token,
+            enabled=(
+                options_mode
+                and bool(self.config.get("capture_all_evaluated_contracts", True))
+            ),
+        )
+        self.option_capture_writer.set_skipped_contracts(
+            self.kite_stream.capture_subscription_skipped
+        )
         if (
             self.config.get("ema_reentry_enabled", True)
             and options_mode
@@ -2114,51 +2125,93 @@ class KiteTradingBot:
             return ""
         return f"{exchange}:{trading_symbol}"
 
+    def _resolved_option_symbol(
+        self, symbol: str, signal: Optional[str] = None
+    ) -> Optional[str]:
+        if signal not in {"BUY", "SELL"}:
+            return symbol
+        underlying = symbol.rsplit("_", 1)[0].upper()
+        return self._preferred_option_symbol(underlying, signal)
+
+    def _option_contract_metadata(
+        self, symbol: str, signal: Optional[str] = None
+    ) -> Dict:
+        stream = getattr(self, "kite_stream", None)
+        resolved_symbol = self._resolved_option_symbol(symbol, signal)
+        if resolved_symbol is None:
+            return {}
+        metadata = (
+            getattr(stream, "capture_contracts_by_symbol", {}).get(
+                resolved_symbol, {}
+            )
+            if stream is not None
+            else {}
+        )
+        return dict(metadata)
+
+    @staticmethod
+    def _option_signal_id(symbol: str, signal_time: datetime) -> str:
+        leg = "CE" if symbol.endswith("_CE") else "PE"
+        return f"{symbol}|{leg}|{signal_time.isoformat()}"
+
+    def _register_option_signal_capture(
+        self,
+        symbol: str,
+        signal_time: datetime,
+        *,
+        signal: Optional[str] = None,
+        contract_id: Optional[str] = None,
+    ) -> None:
+        if not self._options_enabled() or not symbol.endswith(("_CE", "_PE")):
+            return
+        writer = getattr(self, "option_capture_writer", None)
+        stream = getattr(self, "kite_stream", None)
+        if writer is None or stream is None:
+            return
+        resolved_symbol = self._resolved_option_symbol(symbol, signal)
+        metadata = (
+            self._option_contract_metadata(symbol, signal)
+            if resolved_symbol is not None
+            else {}
+        )
+        if contract_id and metadata:
+            metadata["contract_id"] = contract_id
+        token = metadata.get("instrument_token")
+        opposite = (
+            getattr(stream, "capture_opposites_by_token", {}).get(int(token), {})
+            if token is not None
+            else {}
+        )
+        signal_id = self._option_signal_id(
+            symbol, self._journal_datetime(signal_time) or signal_time
+        )
+        signal_ids = getattr(self, "_option_capture_signal_ids", None)
+        if signal_ids is None:
+            signal_ids = {}
+            self._option_capture_signal_ids = signal_ids
+        signal_ids[symbol] = signal_id
+        writer.register_signal(signal_id, signal_time, metadata, opposite)
+
     def _capture_eligible_option_candles(
         self,
         symbol: str,
         bars: list[Bar],
         *,
         signal_time: Optional[datetime] = None,
+        signal: Optional[str] = None,
         contract_id: Optional[str] = None,
     ) -> None:
         if not self._options_enabled() or not symbol.endswith(("_CE", "_PE")):
             return
-        if int(self.config.get("bar_interval_seconds", 60)) != 60:
-            logger.error(
-                "[%s] Cannot archive option candles: bar_interval_seconds must be 60",
-                symbol,
-            )
+        if not bars and signal_time is None:
             return
-        recorder = getattr(self, "option_candle_recorder", None)
-        if recorder is None:
-            logger.error("[%s] Option candle recorder is unavailable", symbol)
-            return
-        try:
-            recorder.capture_eligible(
-                symbol,
-                bars,
-                signal_time or datetime.now(IST),
-                contract_id if contract_id is not None else self._contract_id(symbol),
-            )
-        except OSError:
-            logger.exception(
-                "[%s] Could not persist eligible option candles", symbol
-            )
-
-    def _record_active_option_candle(self, symbol: str, bar: Bar) -> None:
-        recorder = getattr(self, "option_candle_recorder", None)
-        if (
-            recorder is None
-            or not self._options_enabled()
-            or not symbol.endswith(("_CE", "_PE"))
-            or int(self.config.get("bar_interval_seconds", 60)) != 60
-        ):
-            return
-        try:
-            recorder.record_active(symbol, bar, self._contract_id(symbol))
-        except OSError:
-            logger.exception("[%s] Could not persist option candle", symbol)
+        capture_time = signal_time or bars[-1].timestamp
+        self._register_option_signal_capture(
+            symbol,
+            capture_time,
+            signal=signal,
+            contract_id=contract_id,
+        )
 
     def _log_entry_confirmation_event(
         self, pending: dict, event: str, timestamp: datetime, **fields
@@ -2181,6 +2234,12 @@ class KiteTradingBot:
             "signal_id": pending["signal_id"],
             "ticker": pending["symbol"],
             "contract_id": pending["contract_id"],
+            "strike": pending.get("strike"),
+            "expiry": pending.get("expiry"),
+            "lot_size": pending.get("lot_size"),
+            "underlying_price_at_selection": pending.get(
+                "underlying_price_at_selection"
+            ),
             "signal": pending["signal"],
             "score": pending["score"],
             "route": pending["route"],
@@ -2213,6 +2272,25 @@ class KiteTradingBot:
             **fields,
         }
         journal.log_decision(payload)
+        writer = getattr(self, "option_capture_writer", None)
+        if writer is not None:
+            terminal_events = {
+                "confirmed_trade",
+                "rejected_by_confirmation",
+                "filter_failed_after_confirmation",
+                "expired_signal",
+                "confirmation_error",
+            }
+            if event == "signal_generated":
+                writer.update_signal_status(
+                    pending["signal_id"], pending=True, rejected=False
+                )
+            elif event in terminal_events:
+                writer.update_signal_status(
+                    pending["signal_id"],
+                    pending=False,
+                    rejected=(event != "confirmed_trade"),
+                )
 
     def _expire_unfinished_confirmed_entries(self) -> None:
         """Log in-memory pending signals left unfinished by the prior process."""
@@ -2358,6 +2436,7 @@ class KiteTradingBot:
         )
         signal_bar_payload = signal_bar.to_dict()
         signal_bar_payload["time"] = signal_time
+        contract_metadata = self._option_contract_metadata(symbol, signal)
         pending = {
             "signal_id": signal_id,
             "symbol": symbol,
@@ -2374,6 +2453,12 @@ class KiteTradingBot:
             "history": list(history),
             "reasons": list(reasons),
             "contract_id": contract_id,
+            "strike": contract_metadata.get("strike"),
+            "expiry": contract_metadata.get("expiry"),
+            "lot_size": contract_metadata.get("lot_size"),
+            "underlying_price_at_selection": contract_metadata.get(
+                "underlying_price_at_selection"
+            ),
             "signal_premium": quote_metrics["ltp"],
             "signal_bid": quote_metrics["bid"],
             "signal_ask": quote_metrics["ask"],
@@ -2402,17 +2487,6 @@ class KiteTradingBot:
             ),
             "confirmation_start": signal_time + timedelta(minutes=1),
         }
-        self._capture_eligible_option_candles(
-            symbol,
-            getattr(self, "bar_builder", None).get_bars(
-                self.config["instrument_tokens"].get(symbol), limit=50
-            )
-            if getattr(self, "bar_builder", None)
-            and self.config.get("instrument_tokens", {}).get(symbol) is not None
-            else [],
-            signal_time=signal_time,
-            contract_id=contract_id,
-        )
         self._pending_entries[key] = pending
         self._log_entry_confirmation_event(
             pending,
@@ -3010,7 +3084,6 @@ class KiteTradingBot:
                 contexts = {}
                 self._signal_change_attributions = contexts
             contexts[symbol] = []
-        self._record_active_option_candle(symbol, bar)
 
         # Check if it's time to exit all positions (3:15 PM)
         if self.intraday_manager.should_exit_all_positions():
@@ -3187,6 +3260,12 @@ class KiteTradingBot:
             if news_reason:
                 market_score.signal = filtered_signal
                 market_score.reasons.append(news_reason)
+        if market_score.signal in {"BUY", "SELL"}:
+            signal_time = self._journal_datetime(signal_bars[-1].timestamp)
+            if signal_time is not None:
+                self._register_option_signal_capture(
+                    symbol, signal_time, signal=market_score.signal
+                )
 
         support_candidate: Optional[SupportResistanceReversal] = None
         if (
@@ -3548,18 +3627,6 @@ class KiteTradingBot:
                 return
 
             if (
-                getattr(self, "entry_mode", "immediate") == "confirmed"
-                and ema_reentry_context is None
-                and market_score.signal in {"BUY", "SELL"}
-            ):
-                self._capture_eligible_option_candles(
-                    symbol,
-                    bars,
-                    signal_time=self._journal_datetime(signal_bars[-1].timestamp),
-                    contract_id=self._contract_id(symbol),
-                )
-
-            if (
                 getattr(market_score, "strategy_variant", None)
                 == "paper_underlying_support_reversal"
             ):
@@ -3604,12 +3671,6 @@ class KiteTradingBot:
                 self._signal_change_attributions[symbol].append(
                     "stale_quote_candle_fallback"
                 )
-            if (
-                getattr(self, "entry_mode", "immediate") != "confirmed"
-                or ema_reentry_context is not None
-            ):
-                self._capture_eligible_option_candles(symbol, bars)
-
         if self.premarkarket_candidates:
             self.premarkarket_candidates.clear()
 
@@ -4315,9 +4376,21 @@ class KiteTradingBot:
 
     def _on_tick(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
+        writer = getattr(self, "option_capture_writer", None)
+        if writer is not None:
+            try:
+                writer.record_tick(tick)
+            except Exception:
+                logger.exception(
+                    "Option capture tick enqueue failed for token %s",
+                    tick.instrument_token,
+                )
+        symbol_map = getattr(self, "symbol_map", {})
+        if tick.instrument_token not in symbol_map:
+            return
         self._process_telegram_commands()
         self._last_loop_tick_at = tick.timestamp
-        symbol = self.symbol_map.get(tick.instrument_token, f"TOKEN_{tick.instrument_token}")
+        symbol = symbol_map[tick.instrument_token]
         if symbol.endswith(("_CE", "_PE")):
             tick_time = self._journal_datetime(tick.timestamp)
             if tick_time is not None:
@@ -5465,6 +5538,26 @@ class KiteTradingBot:
         strategy_variant: Optional[str] = None,
         ema_reentry_context: Optional[dict] = None,
     ) -> None:
+        option_decision = (
+            hasattr(self, "config")
+            and self._options_enabled()
+            and symbol.endswith(("_CE", "_PE"))
+        )
+        contract_metadata = (
+            self._option_contract_metadata(symbol, signal)
+            if option_decision
+            else {}
+        )
+        signal_id = None
+        if option_decision and signal in {"BUY", "SELL"}:
+            signal_time = self._journal_datetime(bar.timestamp) or datetime.now(IST)
+            signal_ids = getattr(self, "_option_capture_signal_ids", {})
+            signal_id = signal_ids.pop(symbol, None)
+            if signal_id is None:
+                signal_id = self._option_signal_id(symbol, signal_time)
+                self._register_option_signal_capture(
+                    symbol, signal_time, signal=signal
+                )
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
             reasons = [outcome]
@@ -5513,7 +5606,18 @@ class KiteTradingBot:
                 "event": "bar_decision",
                 "bar": bar.to_dict(),
                 "ticker": symbol,
-                "contract_id": self._contract_id(symbol),
+                "contract_id": (
+                    str(contract_metadata.get("contract_id") or "")
+                    if option_decision and signal in {"BUY", "SELL"}
+                    else self._contract_id(symbol)
+                ),
+                "signal_id": signal_id,
+                "strike": contract_metadata.get("strike"),
+                "expiry": contract_metadata.get("expiry"),
+                "lot_size": contract_metadata.get("lot_size"),
+                "underlying_price_at_selection": contract_metadata.get(
+                    "underlying_price_at_selection"
+                ),
                 "signal": signal,
                 "outcome": outcome,
                 "bars_available": len(bars),
@@ -5581,6 +5685,16 @@ class KiteTradingBot:
                 ),
             }
         )
+        if option_decision and signal_id:
+            writer = getattr(self, "option_capture_writer", None)
+            if writer is not None:
+                pending = outcome == "entry_pending_confirmation"
+                rejected = (
+                    outcome not in {"trade_opened", "position_updated", "entry_pending_confirmation"}
+                )
+                writer.update_signal_status(
+                    signal_id, pending=pending, rejected=rejected
+                )
         rejected_journal = getattr(
             self.decision_journal, "rejected_signal_journal", None
         )
@@ -6655,6 +6769,9 @@ class KiteTradingBot:
             if self.news_monitor:
                 self.news_monitor.stop()
             self.kite_stream.stop()
+            writer = getattr(self, "option_capture_writer", None)
+            if writer is not None:
+                writer.close()
             logger.info("Bot shutdown complete")
 
     def _run_weekly_report_if_due(self, now: datetime) -> None:

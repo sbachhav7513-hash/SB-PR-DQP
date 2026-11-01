@@ -67,6 +67,17 @@ def test_shared_config_loader_rejects_non_object_json(tmp_path):
         load_strategy_config(config_path)
 
 
+def test_capture_configuration_does_not_change_strategy_hash():
+    baseline = strategy_config_hash({"option_min_premium": 12.0})
+
+    assert strategy_config_hash(
+        {"option_min_premium": 12.0, "capture_all_evaluated_contracts": True}
+    ) == baseline
+    assert strategy_config_hash(
+        {"option_min_premium": 12.0, "capture_all_evaluated_contracts": False}
+    ) == baseline
+
+
 @pytest.mark.parametrize(
     "flag",
     [

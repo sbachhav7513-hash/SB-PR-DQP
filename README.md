@@ -277,12 +277,54 @@ SHA-256 `config_hash`; credentials and paper/live mode flags are excluded from
 the hash. Existing journal rows are not retroactively assigned a hash, so
 their configuration cannot be verified from the journal alone.
 
-When an option contract passes the configured option-quality gate for a
-signal, its completed one-minute premium candles are archived under
-`paper_trading_data/option_candles/YYYY-MM-DD/`. The archive contains OHLCV,
-the last valid bid/ask observed during each minute when available, and the
-config hash. Capturing continues for that contract for the remainder of the
-session and resumes after restart from the current day's archive.
+In option mode, `capture_all_evaluated_contracts` defaults to `true` and is
+excluded from the strategy config hash. The selected contract and its opposite
+CE/PE contract are registered before option-quality and subsequent entry gates.
+Capture is read-only and uses a bounded background writer; queue/disk failures
+drop capture rows and are logged without waiting on the tick or order path.
+Trading subscriptions remain unchanged. capture-only opposite contracts are added in one startup WebSocket subscribe
+request, capped at 128 extra tokens and the Kite limit of 3,000 instruments
+per connection; skipped contracts are reported with their reason.
+
+New daily files are written below
+`paper_trading_data/option_candles/YYYY-MM-DD/`, one pair per exact
+`EXCHANGE:TRADINGSYMBOL` (non-filename characters are replaced with `_`):
+
+* `<contract>.candles.csv` (compressed to `.candles.csv.gz` after 15:30 IST):
+  one completed IST minute per row with `contract_id`, underlying, leg, strike,
+  expiry, `candle_start_time` (ISO `+05:30`), OHLCV, OI when present, tick
+  count, last tick time, close bid/ask, config hash, git SHA,
+  `capture_all_evaluated_contracts`, `low_tick`, and `gap`. Gaps have empty
+  prices; prices are never forward-filled.
+* `<contract>.quotes.csv` (compressed to `.quotes.csv.gz` after 15:30 IST):
+  `time` (ISO `+05:30`), contract metadata, LTP, bid/ask, last tick time,
+  `quote_age_seconds`, config hash, git SHA, and the capture flag. Snapshots are
+  sampled at 5-second intervals while pending or for 10 minutes after
+  rejection, otherwise 30 seconds; unchanged values are skipped except for a
+  once-per-minute heartbeat.
+* `capture_report.json` and `capture_report.txt`: signal resolution and forward
+  coverage, match rate, captured/skipped contracts, tick/candle gaps, dropped
+  rows, and subscription start delays.
+  The combined daily capture files are capped at 256 MiB.
+
+The loader uses `contract_id` only and never infers a contract:
+
+```python
+from market_bot.option_capture import load_option_capture
+
+capture = load_option_capture(
+    "paper_trading_data/option_candles",
+    "2026-10-30",
+    decision_row,
+)
+```
+
+`python backfill_option_contract_ids.py` reads the 29-Oct and 30-Oct decision
+Parquet journals and writes separate `decisions.contract-id-backfilled.parquet`
+files only when an exact fill is available. It fills only rows joined by a
+unique `signal_id` to an existing contract-bearing row; ambiguous or unmapped
+rows remain blank, and original journals are read-only. If there are no safe
+fills, it reports that no output was needed.
 
 Rejected option signals are also recorded in `rejected_signals.jsonl` beside
 the decision log. Rows include the IST signal/rejection times, contract and

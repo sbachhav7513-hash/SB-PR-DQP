@@ -47,6 +47,7 @@ NON_STRATEGY_CONFIG_KEYS = {
     "paper_trading_enabled",
     "live_orders_enabled",
     "live_orders_confirmed",
+    "capture_all_evaluated_contracts",
 }
 
 
