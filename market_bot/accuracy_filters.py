@@ -291,6 +291,7 @@ class AccuracyFilters:
         minute: int,
         record_entry: bool = True,
         min_score: Optional[int] = None,
+        min_volatility_pct: Optional[float] = None,
     ) -> tuple[bool, str]:
         """
         All filters combined for final entry decision.
@@ -300,7 +301,11 @@ class AccuracyFilters:
         # Filter 1: Volatility
         volatility_ok = self.is_volatility_acceptable(
             history,
-            min_volatility_pct=self.min_volatility_pct,
+            min_volatility_pct=(
+                self.min_volatility_pct
+                if min_volatility_pct is None
+                else min_volatility_pct
+            ),
             max_volatility_pct=self.max_volatility_pct,
         )
         if not volatility_ok:

@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 from .trade_journal import PaperTradingRecorder, normalize_decision_outcome
+from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
 
 
 logger = logging.getLogger(__name__)
@@ -894,6 +895,9 @@ def write_daily_summary(
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     ema_reentry = _ema_reentry_summary(trades, decisions)
     entry_confirmation = _entry_confirmation_metrics(trades, decisions)
+    stop_reentry = summarize_stop_events(
+        paper_data_dir, target_date, warn_missing=True
+    )
     values = {
         "date": target_date.isoformat(),
         "closed_trades": len(trades),
@@ -942,7 +946,22 @@ def write_daily_summary(
         "entry_confirmation_average_premium_change_pct": entry_confirmation[
             "average_premium_change_pct"
         ],
+        "stop_events": stop_reentry["stop_events"],
+        "stop_events_reentered": stop_reentry["stop_events_reentered"],
+        "stop_events_recovered_above_entry_30m": stop_reentry[
+            "stop_events_recovered_above_entry_30m"
+        ],
+        "stop_events_recovered_above_entry_60m": stop_reentry[
+            "stop_events_recovered_above_entry_60m"
+        ],
+        "stop_events_candles_missing": stop_reentry[
+            "stop_events_candles_missing"
+        ],
     }
+    for bucket in FAILURE_BUCKETS:
+        values[f"stop_events_first_failed_{bucket.replace(' ', '_')}"] = (
+            stop_reentry["stop_events_first_failed_condition"].get(bucket, 0)
+        )
     for reason, count in entry_confirmation[
         "filter_failed_after_confirmation"
     ].items():
@@ -979,6 +998,9 @@ def write_daily_review(
         Path(paper_data_dir),
         "decisions.parquet",
         target_date,
+    )
+    stop_reentry = summarize_stop_events(
+        paper_data_dir, target_date, warn_missing=False
     )
 
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
@@ -1204,6 +1226,20 @@ def write_daily_review(
         )
     else:
         lines.append("- Shadow fields are absent from this archive; verify the running bot version and configuration.")
+    lines.extend(
+        [
+            "",
+            "## Stop-Out Re-entry Diagnostics",
+            f"- Stop events: {stop_reentry['stop_events']}",
+            f"- Stop events followed by a re-entry: {stop_reentry['stop_events_reentered']}",
+            "- Recovered above entry within 30 / 60 minutes: "
+            f"{stop_reentry['stop_events_recovered_above_entry_30m']} / "
+            f"{stop_reentry['stop_events_recovered_above_entry_60m']}",
+            f"- Stop events with missing option candles: {stop_reentry['stop_events_candles_missing']}",
+            "- First failed condition by stop event: "
+            f"{json.dumps(stop_reentry['stop_events_first_failed_condition'], sort_keys=True)}",
+        ]
+    )
     lines.extend(
         [
             "",

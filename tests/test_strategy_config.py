@@ -84,6 +84,10 @@ def test_capture_configuration_does_not_change_strategy_hash():
         "stale_quote_candle_fallback",
         "option_candle_momentum",
         "index_persistence_pass",
+        "premium_floor_v2",
+        "banknifty_caps_v2",
+        "nifty_vol_floor_v2",
+        "capital_based_risk_v2",
     ],
 )
 def test_paper_recovery_flags_are_part_of_strategy_hash(flag):
@@ -91,6 +95,22 @@ def test_paper_recovery_flags_are_part_of_strategy_hash(flag):
 
     assert strategy_config_hash({flag: True}) != baseline
     assert strategy_config_hash({flag: False}) != baseline
+
+
+def test_max_open_risk_setting_is_part_of_strategy_hash():
+    assert strategy_config_hash({"max_open_risk_pct": 4.0}) != strategy_config_hash(
+        {"max_open_risk_pct": 3.0}
+    )
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["max_capital_per_trade_pct", "banknifty_max_capital_per_trade_pct"],
+)
+def test_capital_trade_limits_are_part_of_strategy_hash(key):
+    assert strategy_config_hash({key: 20.0}) != strategy_config_hash(
+        {key: 30.0}
+    )
 
 
 @pytest.mark.parametrize(

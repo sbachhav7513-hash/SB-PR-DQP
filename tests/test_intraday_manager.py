@@ -53,6 +53,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
         "option_premium_stop_pct": 0.10,
         "option_premium_target_pct": 0.20,
         "option_max_risk_per_lot_pct": 10.0,
+        "capital_based_risk_v2": False,
     }
     bot.live_orders_enabled = False
     bot.paper_trading_enabled = True
@@ -310,6 +311,7 @@ def test_paper_range_breakout_keeps_fixed_2r_exit_with_range_risk_sizing():
         "option_max_lots": 3,
         "strong_signal_score": 82,
         "option_milestone_pct": 0.10,
+        "capital_based_risk_v2": False,
     }
     bot.live_orders_enabled = False
     bot.paper_trading_enabled = True
@@ -781,6 +783,10 @@ def test_active_config_sizes_options_within_shared_per_trade_risk():
     assert example_config["support_reversal_min_premium"] == 5.0
     assert config["option_min_lots"] == 1
     assert config["max_risk_per_trade"] == 1000.0
+    assert config["capital_based_risk_v2"] is True
+    assert config["max_capital_per_trade_pct"] == 20.0
+    assert config["banknifty_max_capital_per_trade_pct"] == 30.0
+    assert config["max_open_risk_pct"] == 4.0
     assert config["daily_max_loss_pct"] == 10.0
     assert config["min_entry_score"] == 70
     assert example_config["min_entry_score"] == 70
@@ -793,13 +799,17 @@ def test_active_config_sizes_options_within_shared_per_trade_risk():
         "daily_max_loss_pct",
         "option_premium_stop_pct",
         "option_max_risk_per_lot_pct",
+        "capital_based_risk_v2",
+        "max_capital_per_trade_pct",
+        "banknifty_max_capital_per_trade_pct",
+        "max_open_risk_pct",
     ):
         assert example_config.get(key) == config.get(key)
     assert manager.daily_max_loss == 10_000.0
     assert manager.max_risk_per_trade == 1000.0
-    assert quantity == 65
-    assert risk == pytest.approx(650.0)
-    assert risk <= manager.available_daily_risk()
+    assert quantity == 195
+    assert risk == pytest.approx(1950.0)
+    assert risk <= manager.daily_max_loss
     manager.register_position(
         "NIFTY_CE",
         "BUY",
@@ -827,12 +837,9 @@ def test_active_config_sizes_options_within_shared_per_trade_risk():
         95.60 * (1.0 - config["option_premium_stop_pct"]),
     )
 
-    assert quantity == 0
-    assert risk == 0
-    assert bot._pending_entry_evaluations["TCS_PE"][
-        "rejection_reason"
-    ] == "one_lot_exceeds_trade_risk_cap"
-    assert risk <= manager.available_daily_risk()
+    assert quantity == 175
+    assert risk == pytest.approx(1673.0)
+    assert risk <= manager.daily_max_loss - manager.open_position_risk()
 
     assert manager.available_daily_risk() == pytest.approx(1_000.0)
 
@@ -1637,6 +1644,7 @@ def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
         "option_max_risk_per_lot_pct": 10.0,
         "option_min_lots": 1,
         "option_max_lots": 3,
+        "capital_based_risk_v2": False,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
@@ -1668,6 +1676,7 @@ def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
         "option_max_risk_per_lot_pct": 10.0,
         "option_min_lots": 1,
         "option_max_lots": 3,
+        "capital_based_risk_v2": False,
     }
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False

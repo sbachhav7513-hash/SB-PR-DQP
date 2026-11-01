@@ -41,6 +41,8 @@ paper_trading_data/**/decisions.csv
 /data_uploads/
 /reports/audit/
 sim/
+.scratch_backtest/
+.scratch_lock_analysis/
 
 # Testing
 .pytest_cache/
