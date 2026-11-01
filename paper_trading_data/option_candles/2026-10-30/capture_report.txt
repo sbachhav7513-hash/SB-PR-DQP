@@ -1,0 +1,11 @@
+Option capture report — 2026-10-30
+Signals: 0
+Resolved contract_id: 0/0
+60-minute forward candles: 0/0
+Match rate: 100.0%
+Contracts captured (0): 
+Contracts skipped (0): []
+Tick gaps >30s: {}
+Candle gaps: {}
+Dropped rows: 0
+Subscription start delays: []
