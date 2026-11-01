@@ -20,8 +20,39 @@ class TelegramNotifier:
         self.chat_id = chat_id.strip() if chat_id else None
         self.trade_chat_id = trade_chat_id.strip() if trade_chat_id else None
 
-    def send_trade_alert(self, payload: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _trade_message(text: str, trade_id: Optional[int], *, entry: bool = False) -> str:
+        if trade_id is None:
+            return text
+
+        reference = f"#{trade_id}"
+        if text.startswith(f"{reference} "):
+            text = text[len(reference) + 1 :]
+        if entry:
+            text = "\n".join(
+                line for line in text.splitlines()
+                if not line.startswith("Manual commands:")
+            )
+            text += (
+                f"\nManual commands: /exit {trade_id}, "
+                f"/exitat {trade_id} <price>, /be {trade_id}"
+            )
+        return f"{reference} {text}"
+
+    def send_trade_alert(
+        self, payload: Dict[str, Any], trade_id: Optional[int] = None
+    ) -> bool:
         text = payload.get("message", "Trade alert")
+        resolved_trade_id = trade_id
+        if resolved_trade_id is None:
+            resolved_trade_id = payload.get("trade_id")
+        if resolved_trade_id is None:
+            resolved_trade_id = payload.get("telegram_trade_id")
+        text = self._trade_message(
+            text,
+            resolved_trade_id,
+            entry=payload.get("status") == "open" and payload.get("entry") is not None,
+        )
         chat_ids = dict.fromkeys(
             chat_id
             for chat_id in (self.chat_id, self.trade_chat_id)
@@ -32,7 +63,8 @@ class TelegramNotifier:
         results = [self._send_message_to_chat(chat_id, text) for chat_id in chat_ids]
         return all(results)
 
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, trade_id: Optional[int] = None) -> bool:
+        text = self._trade_message(text, trade_id)
         return self._send_message_to_chat(self.chat_id, text)
 
     def _send_message_to_chat(self, chat_id: Optional[str], text: str) -> bool:
@@ -69,6 +101,8 @@ class TelegramNotifier:
         instruments: int,
         bar_interval_seconds: int,
         mode: Optional[str] = None,
+        execution_mode: Optional[str] = None,
+        state: str = "RUNNING",
     ) -> str:
         normalized_mode = str(mode or "intraday_futures").strip().lower()
         if normalized_mode in {"intraday_options", "options"}:
@@ -80,8 +114,9 @@ class TelegramNotifier:
 
         return (
             "Market Bot Status\n"
-            "Status: LIVE\n"
-            f"Mode: {mode_label}\n"
+            f"Status: {state.upper()}\n"
+            f"Mode: {str(execution_mode or 'PAPER').upper()}\n"
+            f"Trading mode: {mode_label}\n"
             "Signal engine: online\n"
             f"Instruments tracked: {instruments}\n"
             f"Bar interval: {bar_interval_seconds}s\n"
@@ -94,8 +129,14 @@ class TelegramNotifier:
         instruments: int,
         bar_interval_seconds: int,
         mode: Optional[str] = None,
+        execution_mode: Optional[str] = None,
+        state: str = "RUNNING",
     ) -> bool:
-        return self.send_message(self.build_heartbeat_message(instruments, bar_interval_seconds, mode))
+        return self.send_message(
+            self.build_heartbeat_message(
+                instruments, bar_interval_seconds, mode, execution_mode, state
+            )
+        )
 
     def send_daily_summary(
         self,
@@ -128,12 +169,14 @@ class TelegramNotifier:
         option_leg: Optional[str] = None,
         trading_symbol: Optional[str] = None,
         trailing_enabled: bool = False,
+        trade_id: Optional[int] = None,
         telegram_trade_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
         target_label = "Trailing reference" if trailing_enabled else "Target"
-        trade_reference = f"#{telegram_trade_id} " if telegram_trade_id is not None else ""
+        resolved_trade_id = trade_id if trade_id is not None else telegram_trade_id
+        trade_reference = f"#{resolved_trade_id} " if resolved_trade_id is not None else ""
         return {
             "ticker": ticker,
             "trading_symbol": trading_symbol or ticker,
@@ -149,8 +192,15 @@ class TelegramNotifier:
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Entry: {entry:.2f}\n"
                 f"Stop Loss: {stop_loss:.2f}\n"
-                f"{target_label}: {take_profit:.2f}"
+                f"{target_label}: {take_profit:.2f}\n"
+                + (
+                    f"Manual commands: /exit {resolved_trade_id}, "
+                    f"/exitat {resolved_trade_id} <price>, /be {resolved_trade_id}"
+                    if resolved_trade_id is not None
+                    else "Manual commands: /exit, /exitat, /be"
+                )
             ),
+            "trade_id": resolved_trade_id,
         }
 
     def build_message(self, payload: Dict[str, Any]) -> str:
@@ -190,11 +240,19 @@ class TelegramNotifier:
         mode: str = "FUTURE",
         option_leg: Optional[str] = None,
         trading_symbol: Optional[str] = None,
+        trade_id: Optional[int] = None,
         telegram_trade_id: Optional[int] = None,
+        exit_source: Optional[str] = None,
+        exit_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
-        trade_reference = f"#{telegram_trade_id} " if telegram_trade_id is not None else ""
+        resolved_trade_id = trade_id if trade_id is not None else telegram_trade_id
+        trade_reference = f"#{resolved_trade_id} " if resolved_trade_id is not None else ""
+        normalized_exit_source = str(
+            exit_source or ("MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT")
+        ).upper()
+        normalized_exit_reason = exit_reason or reason
         reason_label = {
             "TRAILING_STOP": "Trailing Stop",
             "TAKE_PROFIT": "Take Profit",
@@ -206,13 +264,18 @@ class TelegramNotifier:
             "exit_price": exit_price,
             "pnl": pnl,
             "reason": reason,
+            "exit_reason": normalized_exit_reason,
+            "exit_source": normalized_exit_source,
+            "trade_id": resolved_trade_id,
             "mode": label,
             "message": (
                 f"{trade_reference}Trade Closed: {label} {action} {ticker}{leg}\n"
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Exit: {exit_price:.2f}\n"
                 f"P&L: {pnl:.2f}\n"
-                f"Reason: {reason_label}"
+                f"Reason: {reason_label}\n"
+                f"Exit reason: {normalized_exit_reason}\n"
+                f"Exit source: {normalized_exit_source}"
             ),
         }
         return payload

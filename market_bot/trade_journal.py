@@ -94,7 +94,8 @@ class PaperTradingRecorder:
         "contract_id",
         "action", "quantity", "entry",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
-        "pnl_rupees", "duration_seconds", "reason", "score", "closed_at", "updated_at",
+        "pnl_rupees", "duration_seconds", "reason", "score", "exit_source", "exit_reason",
+        "risk_modifications", "closed_at", "updated_at",
         "holding_time_seconds", "protection_order_id", "strategy_variant",
         "exit_strategy", "target_stage", "milestone_reached_pct",
         "exit_reason_category", "entry_time", "milestone_started_at",
@@ -959,6 +960,9 @@ class TradeJournal:
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
+        entry.setdefault("exit_source", "BOT")
+        entry.setdefault("exit_reason", None)
+        entry.setdefault("risk_modifications", [])
         entry.setdefault("trade_id", f"{entry['ticker']}-{entry['timestamp']}-{entry.get('action', 'UNKNOWN')}")
         if entry.get("telegram_trade_id") is None:
             previous = self.read_trades()
@@ -1010,6 +1014,15 @@ class TradeJournal:
         if changed:
             self._write_trades(trades)
         return trades
+
+    def log_command(self, command: Dict[str, Any]) -> None:
+        path = self.path.with_name("commands.jsonl")
+        entry = {
+            **command,
+            "logged_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, default=str) + "\n")
 
     def get_open_trade(self, ticker: str, action: Optional[str] = None) -> Optional[Dict[str, Any]]:
         for trade in reversed(self.read_trades()):
@@ -1159,6 +1172,8 @@ class TradeJournal:
         reason: str = "SIGNAL",
         trade_id: Optional[str] = None,
         closed_at: Optional[str] = None,
+        exit_source: Optional[str] = None,
+        exit_reason: Optional[str] = None,
     ) -> float:
         trades = self.read_trades()
         for trade in reversed(trades):
@@ -1189,6 +1204,13 @@ class TradeJournal:
                 or datetime.now(timezone.utc).isoformat(timespec="seconds")
             )
             trade["reason"] = reason
+            trade["exit_source"] = exit_source or (
+                "MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT"
+            )
+            trade["exit_reason"] = exit_reason or (
+                reason if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else None
+            )
+            trade["manual_exit_price"] = None
             self._write_trades(trades)
             if self.paper_recorder:
                 self.paper_recorder.record_trade(trade)

@@ -187,10 +187,9 @@ In a private chat, Telegram's chat and sender IDs are the same. In a group,
 allowlist both the group chat ID and each permitted sender ID. Unauthorized
 updates are ignored and logged by ID; old messages from before startup are
 ignored. The listener only queues commands; the trading tick callback handles
-them in the trading loop so commands cannot race stop-loss/trailing management.
-The idle loop also drains the queue between ticks, so read-only/control commands
-can be answered when the market is closed. If Telegram is unreachable, trading
-continues.
+them at the start of a tick so commands cannot race stop-loss/trailing
+management. Queued commands wait for the next tick. If Telegram is unreachable,
+trading continues.
 
 Trade entry, exit, target-update, and watchlist alerts are sent to both
 `TELEGRAM_CHAT_ID` and the optional `TELEGRAM_TRADE_CHAT_ID`. Daily trade
@@ -216,10 +215,61 @@ Available Phase 1 commands:
 | `/pause` | Block new entries; existing positions continue to be managed |
 | `/resume` | Resume new entries |
 
-Phase 1 does not expose any order-placement command. `TELEGRAM_CONTROL_LIVE_ORDERS`
-defaults to `false`; leave it unset while testing. Test in `PAPER` mode first
-and confirm `/pause` leaves open-position exit management active before
-considering any later LIVE order-control phase.
+Telegram command control also supports:
+
+| Command | Behavior |
+|---------|----------|
+| `/exit <id>` | Close an open trade; PAPER executes on the next tick, LIVE requires a same-chat `YES` confirmation within 30 seconds |
+| `/exitat <id> <price>` | Set a long-option exit trigger; closes when LTP reaches the price unless an existing stop or target exits first |
+| `/cancel <id>` | Clear the trade's manual exit trigger |
+| `/sl <id> <price> [force]` | Change stop loss; a loosening change requires `force` |
+| `/be <id>` | Move stop loss to entry when LTP is above entry |
+| `/target <id> <price>` | Change target in the profitable direction relative to LTP |
+
+Commands are validated and queued by the listener, then applied at the start of
+a market tick. Commands and their responses are appended to `commands.jsonl`
+beside the trade journal. Trade records retain manual exit source/reason and a
+timestamped history of stop/target changes. `TELEGRAM_CONTROL_LIVE_ORDERS`
+defaults to `false`; LIVE Telegram exits place no order unless explicitly set
+to `true`. Test in `PAPER` mode first.
+
+#### Telegram-control simulation (market-closed testing)
+
+Set `BOT_SIM_MODE=true` to force PAPER mode and replace Kite quotes with a
+local feed. Simulation startup does not require Kite credentials, create a Kite
+client, or request broker data; selecting LIVE through config or `MODE` makes
+startup fail. Trade journals, command logs, paper data, option captures, and
+the bot log are written below `BOT_SIM_DIR` (default `sim`) rather than the
+production journal or analysis directories.
+
+An optional JSON or CSV feed can replay prices at the configured interval:
+
+```powershell
+$env:BOT_SIM_MODE = "true"
+$env:BOT_SIM_FEED_FILE = ".\sim\prices.json"
+$env:BOT_SIM_TICK_INTERVAL_SECONDS = "2" # Optional; defaults to 2 seconds
+$env:BOT_SIM_DIR = ".\sim"
+python run_kite_bot.py
+```
+
+JSON accepts `{"ticks":[{"symbol":"NIFTY_CE","price":10},{"symbol":"NIFTY_CE","price":12}]}`,
+or a symbol-to-prices map such as `{"NIFTY_CE":[10,12]}`. CSV uses `symbol,price`
+columns. `/simprice <symbol> <price>` publishes an immediate manual quote.
+`/simopen <symbol> <CE|PE> <qty> <entry> [SL target]` opens a synthetic paper
+option position through the normal position manager and journal; omitted SL
+and target use the configured option exit rules. Both commands are rejected
+unless SIM mode is enabled, and Telegram's configured chat allowlist still
+applies.
+
+Run the local command-handler scenarios with:
+
+```powershell
+python sim_scenarios.py
+```
+
+The script uses the actual Telegram update listener and command handlers with
+no Telegram or broker connection, prints each scenario's replies and trade
+journal rows, and stores each run under `sim/scenarios/<timestamp>`.
 
 `entry_mode` defaults to `immediate`. The optional `confirmed` mode is
 available only with `mode: "PAPER"` and an options trading mode. It waits for
