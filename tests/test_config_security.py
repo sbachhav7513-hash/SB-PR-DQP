@@ -17,11 +17,13 @@ def test_json_credentials_are_ignored(tmp_path, monkeypatch):
     )
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_TRADE_CHAT_ID", raising=False)
 
     config = BotConfig.load(str(config_path))
 
     assert config.telegram_token is None
     assert config.telegram_chat_id is None
+    assert config.telegram_trade_chat_id is None
 
 
 def test_environment_credentials_are_used(tmp_path, monkeypatch):
@@ -29,8 +31,10 @@ def test_environment_credentials_are_used(tmp_path, monkeypatch):
     config_path.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token-from-environment")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat-from-environment")
+    monkeypatch.setenv("TELEGRAM_TRADE_CHAT_ID", "trade-chat-from-environment")
 
     config = BotConfig.load(str(config_path))
 
     assert config.telegram_token == "token-from-environment"
     assert config.telegram_chat_id == "chat-from-environment"
+    assert config.telegram_trade_chat_id == "trade-chat-from-environment"

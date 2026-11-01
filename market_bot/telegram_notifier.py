@@ -10,20 +10,38 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    def __init__(self, token: Optional[str] = None, chat_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        trade_chat_id: Optional[str] = None,
+    ) -> None:
         self.token = token.strip() if token else None
         self.chat_id = chat_id.strip() if chat_id else None
+        self.trade_chat_id = trade_chat_id.strip() if trade_chat_id else None
 
     def send_trade_alert(self, payload: Dict[str, Any]) -> bool:
-        return self.send_message(payload.get("message", "Trade alert"))
+        text = payload.get("message", "Trade alert")
+        chat_ids = dict.fromkeys(
+            chat_id
+            for chat_id in (self.chat_id, self.trade_chat_id)
+            if chat_id
+        )
+        if not chat_ids:
+            return False
+        results = [self._send_message_to_chat(chat_id, text) for chat_id in chat_ids]
+        return all(results)
 
     def send_message(self, text: str) -> bool:
-        if not self.token or not self.chat_id:
+        return self._send_message_to_chat(self.chat_id, text)
+
+    def _send_message_to_chat(self, chat_id: Optional[str], text: str) -> bool:
+        if not self.token or not chat_id:
             return False
 
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         data = {
-            "chat_id": self.chat_id,
+            "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
         }
@@ -37,7 +55,10 @@ class TelegramNotifier:
                 return False
             return True
         except requests.RequestException as exc:
-            logger.error("Telegram alert request failed: %s", exc)
+            logger.error(
+                "Telegram alert request failed (%s)",
+                type(exc).__name__,
+            )
             return False
         except ValueError as exc:
             logger.error("Telegram returned an invalid response: %s", exc)
@@ -84,11 +105,15 @@ class TelegramNotifier:
         losing_trades: int,
         total_pnl: float,
     ) -> bool:
-        return self.send_message(
-            f"Paper trading daily summary ({summary_date})\n"
-            f"Closed trades: {closed_trades}\n"
-            f"Wins/Losses: {winning_trades}/{losing_trades}\n"
-            f"P&L: {total_pnl:.2f}"
+        return self.send_trade_alert(
+            {
+                "message": (
+                    f"Paper trading daily summary ({summary_date})\n"
+                    f"Closed trades: {closed_trades}\n"
+                    f"Wins/Losses: {winning_trades}/{losing_trades}\n"
+                    f"P&L: {total_pnl:.2f}"
+                )
+            }
         )
 
     def format_trade(
@@ -103,10 +128,12 @@ class TelegramNotifier:
         option_leg: Optional[str] = None,
         trading_symbol: Optional[str] = None,
         trailing_enabled: bool = False,
+        telegram_trade_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
         target_label = "Trailing reference" if trailing_enabled else "Target"
+        trade_reference = f"#{telegram_trade_id} " if telegram_trade_id is not None else ""
         return {
             "ticker": ticker,
             "trading_symbol": trading_symbol or ticker,
@@ -117,7 +144,7 @@ class TelegramNotifier:
             "take_profit": take_profit,
             "mode": label,
             "message": (
-                f"{label} Trade: {action} {ticker}{leg}\n"
+                f"{trade_reference}{label} Trade: {action} {ticker}{leg}\n"
                 f"Score: {score}\n"
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Entry: {entry:.2f}\n"
@@ -151,7 +178,7 @@ class TelegramNotifier:
         session_label: str = "PREMARKET",
     ) -> bool:
         payload = self.format_watchlist(candidates, session_label)
-        return self.send_message(payload["message"])
+        return self.send_trade_alert(payload)
 
     def format_close(
         self,
@@ -163,9 +190,11 @@ class TelegramNotifier:
         mode: str = "FUTURE",
         option_leg: Optional[str] = None,
         trading_symbol: Optional[str] = None,
+        telegram_trade_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         label = "OPTION" if str(mode).lower() == "intraday_options" else "FUTURE"
         leg = f" | Leg: {option_leg}" if option_leg else ""
+        trade_reference = f"#{telegram_trade_id} " if telegram_trade_id is not None else ""
         reason_label = {
             "TRAILING_STOP": "Trailing Stop",
             "TAKE_PROFIT": "Take Profit",
@@ -179,7 +208,7 @@ class TelegramNotifier:
             "reason": reason,
             "mode": label,
             "message": (
-                f"Trade Closed: {label} {action} {ticker}{leg}\n"
+                f"{trade_reference}Trade Closed: {label} {action} {ticker}{leg}\n"
                 f"Trading symbol: {trading_symbol or ticker}\n"
                 f"Exit: {exit_price:.2f}\n"
                 f"P&L: {pnl:.2f}\n"

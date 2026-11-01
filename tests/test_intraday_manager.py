@@ -2489,8 +2489,11 @@ def test_target_advance_updates_open_journal_and_telegram(tmp_path):
     open_trade = journal.get_open_trade("NIFTY_CE", "BUY")
     assert open_trade["take_profit"] == 120.0
     assert open_trade["target_stage"] == 1
-    notifier.send_message.assert_called_once()
-    assert "Next target: 120.00" in notifier.send_message.call_args.args[0]
+    notifier.send_trade_alert.assert_called_once()
+    assert (
+        "Next target: 120.00"
+        in notifier.send_trade_alert.call_args.args[0]["message"]
+    )
 
 
 def test_disabling_trailing_keeps_fixed_target_exit():
@@ -2751,13 +2754,16 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         "BUY",
         75,
         minimum_premium_override=5.0,
+        option_candle=option_bars[-1],
     )
     bot.accuracy_filters.validate_entry_with_reason.assert_called_once()
-    bot._has_option_candle_momentum.assert_called_once_with(
+    assert bot._has_option_candle_momentum.call_args_list[0].args == (
         "BUY",
-        underlying_bars[-1].to_dict(),
-        minimum_body_ratio=0.2,
+        option_bars[-1].to_dict(),
     )
+    assert bot._has_option_candle_momentum.call_args_list[0].kwargs == {
+        "minimum_body_ratio": 0.2
+    }
     bot._mark_support_reversal_attempt.assert_called_once()
     bot._handle_buy_signal.assert_called_once_with(
         "NIFTY_CE",
@@ -2765,6 +2771,8 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         75,
         strategy_variant="paper_underlying_support_reversal",
         minimum_signal_score=55,
+        entry_fill_override=None,
+        paper_change_attributions=[],
     )
 
 

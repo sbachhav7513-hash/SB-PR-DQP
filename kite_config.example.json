@@ -82,6 +82,9 @@
   "min_trend_strength": 0.005,
   "avoid_option_expiry_day": true,
   "option_quote_max_age_seconds": 60,
+  "stale_quote_candle_fallback": true,
+  "option_candle_momentum": true,
+  "index_persistence_pass": true,
   "decision_log_path": "decision_log.jsonl",
   "paper_trading_dir": "paper_trading_data",
   "weekly_report_dir": ".",
@@ -115,5 +118,6 @@
   "option_premium_stop_pct": 0.10,
   "option_premium_target_pct": 0.20,
   "telegram_token": null,
-  "telegram_chat_id": null
+  "telegram_chat_id": null,
+  "telegram_trade_chat_id": null
 }

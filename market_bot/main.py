@@ -81,6 +81,7 @@ def run_bot(config: BotConfig) -> None:
     bot = TelegramNotifier(
         token=config.telegram_token,
         chat_id=config.telegram_chat_id,
+        trade_chat_id=config.telegram_trade_chat_id,
     )
     config_hash = strategy_config_hash(asdict(config))
     git_identity = log_startup_identity(config_hash)

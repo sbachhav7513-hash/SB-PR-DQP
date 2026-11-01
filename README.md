@@ -75,11 +75,15 @@ Edit `config.json` with your preferred settings:
   "stop_loss_pct": 1.5,
   "take_profit_pct": 3.0,
   "telegram_token": null,
-  "telegram_chat_id": null
+  "telegram_chat_id": null,
+  "telegram_trade_chat_id": null
 }
 ```
 
 For PowerShell, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the terminal before running the bot. Do not commit or share those values.
+Optionally set `TELEGRAM_TRADE_CHAT_ID` to send trade alerts to a separate Telegram
+group as well as the existing chat. This setting is read from the environment, not
+from the JSON configuration.
 
 #### Configuration Parameters
 
@@ -97,6 +101,7 @@ For PowerShell, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the terminal 
 | `take_profit_pct` | Take-profit percentage from entry price | 3.0 |
 | `telegram_token` | Telegram bot authentication token | `null` |
 | `telegram_chat_id` | Telegram chat ID for notifications | `null` |
+| `telegram_trade_chat_id` | Optional additional destination for trade alerts | `null` |
 
 ### 3. Running the Bot (Yahoo Finance - Polling)
 
@@ -165,6 +170,55 @@ existing `live_orders_confirmed` safety gate must also be enabled in
 `kite_config.json` before LIVE orders can start. `trading_mode` remains the
 separate market-scope setting for futures/options/both.
 
+#### Telegram command control (Phase 1)
+
+Set the bot token and an explicit comma-separated allowlist in the process
+environment. Never put the token in a committed config file:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "<bot-token>"
+$env:TELEGRAM_ALLOWED_CHAT_IDS = "<your-chat-id>"
+$env:TELEGRAM_CHAT_ID = "<your-chat-id>" # For existing outbound notifications
+$env:TELEGRAM_TRADE_CHAT_ID = "<trade-group-chat-id>" # Optional trade-alert destination
+python run_kite_bot.py
+```
+
+In a private chat, Telegram's chat and sender IDs are the same. In a group,
+allowlist both the group chat ID and each permitted sender ID. Unauthorized
+updates are ignored and logged by ID; old messages from before startup are
+ignored. The listener only queues commands; the trading tick callback handles
+them so commands cannot race stop-loss/trailing management. If Telegram is
+unreachable, trading continues.
+
+Trade entry, exit, target-update, and watchlist alerts are sent to both
+`TELEGRAM_CHAT_ID` and the optional `TELEGRAM_TRADE_CHAT_ID`. Daily trade
+summaries are sent to both destinations. Status, connection/error alerts, and
+command replies continue to use the existing chat.
+The trade group is outbound-only: do not add its ID to
+`TELEGRAM_ALLOWED_CHAT_IDS`; command access remains limited to the configured
+allowlist.
+
+If the bot is run as the included systemd service, set
+`TELEGRAM_TRADE_CHAT_ID=<trade-group-chat-id>` in the service's `.env` file and
+restart the service.
+
+Available Phase 1 commands:
+
+| Command | Behavior |
+|---------|----------|
+| `/help` | List available commands |
+| `/status` | Show RUNNING/PAUSED state, mode, config hash, quote age, and open positions |
+| `/pnl` | Show today's realized/unrealized P&L, closed trade count, wins/losses, and daily loss usage |
+| `/trades` | List today's closed trades |
+| `/health` | Show quote timestamps, stale quote count, websocket status, and last tick |
+| `/pause` | Block new entries; existing positions continue to be managed |
+| `/resume` | Resume new entries |
+
+Phase 1 does not expose any order-placement command. `TELEGRAM_CONTROL_LIVE_ORDERS`
+defaults to `false`; leave it unset while testing. Test in `PAPER` mode first
+and confirm `/pause` leaves open-position exit management active before
+considering any later LIVE order-control phase.
+
 `entry_mode` defaults to `immediate`. The optional `confirmed` mode is
 available only with `mode: "PAPER"` and an options trading mode. It waits for
 the next fully closed one-minute underlying candle, requires a strict
@@ -229,6 +283,11 @@ signal, its completed one-minute premium candles are archived under
 the last valid bid/ask observed during each minute when available, and the
 config hash. Capturing continues for that contract for the remainder of the
 session and resumes after restart from the current day's archive.
+
+Rejected option signals are also recorded in `rejected_signals.jsonl` beside
+the decision log. Rows include the IST signal/rejection times, contract and
+config hash, measured gate values and quote, and forward 15/30/60-minute
+premium MFE/MAE; unavailable candle outcomes are marked unmatched.
 
 ---
 
@@ -389,3 +448,35 @@ For issues, feature requests, or contributions, please open an issue or submit a
 ## 📄 License
 
 This project is provided as-is for educational purposes.
+
+## PAPER option-entry recovery gates
+
+The `stale_quote_candle_fallback`, `option_candle_momentum`, and
+`index_persistence_pass` settings are included in the strategy config hash and
+apply only in `PAPER`; they do not change `LIVE` behavior. The example and
+current PAPER config enable all three. No shadow execution mode is used.
+
+The stale-quote fallback keeps the 60-second freshness limit. When a quote is
+older than that, PAPER may use the last completed one-minute option candle only
+while its close is no more than 120 seconds old. The gate reference is candle
+close + INR 0.05. The conservative entry fill is
+`max(candle close, last known ask) + INR 0.05`. Quote source, quote/candle age,
+option token, per-token last tick time, and daily tick-gap count are recorded on
+decision and trade rows. Historical 14–30 Oct exports contain minute OHLC but
+not tick-level quotes/asks; stale-quote results are therefore only a
+sensitivity estimate using the next one-minute candle open as the unavailable
+ask proxy, with the conservative maximum rule retained. They are not historical
+validation of this change.
+
+Run the PAPER rollback check once per trading day:
+
+```powershell
+python paper_change_rollback_check.py --config kite_config.json --trades trades.jsonl --decisions decision_log.jsonl
+```
+
+For each change, the script prints attributed-trade count, active PAPER session
+count, net P/L, and profit factor. After 15 added trades or 5 trading days,
+whichever comes first, it switches that config key off if net P/L after costs
+is below zero or profit factor is below 1.0. The fallback cost model is INR 98
+per round trip plus INR 0.05 per unit per side; it does not use the
+paper-shadow fee fields. A config change takes effect after the bot is restarted.
