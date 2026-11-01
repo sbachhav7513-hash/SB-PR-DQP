@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import datetime, time, timezone
+import os
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -87,7 +89,7 @@ class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
     TRADE_COLUMNS = [
-        "trade_id", "timestamp", "config_hash", "git_sha", "git_dirty",
+        "trade_id", "telegram_trade_id", "timestamp", "config_hash", "git_sha", "git_dirty",
         "ticker", "trading_symbol",
         "contract_id",
         "action", "quantity", "entry",
@@ -134,6 +136,15 @@ class PaperTradingRecorder:
         "signal_ask",
         "signal_ltp",
         "signal_quote_age_seconds",
+        "quote_source",
+        "quote_age_seconds",
+        "candle_age_seconds",
+        "option_token",
+        "last_tick_time",
+        "tick_gap_seconds",
+        "daily_tick_gaps_over_30s",
+        "paper_change_flags",
+        "paper_change_attributions",
         "order_premium",
         "order_bid",
         "order_ask",
@@ -174,8 +185,14 @@ class PaperTradingRecorder:
         "confirmation_event", "signal_id", "entry_mode", "route",
         "signal_time", "signal_close", "signal_bar", "signal_premium",
         "signal_bid", "signal_ask", "signal_ltp", "signal_quote_age_seconds",
+        "quote_source", "quote_age_seconds", "candle_age_seconds",
+        "option_token", "last_tick_time", "tick_gap_seconds",
+        "daily_tick_gaps_over_30s", "paper_change_flags",
+        "paper_change_attributions", "body_ratio", "body_ratio_threshold",
+        "body_ratio_source",
         "confirmation_candle_time", "confirmation_close",
         "confirmation_result", "confirmation_delay_seconds",
+        "confirmation_body_ratio", "confirmation_body_ratio_threshold",
         "confirmation_bid", "confirmation_ask", "confirmation_ltp",
         "confirmation_quote_age_seconds", "order_premium", "order_bid",
         "order_ask", "order_ltp", "order_quote_age_seconds",
@@ -299,6 +316,402 @@ class PaperTradingRecorder:
         self._write_parquet(path, rows, self.TRADE_COLUMNS)
 
 
+class RejectedSignalJournal:
+    """Track rejected signals and annotate their forward option-candle outcomes."""
+
+    HORIZONS_MINUTES = (15, 30, 60)
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.pending: Dict[str, Dict[str, Any]] = {}
+        self.seen_ids = set()
+        self._load_pending()
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            event_time = value
+        else:
+            try:
+                event_time = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return None
+        if event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=IST)
+        return event_time.astimezone(IST)
+
+    @staticmethod
+    def _positive_number(value: Any) -> Optional[float]:
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) and number > 0 else None
+
+    @staticmethod
+    def _gate_for_entry(entry: Dict[str, Any]) -> Optional[str]:
+        signal = str(entry.get("signal", "")).upper()
+        if signal == "HOLD":
+            reasons = entry.get("reasons")
+            if isinstance(reasons, list) and any(
+                "sideways regime" in str(reason).lower() for reason in reasons
+            ):
+                return "sideways regime"
+        if signal not in {"BUY", "SELL"}:
+            return None
+
+        detail = str(entry.get("outcome_detail", entry.get("outcome", "")))
+        outcome = str(entry.get("outcome", ""))
+        confirmation_event = str(entry.get("confirmation_event", ""))
+        if entry.get("event") == "entry_confirmation":
+            if confirmation_event == "rejected_by_confirmation":
+                return "confirmation failure"
+            if confirmation_event == "filter_failed_after_confirmation":
+                return "post-confirmation filter"
+            if confirmation_event in {"expired_signal", "confirmation_error"}:
+                return "confirmation failure"
+            return None
+
+        lowered_detail = detail.lower().replace("_", " ")
+        if detail == "OPTION_LEG_SKIPPED" or "leg unavailable" in lowered_detail:
+            return "leg skipped"
+        if "support reversal" in lowered_detail and "body ratio" in lowered_detail:
+            return "weak candle momentum"
+        if "late window" in lowered_detail or "entry cutoff" in lowered_detail:
+            return "trading hours"
+        if outcome == "accuracy_filter":
+            reason = str(entry.get("rejection_reason", detail)).lower()
+            if "volatility" in reason:
+                return "volatility"
+            if "score" in reason:
+                return "score <70"
+            return reason.replace("_", " ") or "accuracy filter"
+        if outcome == "option_filter":
+            reason = str(entry.get("rejection_reason", detail)).lower()
+            if "weak candle momentum" in reason:
+                return "weak candle momentum"
+            if "stale" in reason or "quote" in reason:
+                return "stale quote"
+            if "premium" in reason and any(
+                marker in reason for marker in ("high", "above", "maximum", "max")
+            ):
+                return "premium too high"
+            if "leg" in reason and any(
+                marker in reason for marker in ("skip", "unavailable")
+            ):
+                return "leg skipped"
+            return reason.replace("_", " ") or "option filter"
+        if outcome in {"risk_blocked", "paper_risk_cap"} or "risk_cap" in lowered_detail:
+            return "risk cap"
+        if outcome == "paper_entry_cutoff":
+            return "trading hours"
+        if outcome == "execution_failed":
+            return "execution failure"
+        return None
+
+    def _load_pending(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping invalid rejected-signal line %s", line_number
+                        )
+                        continue
+                    signal_id = str(row.get("signal_id", ""))
+                    if not signal_id:
+                        continue
+                    self.seen_ids.add(signal_id)
+                    if any(
+                        row.get(f"forward_{minutes}m_status") == "pending"
+                        for minutes in self.HORIZONS_MINUTES
+                    ):
+                        self.pending[signal_id] = row
+        except OSError:
+            logger.exception("Could not read rejected-signal journal %s", self.path)
+
+    def record_rejection(self, entry: Dict[str, Any]) -> None:
+        gate = self._gate_for_entry(entry)
+        if gate is None:
+            return
+
+        rejected_at = self._parse_datetime(entry.get("timestamp"))
+        if rejected_at is None:
+            logger.error("Rejected signal has an invalid timestamp: %r", entry.get("timestamp"))
+            return
+        is_confirmation_event = entry.get("event") == "entry_confirmation"
+        signal_time_value = (
+            entry.get("signal_time")
+            if is_confirmation_event
+            else entry.get("timestamp")
+        )
+        signal_time = self._parse_datetime(signal_time_value)
+        if signal_time is None:
+            logger.error("Rejected signal has an invalid signal time: %r", signal_time_value)
+            return
+        measurements = entry.get("gate_measurements")
+        measurements = measurements if isinstance(measurements, dict) else {}
+        signal_id = str(entry.get("signal_id") or uuid4().hex)
+        if signal_id in self.seen_ids:
+            logger.warning("Ignoring duplicate rejected-signal id %s", signal_id)
+            return
+
+        if entry.get("event") == "entry_confirmation":
+            bid = entry.get("confirmation_bid", entry.get("signal_bid"))
+            ask = entry.get("confirmation_ask", entry.get("signal_ask"))
+            ltp = entry.get("confirmation_ltp", entry.get("signal_ltp"))
+            quote_age = entry.get(
+                "confirmation_quote_age_seconds",
+                entry.get("signal_quote_age_seconds"),
+            )
+        else:
+            bid = measurements.get("bid", entry.get("signal_bid"))
+            ask = measurements.get("ask", entry.get("signal_ask"))
+            ltp = measurements.get("ltp", entry.get("signal_ltp"))
+            quote_age = measurements.get(
+                "quote_age_seconds", entry.get("signal_quote_age_seconds")
+            )
+
+        option_bar_close = self._positive_number(measurements.get("option_bar_close"))
+        confirmation_close = self._positive_number(entry.get("confirmation_close"))
+        signal_premium = self._positive_number(
+            entry.get("signal_premium", entry.get("signal_ltp"))
+        )
+        reference_premium = (
+            self._positive_number(ltp)
+            or confirmation_close
+            or signal_premium
+            or option_bar_close
+        )
+        reference_time_value = (
+            entry.get("forward_reference_time") or entry.get("timestamp")
+        )
+        reference_time = self._parse_datetime(reference_time_value)
+        if reference_time is None:
+            logger.error(
+                "Rejected signal has an invalid forward-reference time: %r",
+                reference_time_value,
+            )
+            return
+
+        row: Dict[str, Any] = {
+            "signal_id": signal_id,
+            "ist_time": signal_time.isoformat(),
+            "signal_time_ist": signal_time.isoformat(),
+            "rejected_at_ist": rejected_at.isoformat(),
+            "forward_reference_time_ist": reference_time.isoformat(),
+            "ticker": entry.get("ticker"),
+            "contract_id": entry.get("contract_id", ""),
+            "config_hash": entry.get("config_hash"),
+            "signal": str(entry.get("signal", "")).upper(),
+            "route": measurements.get("route")
+            or entry.get("route")
+            or entry.get("strategy_variant", "scored"),
+            "score": entry.get("score"),
+            "gate": gate,
+            "reason": (
+                entry.get("cancellation_sub_reason")
+                or entry.get("cancellation_reason")
+                or entry.get("rejection_reason")
+                or next(
+                    (
+                        reason
+                        for reason in entry.get("reasons", [])
+                        if gate == "sideways regime"
+                        and "sideways regime" in str(reason).lower()
+                    ),
+                    None,
+                )
+                or entry.get("outcome_detail")
+            ),
+            "outcome_detail": entry.get("outcome_detail"),
+            "body_ratio": measurements.get("body_ratio"),
+            "body_ratio_threshold": measurements.get("body_ratio_threshold"),
+            "body_ratio_source": measurements.get("body_ratio_source"),
+            "quote_age_seconds": quote_age,
+            "quote_age_threshold_seconds": measurements.get(
+                "quote_age_threshold_seconds"
+            ),
+            "volatility_pct": measurements.get("volatility_pct"),
+            "volatility_min_pct": measurements.get("volatility_min_pct"),
+            "volatility_max_pct": measurements.get("volatility_max_pct"),
+            "adx": measurements.get("adx"),
+            "adx_threshold": measurements.get("adx_threshold"),
+            "score_threshold": measurements.get("score_threshold"),
+            "bid": bid,
+            "ask": ask,
+            "ltp": ltp,
+            "premium_at_signal": signal_premium or self._positive_number(ltp),
+            "option_bar_close": measurements.get("option_bar_close"),
+            "option_bar_time": measurements.get("option_bar_time"),
+            "forward_reference_premium": reference_premium,
+            "forward_reference_premium_source": (
+                "ltp"
+                if self._positive_number(ltp) is not None
+                else "confirmation_close"
+                if confirmation_close is not None
+                else "signal_premium"
+                if signal_premium is not None
+                else "option_bar_close"
+                if option_bar_close is not None
+                else None
+            ),
+        }
+        for minutes in self.HORIZONS_MINUTES:
+            row[f"forward_{minutes}m_mfe_pct"] = None
+            row[f"forward_{minutes}m_mae_pct"] = None
+            row[f"forward_{minutes}m_candles"] = None
+            row[f"forward_{minutes}m_coverage_pct"] = None
+            row[f"forward_{minutes}m_status"] = (
+                "pending"
+                if row["contract_id"] and reference_premium is not None
+                else "unmatched"
+            )
+
+        try:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, default=str) + "\n")
+        except (OSError, TypeError, ValueError):
+            logger.exception("Could not write rejected-signal journal %s", self.path)
+            return
+
+        self.seen_ids.add(signal_id)
+        if any(
+            row[f"forward_{minutes}m_status"] == "pending"
+            for minutes in self.HORIZONS_MINUTES
+        ):
+            self.pending[signal_id] = row
+
+    def observe_forward_candles(
+        self,
+        contract_id: str,
+        candles: List[Any],
+        observed_at: Any,
+        interval_seconds: int = 60,
+    ) -> None:
+        observed_time = self._parse_datetime(observed_at)
+        if not contract_id or observed_time is None or interval_seconds <= 0:
+            return
+
+        normalized_candles = []
+        for candle in candles:
+            values = candle.to_dict() if hasattr(candle, "to_dict") else candle
+            if not isinstance(values, dict):
+                continue
+            candle_time = self._parse_datetime(values.get("time", values.get("timestamp")))
+            try:
+                high = float(values.get("high"))
+                low = float(values.get("low"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                candle_time is None
+                or not math.isfinite(high)
+                or not math.isfinite(low)
+                or high <= 0
+                or low <= 0
+            ):
+                continue
+            normalized_candles.append((candle_time, high, low))
+
+        updates: Dict[str, Dict[str, Any]] = {}
+        for signal_id, current in self.pending.items():
+            if str(current.get("contract_id", "")) != str(contract_id):
+                continue
+            reference_time = self._parse_datetime(
+                current.get("forward_reference_time_ist")
+            )
+            reference_premium = self._positive_number(
+                current.get("forward_reference_premium")
+            )
+            if reference_time is None or reference_premium is None:
+                continue
+            row = dict(current)
+            for minutes in self.HORIZONS_MINUTES:
+                status_key = f"forward_{minutes}m_status"
+                if row.get(status_key) != "pending":
+                    continue
+                deadline = reference_time + timedelta(minutes=minutes)
+                if observed_time < deadline:
+                    continue
+                window_candles = [
+                    (high, low)
+                    for candle_time, high, low in normalized_candles
+                    if reference_time <= candle_time
+                    and candle_time + timedelta(seconds=interval_seconds) <= deadline
+                ]
+                if window_candles:
+                    highs = [high for high, _ in window_candles]
+                    lows = [low for _, low in window_candles]
+                    expected = max(1, int(minutes * 60 / interval_seconds))
+                    row[f"forward_{minutes}m_mfe_pct"] = (
+                        (max(highs) - reference_premium) / reference_premium * 100
+                    )
+                    row[f"forward_{minutes}m_mae_pct"] = (
+                        (min(lows) - reference_premium) / reference_premium * 100
+                    )
+                    row[f"forward_{minutes}m_candles"] = len(window_candles)
+                    row[f"forward_{minutes}m_coverage_pct"] = min(
+                        100.0, len(window_candles) / expected * 100
+                    )
+                    row[status_key] = (
+                        "complete" if len(window_candles) == expected else "partial"
+                    )
+                else:
+                    row[status_key] = "unmatched"
+            if row != current:
+                updates[signal_id] = row
+
+        if not updates or not self._write_updates(updates):
+            return
+        for signal_id, row in updates.items():
+            if all(
+                row.get(f"forward_{minutes}m_status") != "pending"
+                for minutes in self.HORIZONS_MINUTES
+            ):
+                self.pending.pop(signal_id, None)
+            else:
+                self.pending[signal_id] = row
+
+    def _write_updates(self, updates: Dict[str, Dict[str, Any]]) -> bool:
+        temporary_path = self.path.with_name(
+            f".{self.path.name}.{uuid4().hex}.tmp"
+        )
+        try:
+            with self.path.open("r", encoding="utf-8") as source:
+                lines = source.readlines()
+            with temporary_path.open("w", encoding="utf-8") as target:
+                for line in lines:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        target.write(line)
+                        continue
+                    updated = updates.get(str(row.get("signal_id", "")), row)
+                    target.write(json.dumps(updated, default=str) + "\n")
+            os.replace(temporary_path, self.path)
+            return True
+        except (OSError, TypeError, ValueError):
+            logger.exception("Could not update rejected-signal outcomes in %s", self.path)
+            return False
+        finally:
+            if temporary_path.exists():
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    logger.exception(
+                        "Could not remove temporary rejected-signal file %s",
+                        temporary_path,
+                    )
+
+
 class DecisionJournal:
     """Append-only audit log for market data and strategy decisions."""
 
@@ -314,6 +727,9 @@ class DecisionJournal:
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.rejected_signal_journal = RejectedSignalJournal(
+            self.path.with_name("rejected_signals.jsonl")
+        )
         self.config_hash = config_hash
         if git_sha is None or git_dirty is None:
             identity = get_git_identity()
@@ -384,6 +800,21 @@ class DecisionJournal:
         except (OSError, TypeError, ValueError):
             # Observability must never interrupt live order handling.
             logger.exception("Could not write decision audit record to %s", self.path)
+        try:
+            self.rejected_signal_journal.record_rejection(entry)
+        except (
+            AttributeError,
+            KeyError,
+            OSError,
+            OverflowError,
+            TypeError,
+            ValueError,
+            ZeroDivisionError,
+        ):
+            logger.exception(
+                "Could not record rejected-signal telemetry for %s",
+                entry.get("ticker"),
+            )
 
 
 class PaperShadowExitJournal:
@@ -520,7 +951,7 @@ class TradeJournal:
         trade.setdefault("git_sha", self.git_sha)
         trade.setdefault("git_dirty", self.git_dirty)
 
-    def log_trade(self, payload: Dict[str, Any]) -> None:
+    def log_trade(self, payload: Dict[str, Any]) -> int:
         entry = dict(payload)
         entry.setdefault("contract_id", "")
         self._stamp_trade_identity(entry)
@@ -528,11 +959,23 @@ class TradeJournal:
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
         entry.setdefault("trade_id", f"{entry['ticker']}-{entry['timestamp']}-{entry.get('action', 'UNKNOWN')}")
+        if entry.get("telegram_trade_id") is None:
+            previous = self.read_trades()
+            entry["telegram_trade_id"] = max(
+                (
+                    int(trade["telegram_trade_id"])
+                    for trade in previous
+                    if isinstance(trade.get("telegram_trade_id"), int)
+                    and not isinstance(trade.get("telegram_trade_id"), bool)
+                ),
+                default=0,
+            ) + 1
         self._last_paper_mark_at.pop(str(entry["ticker"]), None)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, default=str) + "\n")
         if self.paper_recorder:
             self.paper_recorder.record_trade(entry)
+        return int(entry["telegram_trade_id"])
 
     def read_trades(self) -> List[Dict[str, Any]]:
         if not self.path.exists():
@@ -547,6 +990,24 @@ class TradeJournal:
                         trades.append(json.loads(line))
                     except json.JSONDecodeError:
                         logger.warning("Skipping invalid trade journal line %s", line_number)
+        used_ids = [
+            int(trade["telegram_trade_id"])
+            for trade in trades
+            if isinstance(trade.get("telegram_trade_id"), int)
+            and not isinstance(trade.get("telegram_trade_id"), bool)
+        ]
+        next_id = max(used_ids, default=0) + 1
+        changed = False
+        for trade in trades:
+            if (
+                not isinstance(trade.get("telegram_trade_id"), int)
+                or isinstance(trade.get("telegram_trade_id"), bool)
+            ):
+                trade["telegram_trade_id"] = next_id
+                next_id += 1
+                changed = True
+        if changed:
+            self._write_trades(trades)
         return trades
 
     def get_open_trade(self, ticker: str, action: Optional[str] = None) -> Optional[Dict[str, Any]]:

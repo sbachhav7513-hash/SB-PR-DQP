@@ -68,6 +68,21 @@ def test_shared_config_loader_rejects_non_object_json(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "flag",
+    [
+        "stale_quote_candle_fallback",
+        "option_candle_momentum",
+        "index_persistence_pass",
+    ],
+)
+def test_paper_recovery_flags_are_part_of_strategy_hash(flag):
+    baseline = strategy_config_hash({})
+
+    assert strategy_config_hash({flag: True}) != baseline
+    assert strategy_config_hash({flag: False}) != baseline
+
+
+@pytest.mark.parametrize(
     ("config", "environment_mode", "expected"),
     [
         ({"mode": "PAPER"}, None, "PAPER"),

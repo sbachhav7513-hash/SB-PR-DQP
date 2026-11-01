@@ -19,6 +19,7 @@ class BotConfig:
     take_profit_pct: float = 3.0
     telegram_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
+    telegram_trade_chat_id: Optional[str] = None
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "BotConfig":
@@ -34,4 +35,5 @@ class BotConfig:
         # Secrets stay outside JSON config files and are supplied by the process environment.
         data["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
         data["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
+        data["telegram_trade_chat_id"] = os.getenv("TELEGRAM_TRADE_CHAT_ID")
         return cls(**data)

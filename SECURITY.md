@@ -9,10 +9,13 @@ PowerShell for the current terminal session:
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = "paste-token-here"
 $env:TELEGRAM_CHAT_ID = "paste-chat-id-here"
+$env:TELEGRAM_TRADE_CHAT_ID = "paste-trade-group-chat-id"
 python run_bot.py
 ```
 
 The Yahoo bot ignores `telegram_token` and `telegram_chat_id` values in `config.json`.
+`TELEGRAM_TRADE_CHAT_ID` is optional and receives trade alerts in addition to
+the existing chat.
 
 ## Kite
 
@@ -20,8 +23,13 @@ The Yahoo bot ignores `telegram_token` and `telegram_chat_id` values in `config.
 $env:KITE_API_KEY = "paste-api-key-here"
 $env:TELEGRAM_BOT_TOKEN = "paste-token-here"
 $env:TELEGRAM_CHAT_ID = "paste-chat-id-here"
+$env:TELEGRAM_TRADE_CHAT_ID = "paste-trade-group-chat-id"
 python run_kite_bot.py
 ```
+
+Keep the trade group ID out of `TELEGRAM_ALLOWED_CHAT_IDS`; that allowlist
+controls command access and should contain only chats/users authorized to
+control the bot.
 
 The Kite authorizer keeps the daily access token in memory and does not write it to
 `kite_config.json`. Set `KITE_ACCESS_TOKEN` yourself when starting with an existing token.
@@ -48,6 +56,7 @@ source venv/bin/activate
 export KITE_API_KEY="your-api-key"
 export TELEGRAM_BOT_TOKEN="your-telegram-token"
 export TELEGRAM_CHAT_ID="your-chat-id"
+export TELEGRAM_TRADE_CHAT_ID="your-trade-group-chat-id"
 python run_kite_bot.py
 ```
 

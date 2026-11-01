@@ -42,6 +42,7 @@ NON_STRATEGY_CONFIG_KEYS = {
     "kite_access_token",
     "telegram_token",
     "telegram_chat_id",
+    "telegram_trade_chat_id",
     "mode",
     "paper_trading_enabled",
     "live_orders_enabled",

@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import queue
 import sys
 import time
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ from .change_tracking import log_startup_identity
 from .engine import (
     SupportResistanceReversal,
     aggregate_ohlcv_bars,
+    calculate_adx,
     detect_support_resistance_reversal,
     filter_signal_by_context,
     market_session_state,
@@ -45,7 +47,18 @@ from .strategy_config import (
 )
 from .strategy import ema
 from .telegram_notifier import TelegramNotifier
-from .trade_journal import DecisionJournal, PaperShadowExitJournal, TradeJournal
+from .telegram_control.commands import process_telegram_command
+from .telegram_control.listener import (
+    TelegramCommand,
+    TelegramCommandListener,
+    parse_allowed_chat_ids,
+)
+from .trade_journal import (
+    DecisionJournal,
+    PaperShadowExitJournal,
+    RejectedSignalJournal,
+    TradeJournal,
+)
 from .weekly_report import (
     write_daily_review,
     write_daily_summary,
@@ -67,6 +80,9 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 OPTION_MIN_CANDLE_BODY_RATIO = 0.60
+OPTION_STALE_CANDLE_MAX_AGE_SECONDS = 120.0
+OPTION_STALE_CANDLE_SLIPPAGE = 0.05
+INDEX_PERSISTENCE_WINDOW_SECONDS = 300.0
 SIGNAL_WEAKEN_CONFIRMATIONS = 2
 
 
@@ -351,6 +367,88 @@ class KiteTradingBot:
             and 0 < minimum_body_ratio <= 1
             and direction_matches
             and body_ratio >= minimum_body_ratio
+        )
+
+    def _paper_change_enabled(self, key: str) -> bool:
+        return (
+            bool(getattr(self, "paper_trading_enabled", False))
+            and not bool(getattr(self, "live_orders_enabled", False))
+            and bool(getattr(self, "config", {}).get(key, True))
+        )
+
+    def _latest_completed_option_candle(self, symbol: str) -> Optional[Bar]:
+        token = (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+            symbol
+        )
+        builder = getattr(self, "bar_builder", None)
+        if token is None or builder is None:
+            return None
+        bars = builder.get_bars(token, limit=1)
+        return bars[-1] if bars else None
+
+    def _option_candle_age_seconds(
+        self, candle: Optional[Bar], now: datetime
+    ) -> Optional[float]:
+        if candle is None:
+            return None
+        candle_start = self._journal_datetime(candle.timestamp)
+        if candle_start is None:
+            return None
+        try:
+            interval = int(getattr(self, "config", {}).get("bar_interval_seconds", 60))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if interval != 60:
+            return None
+        close_time = candle_start + timedelta(seconds=interval)
+        return (now - close_time).total_seconds()
+
+    def _index_persistence_pass(
+        self,
+        symbol: str,
+        signal: str,
+        signal_time: datetime,
+        premium: float,
+        support_candidate: Optional[SupportResistanceReversal],
+        *,
+        record_signal: bool = True,
+    ) -> bool:
+        underlying = symbol.rsplit("_", 1)[0].upper()
+        if (
+            not self._paper_change_enabled("index_persistence_pass")
+            or underlying not in {"NIFTY", "BANKNIFTY", "SENSEX"}
+            or signal not in {"BUY", "SELL"}
+            or not math.isfinite(premium)
+            or premium <= 0
+        ):
+            return False
+
+        histories = getattr(self, "_index_persistence_signals", None)
+        if histories is None:
+            histories = {}
+            self._index_persistence_signals = histories
+        key = (symbol, signal)
+        events = histories.setdefault(key, [])
+        local_time = self._journal_datetime(signal_time)
+        if local_time is None:
+            return False
+        events[:] = [
+            event
+            for event in events
+            if event[0].date() == local_time.date()
+            and 0 <= (local_time - event[0]).total_seconds()
+            <= INDEX_PERSISTENCE_WINDOW_SECONDS
+        ]
+        if record_signal:
+            if not events or events[-1][0] != local_time:
+                events.append((local_time, premium))
+            else:
+                events[-1] = (local_time, premium)
+        return (
+            len(events) >= 3
+            and premium > events[0][1]
+            and support_candidate is not None
+            and support_candidate.signal == signal
         )
 
     def _calculate_option_quantity(
@@ -747,6 +845,11 @@ class KiteTradingBot:
         self.config["kite_access_token"] = os.getenv("KITE_ACCESS_TOKEN")
         self.config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
         self.config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
+        self.config["telegram_trade_chat_id"] = os.getenv("TELEGRAM_TRADE_CHAT_ID")
+        self.telegram_control_live_orders = (
+            os.getenv("TELEGRAM_CONTROL_LIVE_ORDERS", "false").strip().lower()
+            == "true"
+        )
         self.entry_mode = str(self.config.get("entry_mode", "immediate")).strip().lower()
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
@@ -865,6 +968,7 @@ class KiteTradingBot:
         self.telegram_notifier = TelegramNotifier(
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
+            trade_chat_id=self.config.get("telegram_trade_chat_id"),
         )
         self.trade_journal = TradeJournal(
             "trades.jsonl",
@@ -931,7 +1035,9 @@ class KiteTradingBot:
             self._activate_daily_loss_shutdown()
         self.symbol_map = {v: k for k, v in self.config["instrument_tokens"].items()}
         self.latest_prices: Dict[str, float] = {}
+        self._last_quote_timestamps: Dict[str, datetime] = {}
         self.option_quote_cache: Dict[str, dict] = {}
+        self._option_tick_diagnostics: Dict[int, dict] = {}
         self.premarkarket_candidates: list[tuple[str, str, int, str]] = []
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
         self.use_market_context = self.config.get("use_market_context", True)
@@ -969,6 +1075,28 @@ class KiteTradingBot:
             feeds=self.config.get("news_feeds"),
             refresh_seconds=self.config.get("news_refresh_seconds", 900),
         ) if self.config.get("news_enabled", True) else None
+        self._telegram_entries_paused = False
+        self.telegram_command_queue: queue.Queue[TelegramCommand] = queue.Queue()
+        self.telegram_reply_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        allowed_chat_ids = parse_allowed_chat_ids(
+            os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"),
+            excluded_chat_ids=(self.config.get("telegram_trade_chat_id"),)
+            if self.config.get("telegram_trade_chat_id")
+            else (),
+        )
+        self.telegram_listener = None
+        if self.config.get("telegram_token") and allowed_chat_ids:
+            self.telegram_listener = TelegramCommandListener(
+                token=self.config["telegram_token"],
+                allowed_chat_ids=allowed_chat_ids,
+                command_queue=self.telegram_command_queue,
+                reply_queue=self.telegram_reply_queue,
+                on_failure=self.telegram_notifier.send_message,
+            )
+        elif self.config.get("telegram_token"):
+            logger.warning(
+                "Telegram command control disabled: TELEGRAM_ALLOWED_CHAT_IDS is empty"
+            )
 
     def _entry_score_floor(self) -> int:
         """Return the shared strategy entry-score floor."""
@@ -986,6 +1114,8 @@ class KiteTradingBot:
         *,
         ema_reentry_confirmed: bool = False,
     ) -> tuple[bool, str]:
+        if getattr(self, "_telegram_entries_paused", False):
+            return False, "telegram entries paused"
         if ema_reentry_confirmed and self._ema_reentry_enabled():
             return self.intraday_manager.can_open_trade(
                 symbol,
@@ -1800,6 +1930,7 @@ class KiteTradingBot:
         score: Optional[int] = None,
         minimum_premium_override: Optional[float] = None,
         now: Optional[datetime] = None,
+        option_candle: Optional[Bar] = None,
     ) -> tuple[bool, str]:
         """Require a fresh option quote and enforce contract-quality limits."""
         if not self._options_enabled():
@@ -1828,8 +1959,60 @@ class KiteTradingBot:
         if not math.isfinite(max_quote_age) or max_quote_age <= 0:
             return False, "invalid option quote age setting"
         quote_age = (now - quote_timestamp).total_seconds()
-        if quote_age < 0 or quote_age > max_quote_age:
-            return False, f"option quote stale: {quote_age:.1f}s"
+        candle_age = self._option_candle_age_seconds(option_candle, now)
+        quote_context = {
+            "quote_source": "tick",
+            "quote_age_seconds": quote_age,
+            "candle_age_seconds": candle_age,
+            "option_candle_close": (
+                float(option_candle.close) if option_candle is not None else None
+            ),
+            "gate_reference_price": None,
+            "fallback_fill_price": None,
+        }
+        gate_quote = quote_data
+        if quote_age < 0:
+            return False, f"option quote timestamp is in the future: {quote_age:.1f}s"
+        if quote_age > max_quote_age:
+            can_use_candle = (
+                self._paper_change_enabled("stale_quote_candle_fallback")
+                and quote_age > 60.0
+                and option_candle is not None
+                and candle_age is not None
+                and 0 <= candle_age <= OPTION_STALE_CANDLE_MAX_AGE_SECONDS
+                and math.isfinite(float(option_candle.close))
+                and float(option_candle.close) > 0
+            )
+            if not can_use_candle:
+                return False, f"option quote stale: {quote_age:.1f}s"
+            gate_price = float(option_candle.close) + OPTION_STALE_CANDLE_SLIPPAGE
+            last_ask = self._positive_quote_value(quote_data.get("ask"))
+            quote_context.update(
+                {
+                    "quote_source": "candle_fallback",
+                    "gate_reference_price": gate_price,
+                    "fallback_fill_price": (
+                        max(float(option_candle.close), last_ask or 0.0)
+                        + OPTION_STALE_CANDLE_SLIPPAGE
+                    ),
+                }
+            )
+            gate_quote = {**quote_data, "last_price": gate_price}
+            logger.info(
+                "[%s] Using completed option candle for stale-quote gate: "
+                "quote_age=%.1fs candle_age=%.1fs gate_price=%.2f fill_price=%.2f",
+                symbol,
+                quote_age,
+                candle_age,
+                gate_price,
+                quote_context["fallback_fill_price"],
+            )
+
+        gate_contexts = getattr(self, "_option_gate_context", None)
+        if gate_contexts is None:
+            gate_contexts = {}
+            self._option_gate_context = gate_contexts
+        gate_contexts[symbol] = quote_context
 
         stream = getattr(self, "kite_stream", None)
         expiry = getattr(stream, "contract_expiries", {}).get(symbol)
@@ -1843,7 +2026,7 @@ class KiteTradingBot:
         has_oi = quote_data.get("oi") is not None
         has_iv = quote_data.get("iv") is not None
         try:
-            premium_value = quote_data.get("last_price", quote_data.get("premium"))
+            premium_value = gate_quote.get("last_price", gate_quote.get("premium"))
             if premium_value is None:
                 return False, "invalid option quote"
             premium = float(premium_value)
@@ -1988,6 +2171,9 @@ class KiteTradingBot:
                 event,
             )
             return
+        gate_measurements = pending.get("gate_measurements")
+        if not isinstance(gate_measurements, dict):
+            gate_measurements = {}
         payload = {
             "timestamp": timestamp.isoformat(),
             "event": "entry_confirmation",
@@ -2007,6 +2193,18 @@ class KiteTradingBot:
             "signal_ask": pending["signal_ask"],
             "signal_ltp": pending["signal_ltp"],
             "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
+            "gate_measurements": gate_measurements,
+            "quote_source": gate_measurements.get("quote_source"),
+            "quote_age_seconds": gate_measurements.get("quote_age_seconds"),
+            "candle_age_seconds": gate_measurements.get("candle_age_seconds"),
+            "paper_change_flags": gate_measurements.get("paper_change_flags"),
+            "paper_change_attributions": pending.get(
+                "paper_change_attributions", []
+            ),
+            "confirmation_body_ratio": pending.get("confirmation_body_ratio"),
+            "confirmation_body_ratio_threshold": pending.get(
+                "confirmation_body_ratio_threshold"
+            ),
             "reasons": pending["reasons"],
             "support_resistance_level": pending["support_resistance_level"],
             "support_resistance_touches": pending["support_resistance_touches"],
@@ -2112,6 +2310,7 @@ class KiteTradingBot:
         reasons: list[str],
         support_candidate: Optional[SupportResistanceReversal],
         now: datetime,
+        paper_change_attributions: Optional[list[str]] = None,
     ) -> str:
         leg = "CE" if symbol.endswith("_CE") else "PE"
         key = (symbol, leg)
@@ -2142,6 +2341,21 @@ class KiteTradingBot:
         contract_id = self._contract_id(symbol)
         signal_id = f"{symbol}|{leg}|{signal_time.isoformat()}"
         support_route = strategy_variant == "paper_underlying_support_reversal"
+        builder = getattr(self, "bar_builder", None)
+        option_token = self.config.get("instrument_tokens", {}).get(symbol)
+        option_bars = (
+            builder.get_bars(option_token, limit=1)
+            if builder is not None and option_token is not None
+            else []
+        )
+        gate_measurements = self._decision_gate_measurements(
+            symbol,
+            signal_bars,
+            signal,
+            score,
+            strategy_variant,
+            option_bars[-1] if option_bars else None,
+        )
         signal_bar_payload = signal_bar.to_dict()
         signal_bar_payload["time"] = signal_time
         pending = {
@@ -2165,6 +2379,8 @@ class KiteTradingBot:
             "signal_ask": quote_metrics["ask"],
             "signal_ltp": quote_metrics["ltp"],
             "signal_quote_age_seconds": quote_metrics["age_seconds"],
+            "gate_measurements": gate_measurements,
+            "paper_change_attributions": list(paper_change_attributions or []),
             "support_resistance_level": (
                 support_candidate.level if support_route and support_candidate else None
             ),
@@ -2294,8 +2510,40 @@ class KiteTradingBot:
 
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         metrics = self._option_quote_metrics(quote, now=now)
+        option_candle = self._latest_completed_option_candle(symbol)
         if not metrics["valid"] or metrics["ask"] is None:
-            return "stale_quote"
+            allowed, reason = self._option_quality_gate(
+                symbol,
+                pending["signal"],
+                pending["score"],
+                minimum_premium_override=pending["minimum_premium_override"],
+                now=now,
+                option_candle=option_candle,
+            )
+            quote_context = getattr(self, "_option_gate_context", {}).get(
+                symbol, {}
+            )
+            if not allowed or quote_context.get("quote_source") != "candle_fallback":
+                if not allowed and not reason.startswith(
+                    (
+                        "option quote stale",
+                        "option quote unavailable",
+                        "option quote timestamp",
+                    )
+                ):
+                    return "premium"
+                return "stale_quote"
+            pending["fallback_entry_fill"] = quote_context.get(
+                "fallback_fill_price"
+            )
+            pending["paper_change_attributions"] = list(
+                dict.fromkeys(
+                    [
+                        *pending.get("paper_change_attributions", []),
+                        "stale_quote_candle_fallback",
+                    ]
+                )
+            )
 
         signal_bars = pending["signal_bars"]
         if len(signal_bars) < 2:
@@ -2317,15 +2565,72 @@ class KiteTradingBot:
         )
         if not allowed:
             return "filter"
-        if not self._has_option_candle_momentum(
+        momentum_candle = (
+            option_candle.to_dict()
+            if self._paper_change_enabled("option_candle_momentum")
+            and option_candle is not None
+            else {}
+            if self._paper_change_enabled("option_candle_momentum")
+            else current_bar
+        )
+        minimum_body_ratio = (
+            float(self.config.get("support_reversal_min_candle_body_ratio", 0.20))
+            if pending["route"] == "support_reversal"
+            else self._option_candle_min_body_ratio()
+        )
+        momentum_passed = self._has_option_candle_momentum(
             pending["signal"],
-            current_bar,
-            minimum_body_ratio=(
-                float(self.config.get("support_reversal_min_candle_body_ratio", 0.20))
-                if pending["route"] == "support_reversal"
-                else self._option_candle_min_body_ratio()
-            ),
+            momentum_candle,
+            minimum_body_ratio=minimum_body_ratio,
+        )
+        candle_range = (
+            float(momentum_candle["high"]) - float(momentum_candle["low"])
+            if isinstance(momentum_candle, dict)
+            else 0.0
+        )
+        ratio = (
+            abs(
+                float(momentum_candle["close"])
+                - float(momentum_candle["open"])
+            )
+            / candle_range
+            if candle_range > 0
+            else None
+        )
+        pending["confirmation_body_ratio"] = ratio
+        pending["confirmation_body_ratio_threshold"] = minimum_body_ratio
+        persistence_passed = False
+        if (
+            not momentum_passed
+            and "index_persistence_pass"
+            in pending.get("paper_change_attributions", [])
         ):
+            underlying_bars = []
+            builder = getattr(self, "bar_builder", None)
+            underlying_token = (
+                (self.config.get("instrument_tokens", {}) or {}).get(
+                    pending["underlying"]
+                )
+            )
+            if builder is not None and underlying_token is not None:
+                underlying_bars = builder.get_bars(underlying_token, limit=100)
+            current_candidate = self._support_reversal_candidate(
+                symbol, underlying_bars
+            )
+            confirmation_premium = (
+                float(option_candle.close)
+                if option_candle is not None
+                else 0.0
+            )
+            persistence_passed = self._index_persistence_pass(
+                symbol,
+                pending["signal"],
+                now,
+                confirmation_premium,
+                current_candidate,
+                record_signal=False,
+            )
+        if not momentum_passed and not persistence_passed:
             return "filter"
         allowed, _ = self._option_quality_gate(
             symbol,
@@ -2333,9 +2638,23 @@ class KiteTradingBot:
             pending["score"],
             minimum_premium_override=pending["minimum_premium_override"],
             now=now,
+            option_candle=option_candle,
         )
         if not allowed:
             return "premium"
+        quote_context = getattr(self, "_option_gate_context", {}).get(symbol, {})
+        if quote_context.get("quote_source") == "candle_fallback":
+            pending["fallback_entry_fill"] = quote_context.get(
+                "fallback_fill_price"
+            )
+            pending["paper_change_attributions"] = list(
+                dict.fromkeys(
+                    [
+                        *pending.get("paper_change_attributions", []),
+                        "stale_quote_candle_fallback",
+                    ]
+                )
+            )
 
         if not self._live_entry_allowed(symbol):
             return "filter"
@@ -2471,6 +2790,15 @@ class KiteTradingBot:
 
             quote = self.option_quote_cache[pending["symbol"]]
             metrics = self._option_quote_metrics(quote, now=now)
+            quote_context = getattr(self, "_option_gate_context", {}).get(
+                pending["symbol"], {}
+            )
+            fallback_fill = pending.get("fallback_entry_fill")
+            entry_price = (
+                float(fallback_fill)
+                if fallback_fill is not None
+                else float(metrics["ltp"])
+            )
             delay = max(
                 0.0,
                 (now - (pending["signal_time"] + timedelta(minutes=1))).total_seconds(),
@@ -2494,21 +2822,47 @@ class KiteTradingBot:
                 "confirmation_ltp": metrics["ltp"],
                 "confirmation_quote_age_seconds": metrics["age_seconds"],
                 "confirmation_delay_seconds": delay,
-                "order_premium": metrics["ask"],
+                "order_premium": (
+                    float(fallback_fill)
+                    if fallback_fill is not None
+                    else metrics["ask"]
+                ),
                 "order_bid": metrics["bid"],
                 "order_ask": metrics["ask"],
                 "order_ltp": metrics["ltp"],
                 "order_quote_age_seconds": metrics["age_seconds"],
+                "quote_source": (
+                    "candle_fallback"
+                    if fallback_fill is not None
+                    else quote_context.get("quote_source", "tick")
+                ),
+                "quote_age_seconds": quote_context.get(
+                    "quote_age_seconds", metrics["age_seconds"]
+                ),
+                "candle_age_seconds": quote_context.get(
+                    "candle_age_seconds"
+                ),
+                "paper_change_attributions": list(
+                    pending.get("paper_change_attributions", [])
+                ),
             }
             try:
                 outcome = self._handle_buy_signal(
                     pending["symbol"],
-                    float(metrics["ltp"]),
+                    entry_price,
                     pending["score"],
                     strategy_variant=pending["strategy_variant"],
                     minimum_signal_score=pending["minimum_signal_score"],
                     confirmed_entry_metadata=metadata,
                     force_ask_fill=True,
+                    entry_fill_override=(
+                        float(fallback_fill)
+                        if fallback_fill is not None
+                        else None
+                    ),
+                    paper_change_attributions=list(
+                        pending.get("paper_change_attributions", [])
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -2570,6 +2924,12 @@ class KiteTradingBot:
                 order_ask=metrics["ask"],
                 order_ltp=metrics["ltp"],
                 order_quote_age_seconds=metrics["age_seconds"],
+                quote_source=metadata["quote_source"],
+                quote_age_seconds=metadata["quote_age_seconds"],
+                candle_age_seconds=metadata["candle_age_seconds"],
+                paper_change_attributions=metadata[
+                    "paper_change_attributions"
+                ],
                 outcome_detail=outcome,
             )
             self.accuracy_filters.record_entry(
@@ -2643,6 +3003,13 @@ class KiteTradingBot:
         """Called when a new bar is completed."""
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        if symbol.endswith(("_CE", "_PE")):
+            getattr(self, "_option_gate_context", {}).pop(symbol, None)
+            contexts = getattr(self, "_signal_change_attributions", None)
+            if contexts is None:
+                contexts = {}
+                self._signal_change_attributions = contexts
+            contexts[symbol] = []
         self._record_active_option_candle(symbol, bar)
 
         # Check if it's time to exit all positions (3:15 PM)
@@ -3115,10 +3482,55 @@ class KiteTradingBot:
                         news_context,
                     )
                     return
-            if ema_reentry_context is None and not self._has_option_candle_momentum(
+            option_momentum_enabled = self._paper_change_enabled(
+                "option_candle_momentum"
+            )
+            momentum_candle = (
+                bar.to_dict()
+                if option_momentum_enabled and symbol.endswith(("_CE", "_PE"))
+                else signal_bars[-1].to_dict()
+            )
+            momentum_passed = self._has_option_candle_momentum(
                 market_score.signal,
-                signal_bars[-1].to_dict(),
+                momentum_candle,
                 minimum_body_ratio=minimum_body_ratio,
+            )
+            legacy_momentum_passed = (
+                self._has_option_candle_momentum(
+                    market_score.signal,
+                    signal_bars[-1].to_dict(),
+                    minimum_body_ratio=minimum_body_ratio,
+                )
+                if option_momentum_enabled
+                else momentum_passed
+            )
+            quote_data = getattr(self, "option_quote_cache", {}).get(symbol, {})
+            quote_metrics = self._option_quote_metrics(quote_data)
+            option_premium = (
+                float(quote_metrics["ltp"])
+                if quote_metrics["fresh"] and quote_metrics["ltp"] is not None
+                else float(bar.close)
+            )
+            persistence_passed = self._index_persistence_pass(
+                symbol,
+                market_score.signal,
+                signal_bars[-1].timestamp,
+                option_premium,
+                support_candidate,
+            )
+            momentum_override = persistence_passed and not momentum_passed
+            if option_momentum_enabled and momentum_passed and not legacy_momentum_passed:
+                self._signal_change_attributions[symbol].append(
+                    "option_candle_momentum"
+                )
+            if momentum_override:
+                self._signal_change_attributions[symbol].append(
+                    "index_persistence_pass"
+                )
+            if (
+                ema_reentry_context is None
+                and not momentum_passed
+                and not momentum_override
             ):
                 logger.info(
                     "[%s] Option entry rejected: signal candle lacks directional momentum",
@@ -3158,12 +3570,14 @@ class KiteTradingBot:
                     minimum_premium_override=self.config.get(
                         "support_reversal_min_premium", 5.0
                     ),
+                    option_candle=bar,
                 )
             else:
                 allowed, option_reason = self._option_quality_gate(
                     symbol,
                     market_score.signal,
                     market_score.score,
+                    option_candle=bar,
                 )
             if not allowed:
                 if ema_reentry_context is not None:
@@ -3183,6 +3597,13 @@ class KiteTradingBot:
                     news_context,
                 )
                 return
+            option_gate_context = getattr(self, "_option_gate_context", {}).get(
+                symbol, {}
+            )
+            if option_gate_context.get("quote_source") == "candle_fallback":
+                self._signal_change_attributions[symbol].append(
+                    "stale_quote_candle_fallback"
+                )
             if (
                 getattr(self, "entry_mode", "immediate") != "confirmed"
                 or ema_reentry_context is not None
@@ -3263,6 +3684,9 @@ class KiteTradingBot:
                     reasons=market_score.reasons,
                     support_candidate=support_candidate,
                     now=now,
+                    paper_change_attributions=list(
+                        self._signal_change_attributions.get(symbol, [])
+                    ),
                 )
             else:
                 if ema_reentry_context is not None:
@@ -3273,14 +3697,26 @@ class KiteTradingBot:
                         strategy_variant=market_score.strategy_variant,
                         minimum_signal_score=position_minimum_score,
                         ema_reentry_context=ema_reentry_context,
+                        paper_change_attributions=list(
+                            self._signal_change_attributions.get(symbol, [])
+                        ),
                     )
                 else:
+                    gate_context = getattr(
+                        self, "_option_gate_context", {}
+                    ).get(symbol, {})
                     outcome = self._handle_buy_signal(
                         symbol,
                         bar.close,
                         market_score.score,
                         strategy_variant=market_score.strategy_variant,
                         minimum_signal_score=position_minimum_score,
+                        entry_fill_override=gate_context.get(
+                            "fallback_fill_price"
+                        ),
+                        paper_change_attributions=list(
+                            self._signal_change_attributions.get(symbol, [])
+                        ),
                     )
         elif trade_action == "SELL":
             outcome = self._handle_sell_signal(
@@ -3879,8 +4315,54 @@ class KiteTradingBot:
 
     def _on_tick(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
+        self._process_telegram_commands()
+        self._last_loop_tick_at = tick.timestamp
         symbol = self.symbol_map.get(tick.instrument_token, f"TOKEN_{tick.instrument_token}")
+        if symbol.endswith(("_CE", "_PE")):
+            tick_time = self._journal_datetime(tick.timestamp)
+            if tick_time is not None:
+                diagnostics = getattr(self, "_option_tick_diagnostics", None)
+                if diagnostics is None:
+                    diagnostics = {}
+                    self._option_tick_diagnostics = diagnostics
+                state = diagnostics.get(tick.instrument_token, {})
+                if state.get("session_date") != tick_time.date().isoformat():
+                    state = {
+                        "session_date": tick_time.date().isoformat(),
+                        "daily_tick_gaps_over_30s": 0,
+                    }
+                previous_time = self._journal_datetime(
+                    state.get("last_tick_time")
+                )
+                gap_seconds = (
+                    (tick_time - previous_time).total_seconds()
+                    if previous_time is not None
+                    else None
+                )
+                if gap_seconds is not None and gap_seconds > 30.0:
+                    state["daily_tick_gaps_over_30s"] += 1
+                    logger.info(
+                        "[%s] Option tick gap %.1fs (daily gaps >30s: %d)",
+                        symbol,
+                        gap_seconds,
+                        state["daily_tick_gaps_over_30s"],
+                    )
+                state["last_tick_time"] = tick_time.isoformat()
+                state["last_tick_gap_seconds"] = gap_seconds
+                diagnostics[tick.instrument_token] = state
+                logger.debug(
+                    "[%s] Option tick token=%d last_tick_time=%s "
+                    "daily_tick_gaps_over_30s=%d",
+                    symbol,
+                    tick.instrument_token,
+                    state["last_tick_time"],
+                    state["daily_tick_gaps_over_30s"],
+                )
         self.latest_prices[symbol] = tick.last_price
+        self._last_quote_timestamps = getattr(
+            self, "_last_quote_timestamps", {}
+        )
+        self._last_quote_timestamps[symbol] = tick.timestamp
         self.option_quote_cache[symbol] = {
             "last_price": float(tick.last_price),
             "bid": float(getattr(tick, "bid", 0.0)),
@@ -3926,6 +4408,26 @@ class KiteTradingBot:
             self.bar_builder.process_tick(tick)
         finally:
             self._bar_callback_time = None
+
+    def _process_telegram_commands(self) -> None:
+        command_queue = getattr(self, "telegram_command_queue", None)
+        reply_queue = getattr(self, "telegram_reply_queue", None)
+        if command_queue is None or reply_queue is None:
+            return
+        while True:
+            try:
+                command = command_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                reply = process_telegram_command(self, command.text)
+            except Exception:
+                logger.exception(
+                    "Telegram command processing failed for update %s",
+                    command.update_id,
+                )
+                reply = "Command failed; the trading loop is continuing."
+            reply_queue.put((command.chat_id, reply))
 
     def _extend_option_timebox(self, symbol: str, position: dict) -> bool:
         if not self.config.get("extend_option_timebox", False):
@@ -4423,12 +4925,13 @@ class KiteTradingBot:
         }
         self.trade_journal.update_open_trade(symbol, fields, action)
         trailing_text = f"{trailing_stop:.2f}" if trailing_stop is not None else "not active"
-        self.telegram_notifier.send_message(
+        message = (
             f"Target advanced: {action} {symbol}\n"
             f"Stage: {position['target_stage']}\n"
             f"Next target: {position['take_profit']:.2f}\n"
             f"Trailing stop: {trailing_text}"
         )
+        self.telegram_notifier.send_trade_alert({"message": message})
         return True
 
     def _close_position(self, symbol: str, price: float, reason: str) -> None:
@@ -4715,6 +5218,7 @@ class KiteTradingBot:
             mode=mode,
             option_leg=option_leg,
             trading_symbol=trading_symbol,
+            telegram_trade_id=(trade or {}).get("telegram_trade_id"),
         )
         logger.info(self.telegram_notifier.build_message(close_alert))
         self.telegram_notifier.send_trade_alert(close_alert)
@@ -4728,6 +5232,226 @@ class KiteTradingBot:
         if reason in {"TIME_BOX", "SIGNAL_WEAKEN"}:
             return reason
         return reason
+
+    def _decision_gate_measurements(
+        self,
+        symbol: str,
+        bars: list,
+        signal: str,
+        score: Optional[int],
+        strategy_variant: Optional[str],
+        option_bar: Optional[Bar],
+    ) -> dict:
+        config = getattr(self, "config", {}) or {}
+        variant = str(strategy_variant or "")
+        route = (
+            "support_reversal"
+            if "support_reversal" in variant
+            else "stop_reentry"
+            if "reentry" in variant
+            else "scored"
+        )
+        signal_bars = bars
+        body_ratio_source = "signal_candle"
+        is_option = symbol.endswith(("_CE", "_PE"))
+        if is_option:
+            underlying = symbol.rsplit("_", 1)[0].upper()
+            token = config.get("instrument_tokens", {}).get(underlying)
+            builder = getattr(self, "bar_builder", None)
+            signal_bars = (
+                builder.get_bars(token, limit=50)
+                if token is not None and builder is not None
+                else []
+            )
+            body_ratio_source = (
+                "underlying_signal_candle" if signal_bars else "unavailable"
+            )
+
+        history = [item.to_dict() for item in signal_bars]
+        signal_bar = signal_bars[-1] if signal_bars else None
+        use_option_candle = (
+            is_option and self._paper_change_enabled("option_candle_momentum")
+        )
+        momentum_bar = option_bar if use_option_candle else signal_bar
+        if use_option_candle:
+            body_ratio_source = (
+                "last_completed_option_candle"
+                if momentum_bar is not None
+                else "unavailable"
+            )
+        body_ratio = None
+        direction_matches = None
+        signal_bar_time = None
+        if momentum_bar is not None:
+            candle_range = float(momentum_bar.high) - float(momentum_bar.low)
+            if candle_range > 0 and math.isfinite(candle_range):
+                body_ratio = abs(
+                    float(momentum_bar.close) - float(momentum_bar.open)
+                ) / candle_range
+                direction_matches = (
+                    float(momentum_bar.close) > float(momentum_bar.open)
+                    if signal == "BUY"
+                    else float(momentum_bar.close) < float(momentum_bar.open)
+                    if signal == "SELL"
+                    else None
+                )
+            signal_bar_time = momentum_bar.timestamp.isoformat()
+
+        body_threshold = None
+        body_gate_applies = (
+            signal in {"BUY", "SELL"}
+            and route != "stop_reentry"
+            and variant != "option_range_breakout"
+        )
+        default_threshold = (
+            0.20
+            if route == "support_reversal"
+            else OPTION_MIN_CANDLE_BODY_RATIO
+        )
+        if body_gate_applies:
+            threshold_key = (
+                "support_reversal_min_candle_body_ratio"
+                if route == "support_reversal"
+                else "option_min_candle_body_ratio"
+            )
+            try:
+                body_threshold = float(config.get(threshold_key, default_threshold))
+            except (TypeError, ValueError, OverflowError):
+                logger.warning("Could not read %s for rejected-signal telemetry", threshold_key)
+                body_threshold = None
+
+        volatility_pct = None
+        if len(history) >= 14 and history[-1].get("close", 0):
+            try:
+                atr = AccuracyFilters.calculate_atr(history, period=14)
+                current_price = float(history[-1]["close"])
+                if current_price > 0 and math.isfinite(current_price):
+                    candidate = atr / current_price * 100
+                    if math.isfinite(candidate):
+                        volatility_pct = candidate
+            except (IndexError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+                logger.exception("Could not calculate volatility telemetry for %s", symbol)
+
+        adx = calculate_adx(history)
+        quote_cache = getattr(self, "option_quote_cache", {}) or {}
+        quote = quote_cache.get(symbol, {})
+        quote_metrics = self._option_quote_metrics(quote)
+        quote_context = (
+            getattr(self, "_option_gate_context", {}).get(symbol, {})
+        )
+        token = (config.get("instrument_tokens", {}) or {}).get(symbol)
+        tick_info = (
+            getattr(self, "_option_tick_diagnostics", {}).get(int(token), {})
+            if is_option and token is not None
+            else {}
+        )
+        active_changes = [
+            key
+            for key in (
+                "stale_quote_candle_fallback",
+                "option_candle_momentum",
+                "index_persistence_pass",
+            )
+            if self._paper_change_enabled(key)
+        ]
+        try:
+            configured_quote_age = float(
+                config.get("option_quote_max_age_seconds", 60)
+            )
+        except (TypeError, ValueError, OverflowError):
+            configured_quote_age = 0.0
+        quote_age_threshold = (
+            configured_quote_age
+            if math.isfinite(configured_quote_age) and configured_quote_age > 0
+            else None
+        )
+        option_range = (
+            float(option_bar.high) - float(option_bar.low)
+            if option_bar is not None
+            else 0.0
+        )
+        option_body_ratio = (
+            abs(float(option_bar.close) - float(option_bar.open)) / option_range
+            if option_bar is not None
+            and option_range > 0
+            and math.isfinite(option_range)
+            else None
+        )
+
+        def configured_float(key: str, default: float) -> Optional[float]:
+            try:
+                value = float(config.get(key, default))
+            except (TypeError, ValueError, OverflowError):
+                logger.warning("Could not read %s for rejected-signal telemetry", key)
+                return None
+            return value if math.isfinite(value) else None
+
+        accuracy_filters = getattr(self, "accuracy_filters", None)
+        volatility_min_pct = getattr(accuracy_filters, "min_volatility_pct", None)
+        if volatility_min_pct is None:
+            volatility_min_pct = configured_float("min_volatility_pct", 0.05)
+        volatility_max_pct = getattr(accuracy_filters, "max_volatility_pct", None)
+        if volatility_max_pct is None:
+            volatility_max_pct = configured_float("max_volatility_pct", 5.0)
+        try:
+            score_threshold = self._entry_score_floor()
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            try:
+                score_threshold = int(config.get("min_entry_score", 70))
+            except (TypeError, ValueError, OverflowError):
+                score_threshold = None
+
+        return {
+            "route": route,
+            "body_ratio": body_ratio,
+            "body_ratio_threshold": body_threshold,
+            "body_ratio_gate_applies": body_gate_applies,
+            "body_ratio_direction_matches": direction_matches,
+            "body_ratio_passed": (
+                direction_matches is True
+                and body_ratio is not None
+                and body_threshold is not None
+                and body_ratio >= body_threshold
+            ) if body_gate_applies else None,
+            "body_ratio_source": body_ratio_source,
+            "signal_bar_time": signal_bar_time,
+            "option_bar_body_ratio": option_body_ratio,
+            "option_bar_close": (
+                float(option_bar.close) if option_bar is not None else None
+            ),
+            "option_bar_time": (
+                option_bar.timestamp.isoformat() if option_bar is not None else None
+            ),
+            "quote_age_seconds": quote_metrics["age_seconds"],
+            "quote_source": quote_context.get(
+                "quote_source", "tick" if quote_metrics["timestamp"] else None
+            ),
+            "candle_age_seconds": quote_context.get(
+                "candle_age_seconds",
+                self._option_candle_age_seconds(option_bar, datetime.now(IST)),
+            ),
+            "quote_age_threshold_seconds": quote_age_threshold,
+            "option_token": int(token) if is_option and token is not None else None,
+            "last_tick_time": tick_info.get("last_tick_time"),
+            "tick_gap_seconds": tick_info.get("last_tick_gap_seconds"),
+            "daily_tick_gaps_over_30s": tick_info.get(
+                "daily_tick_gaps_over_30s", 0
+            ),
+            "paper_change_flags": active_changes,
+            "paper_change_attributions": list(
+                getattr(self, "_signal_change_attributions", {}).get(symbol, [])
+            ),
+            "volatility_pct": volatility_pct,
+            "volatility_min_pct": volatility_min_pct,
+            "volatility_max_pct": volatility_max_pct,
+            "adx": adx,
+            "adx_threshold": configured_float("min_adx", 18.0),
+            "score": score,
+            "score_threshold": score_threshold,
+            "bid": quote_metrics["bid"],
+            "ask": quote_metrics["ask"],
+            "ltp": quote_metrics["ltp"],
+        }
 
     def _record_decision(
         self,
@@ -4746,6 +5470,44 @@ class KiteTradingBot:
             reasons = [outcome]
         entry_evaluations = getattr(self, "_pending_entry_evaluations", {})
         entry_evaluation = entry_evaluations.pop(symbol, None)
+        variant = (
+            strategy_variant
+            or getattr(market_score, "strategy_variant", None)
+            or "primary"
+        )
+        try:
+            gate_measurements = self._decision_gate_measurements(
+                symbol,
+                bars,
+                signal,
+                market_score.score if market_score else None,
+                variant,
+                bar,
+            )
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            OverflowError,
+            TypeError,
+            ValueError,
+            ZeroDivisionError,
+        ):
+            logger.exception(
+                "Could not capture rejected-signal measurements for %s", symbol
+            )
+            gate_measurements = {"route": "scored"}
+        callback_time = self._journal_datetime(
+            getattr(self, "_bar_callback_time", None)
+        )
+        forward_reference_time = callback_time or datetime.now(IST)
+        try:
+            bar_interval_seconds = int(
+                (getattr(self, "config", {}) or {}).get("bar_interval_seconds", 60)
+            )
+        except (TypeError, ValueError, OverflowError):
+            logger.exception("Could not read bar interval for forward-outcome telemetry")
+            bar_interval_seconds = 60
         self.decision_journal.log_decision(
             {
                 "event": "bar_decision",
@@ -4759,10 +5521,29 @@ class KiteTradingBot:
                 "score": market_score.score if market_score else None,
                 "reasons": reasons,
                 "strategy_variant": (
-                    strategy_variant
-                    or getattr(market_score, "strategy_variant", None)
-                    or "primary"
+                    variant
                 ),
+                "gate_measurements": gate_measurements,
+                "quote_source": gate_measurements.get("quote_source"),
+                "quote_age_seconds": gate_measurements.get("quote_age_seconds"),
+                "candle_age_seconds": gate_measurements.get("candle_age_seconds"),
+                "option_token": gate_measurements.get("option_token"),
+                "last_tick_time": gate_measurements.get("last_tick_time"),
+                "tick_gap_seconds": gate_measurements.get("tick_gap_seconds"),
+                "daily_tick_gaps_over_30s": gate_measurements.get(
+                    "daily_tick_gaps_over_30s"
+                ),
+                "body_ratio": gate_measurements.get("body_ratio"),
+                "body_ratio_threshold": gate_measurements.get(
+                    "body_ratio_threshold"
+                ),
+                "body_ratio_source": gate_measurements.get("body_ratio_source"),
+                "paper_change_flags": gate_measurements.get("paper_change_flags"),
+                "paper_change_attributions": gate_measurements.get(
+                    "paper_change_attributions"
+                ),
+                "forward_reference_time": forward_reference_time.isoformat(),
+                "bar_interval_seconds": bar_interval_seconds,
                 "news_risk": news_context.risk_level if news_context else "DISABLED",
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
                 "news_headlines": news_context.headlines[:5] if news_context else [],
@@ -4800,6 +5581,43 @@ class KiteTradingBot:
                 ),
             }
         )
+        rejected_journal = getattr(
+            self.decision_journal, "rejected_signal_journal", None
+        )
+        if isinstance(rejected_journal, RejectedSignalJournal) and symbol.endswith(
+            ("_CE", "_PE")
+        ):
+            token = (
+                (getattr(self, "config", {}) or {}).get("instrument_tokens", {})
+                or {}
+            ).get(symbol)
+            builder = getattr(self, "bar_builder", None)
+            option_bars = (
+                builder.get_bars(token, limit=100)
+                if token is not None and builder is not None
+                else bars
+            )
+            try:
+                rejected_journal.observe_forward_candles(
+                    self._contract_id(symbol),
+                    option_bars,
+                    forward_reference_time,
+                    bar_interval_seconds,
+                )
+            except (
+                AttributeError,
+                IndexError,
+                KeyError,
+                OSError,
+                OverflowError,
+                TypeError,
+                ValueError,
+                ZeroDivisionError,
+            ):
+                logger.exception(
+                    "Could not update rejected-signal forward outcomes for %s",
+                    symbol,
+                )
 
     def _handle_buy_signal(
         self,
@@ -4813,6 +5631,8 @@ class KiteTradingBot:
         ema_reentry_context: Optional[dict] = None,
         confirmed_entry_metadata: Optional[dict] = None,
         force_ask_fill: bool = False,
+        entry_fill_override: Optional[float] = None,
+        paper_change_attributions: Optional[list[str]] = None,
     ) -> str:
         """Handle a BUY signal."""
         entry_quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
@@ -4892,12 +5712,26 @@ class KiteTradingBot:
                     staged_option_targets
                 )
                 premium = float(self.latest_prices.get(symbol, price))
-                if force_ask_fill and (
+                if force_ask_fill and entry_fill_override is None and (
                     not entry_quote_metrics["valid"]
                     or entry_quote_metrics["ask"] is None
                 ):
                     return "stale_quote"
-                if (
+                if entry_fill_override is not None:
+                    if (
+                        not getattr(self, "paper_trading_enabled", False)
+                        or getattr(self, "live_orders_enabled", False)
+                    ):
+                        return "stale_quote"
+                    try:
+                        price = float(entry_fill_override)
+                    except (TypeError, ValueError, OverflowError):
+                        return "invalid_option_fallback_fill"
+                    if not math.isfinite(price) or price <= 0:
+                        return "invalid_option_fallback_fill"
+                    premium = price
+                    entry_fill_source = "candle_fallback"
+                elif (
                     force_ask_fill
                     or self.config.get("option_quote_validated_stops_enabled", False)
                 ):
@@ -5136,6 +5970,56 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            quote_context = getattr(self, "_option_gate_context", {}).get(
+                symbol, {}
+            )
+            token = (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                symbol
+            )
+            tick_info = (
+                getattr(self, "_option_tick_diagnostics", {}).get(int(token), {})
+                if token is not None
+                else {}
+            )
+            active_changes = [
+                key
+                for key in (
+                    "stale_quote_candle_fallback",
+                    "option_candle_momentum",
+                    "index_persistence_pass",
+                )
+                if self._paper_change_enabled(key)
+            ]
+            alert.update(
+                {
+                    "quote_source": (
+                        "candle_fallback"
+                        if entry_fill_source == "candle_fallback"
+                        else quote_context.get(
+                            "quote_source",
+                            "tick" if entry_quote_metrics["timestamp"] else None,
+                        )
+                    ),
+                    "quote_age_seconds": quote_context.get(
+                        "quote_age_seconds", entry_quote_metrics["age_seconds"]
+                    ),
+                    "candle_age_seconds": quote_context.get(
+                        "candle_age_seconds"
+                    ),
+                    "option_token": int(token) if token is not None else None,
+                    "last_tick_time": tick_info.get("last_tick_time"),
+                    "tick_gap_seconds": tick_info.get(
+                        "last_tick_gap_seconds"
+                    ),
+                    "daily_tick_gaps_over_30s": tick_info.get(
+                        "daily_tick_gaps_over_30s", 0
+                    ),
+                    "paper_change_flags": active_changes,
+                    "paper_change_attributions": list(
+                        paper_change_attributions or []
+                    ),
+                }
+            )
             if ema_reentry_context is not None:
                 alert.update(
                     {
@@ -5260,7 +6144,13 @@ class KiteTradingBot:
             )
             if confirmed_entry_metadata is not None:
                 alert.update(confirmed_entry_metadata)
-            self.trade_journal.log_trade(alert)
+            telegram_trade_id = self.trade_journal.log_trade(alert)
+            alert["telegram_trade_id"] = telegram_trade_id
+            if isinstance(alert.get("message"), str):
+                alert["message"] = f"#{telegram_trade_id} {alert['message']}"
+            self.intraday_manager.active_positions[symbol][
+                "telegram_trade_id"
+            ] = telegram_trade_id
             logger.info(
                 "[%s] Entry quote bid=%s ask=%s LTP=%s timestamp=%s fill=%s",
                 symbol,
@@ -5584,7 +6474,13 @@ class KiteTradingBot:
                 if strategy_variant == "paper_underlying_support_reversal"
                 else "scored"
             )
-            self.trade_journal.log_trade(alert)
+            telegram_trade_id = self.trade_journal.log_trade(alert)
+            alert["telegram_trade_id"] = telegram_trade_id
+            if isinstance(alert.get("message"), str):
+                alert["message"] = f"#{telegram_trade_id} {alert['message']}"
+            self.intraday_manager.active_positions[symbol][
+                "telegram_trade_id"
+            ] = telegram_trade_id
             self._persist_current_live_risk_state()
             target_label = "adaptive_exit_ref" if option_adaptive_exit else "TP"
             logger.info(
@@ -5710,6 +6606,8 @@ class KiteTradingBot:
         logger.info(f"Risk per trade: {self.intraday_manager.risk_per_trade_pct}%")
 
         try:
+            if self.telegram_listener:
+                self.telegram_listener.start()
             if self.news_monitor:
                 self.news_monitor.start()
             self.kite_stream.start()
@@ -5752,6 +6650,8 @@ class KiteTradingBot:
         except KeyboardInterrupt:
             logger.info("Bot stopped by user")
         finally:
+            if self.telegram_listener:
+                self.telegram_listener.stop()
             if self.news_monitor:
                 self.news_monitor.stop()
             self.kite_stream.stop()
