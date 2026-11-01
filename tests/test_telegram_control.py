@@ -143,6 +143,30 @@ def test_listener_failure_is_retried_without_blocking_main_thread_commands():
     )
 
 
+def test_commands_are_processed_without_waiting_for_a_market_tick():
+    bot = KiteTradingBot.__new__(KiteTradingBot)
+    bot._telegram_entries_paused = False
+    bot.intraday_manager = SimpleNamespace(active_positions={})
+    bot._telegram_execution_lock = threading.RLock()
+    bot.telegram_command_queue = queue.Queue()
+    bot.telegram_reply_queue = queue.Queue()
+    bot.telegram_command_queue.put(
+        TelegramCommand(
+            chat_id="101",
+            user_id="101",
+            text="/help",
+            update_id=4,
+            message_timestamp=time.time(),
+        )
+    )
+
+    bot._process_telegram_commands()
+
+    chat_id, reply = bot.telegram_reply_queue.get_nowait()
+    assert chat_id == "101"
+    assert reply.startswith("Commands:")
+
+
 def test_telegram_trade_ids_are_persisted_and_increment_across_journal_reload(tmp_path):
     journal_path = tmp_path / "trades.jsonl"
     first_journal = TradeJournal(str(journal_path))
