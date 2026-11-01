@@ -214,10 +214,12 @@ def run_bot(config: BotConfig) -> None:
                         alert["status"] = "open"
                         alert["stop_loss"] = risk_plan.stop_loss
                         alert["take_profit"] = risk_plan.take_profit
-                        journal.log_trade(alert)
+                        trade_id = journal.log_trade(alert)
+                        alert["trade_id"] = trade_id
+                        alert["telegram_trade_id"] = trade_id
                         print(f"[{ticker}] BUY ALERT -> Entry={alert['entry']:.2f}, SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}, score={alert['score']}, P&L={alert['pnl']:.2f}")
                         print(bot.build_message(alert))
-                        bot.send_trade_alert(alert)
+                        bot.send_trade_alert(alert, trade_id=trade_id)
                     else:
                         pnl = journal.update_trade_pnl(ticker, entry_price, "BUY")
                         updated = journal.get_open_trade(ticker, "BUY")
@@ -228,9 +230,13 @@ def run_bot(config: BotConfig) -> None:
                                 exit_price=entry_price,
                                 pnl=pnl,
                                 reason="AUTO_CLOSE",
+                                trade_id=open_trade.get("telegram_trade_id"),
                             )
                             print(bot.build_message(close_message))
-                            bot.send_trade_alert(close_message)
+                            bot.send_trade_alert(
+                                close_message,
+                                trade_id=open_trade.get("telegram_trade_id"),
+                            )
                         else:
                             print(f"[{ticker}] BUY OPEN -> Entry={open_trade['entry']:.2f}, current_price={entry_price:.2f}, P&L={pnl:.2f}")
 
@@ -256,10 +262,12 @@ def run_bot(config: BotConfig) -> None:
                         alert["status"] = "open"
                         alert["stop_loss"] = risk_plan.stop_loss
                         alert["take_profit"] = risk_plan.take_profit
-                        journal.log_trade(alert)
+                        trade_id = journal.log_trade(alert)
+                        alert["trade_id"] = trade_id
+                        alert["telegram_trade_id"] = trade_id
                         print(f"[{ticker}] SELL ALERT -> Entry={alert['entry']:.2f}, SL={alert['stop_loss']:.2f}, TP={alert['take_profit']:.2f}, score={alert['score']}, P&L={alert['pnl']:.2f}")
                         print(bot.build_message(alert))
-                        bot.send_trade_alert(alert)
+                        bot.send_trade_alert(alert, trade_id=trade_id)
                     else:
                         pnl = journal.update_trade_pnl(ticker, entry_price, "SELL")
                         updated = journal.get_open_trade(ticker, "SELL")
@@ -270,9 +278,13 @@ def run_bot(config: BotConfig) -> None:
                                 exit_price=entry_price,
                                 pnl=pnl,
                                 reason="AUTO_CLOSE",
+                                trade_id=open_trade.get("telegram_trade_id"),
                             )
                             print(bot.build_message(close_message))
-                            bot.send_trade_alert(close_message)
+                            bot.send_trade_alert(
+                                close_message,
+                                trade_id=open_trade.get("telegram_trade_id"),
+                            )
                         else:
                             print(f"[{ticker}] SELL OPEN -> Entry={open_trade['entry']:.2f}, current_price={entry_price:.2f}, P&L={pnl:.2f}")
                 else:

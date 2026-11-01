@@ -48,7 +48,7 @@ def test_entry_and_exit_messages_include_stable_telegram_trade_id():
         stop_loss=70.0,
         take_profit=95.0,
         mode="intraday_options",
-        telegram_trade_id=7,
+        trade_id=7,
     )
     close = notifier.format_close(
         ticker="NIFTY_CE",
@@ -57,11 +57,43 @@ def test_entry_and_exit_messages_include_stable_telegram_trade_id():
         pnl=390.0,
         reason="TAKE_PROFIT",
         mode="intraday_options",
-        telegram_trade_id=7,
+        trade_id=7,
     )
 
     assert entry["message"].startswith("#7 OPTION Trade:")
+    assert entry["message"].endswith(
+        "Manual commands: /exit 7, /exitat 7 <price>, /be 7"
+    )
     assert close["message"].startswith("#7 Trade Closed:")
+    assert "Exit reason: TAKE_PROFIT" in close["message"]
+    assert "Exit source: BOT" in close["message"]
+
+
+def test_trade_messages_render_without_trade_id():
+    notifier = TelegramNotifier()
+
+    entry = notifier.format_trade(
+        ticker="NIFTY_CE",
+        action="BUY",
+        score=80,
+        entry=79.0,
+        stop_loss=70.0,
+        take_profit=95.0,
+        trade_id=None,
+    )
+    close = notifier.format_close(
+        ticker="NIFTY_CE",
+        action="BUY",
+        exit_price=85.0,
+        pnl=6.0,
+        reason="MANUAL_EXIT",
+        trade_id=None,
+    )
+
+    assert "#None" not in entry["message"]
+    assert entry["message"].endswith("Manual commands: /exit, /exitat, /be")
+    assert "#None" not in close["message"]
+    assert "Exit source: MANUAL" in close["message"]
 
 
 def test_trailing_stop_is_clear_in_telegram_messages():
@@ -97,7 +129,9 @@ def test_heartbeat_message_uses_configured_trading_mode():
         mode="intraday_futures",
     )
 
-    assert "Mode: Intraday Futures" in message
+    assert "Mode: PAPER" in message
+    assert "Trading mode: Intraday Futures" in message
+    assert "Status: RUNNING" in message
     assert "Instruments tracked: 15" in message
 
     options_message = notifier.build_heartbeat_message(
@@ -106,8 +140,18 @@ def test_heartbeat_message_uses_configured_trading_mode():
         mode="intraday_options",
     )
 
-    assert "Mode: Intraday Options" in options_message
+    assert "Trading mode: Intraday Options" in options_message
     assert "Instruments tracked: 12" in options_message
+
+    paused_message = notifier.build_heartbeat_message(
+        instruments=12,
+        bar_interval_seconds=30,
+        mode="intraday_options",
+        execution_mode="SIM",
+        state="PAUSED",
+    )
+    assert "Mode: SIM" in paused_message
+    assert "Status: PAUSED" in paused_message
 
 
 def test_trade_alert_is_sent_to_existing_and_trade_chats(monkeypatch):

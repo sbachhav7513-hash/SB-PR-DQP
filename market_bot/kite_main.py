@@ -41,6 +41,7 @@ from .risk_manager import (
     MAX_TRADE_RISK_PCT,
     build_risk_plan,
 )
+from .simulation import SimulationMarketStream
 from .strategy_config import (
     load_strategy_config,
     resolve_execution_mode,
@@ -68,7 +69,17 @@ from .weekly_report import (
 )
 
 
-log_path = Path("kite_bot.log")
+_sim_logging_enabled = os.getenv("BOT_SIM_MODE", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+log_path = (
+    Path(os.getenv("BOT_SIM_DIR", "sim")) / "kite_bot.log"
+    if _sim_logging_enabled
+    else Path("kite_bot.log")
+)
+log_path.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s: %(message)s",
@@ -849,6 +860,10 @@ class KiteTradingBot:
         self.config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
         self.config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
         self.config["telegram_trade_chat_id"] = os.getenv("TELEGRAM_TRADE_CHAT_ID")
+        self.simulation_mode = (
+            os.getenv("BOT_SIM_MODE", "false").strip().lower()
+            in {"1", "true", "yes"}
+        )
         self.telegram_control_live_orders = (
             os.getenv("TELEGRAM_CONTROL_LIVE_ORDERS", "false").strip().lower()
             == "true"
@@ -857,22 +872,38 @@ class KiteTradingBot:
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
         self.config.setdefault("capture_all_evaluated_contracts", True)
+        self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
+        if self.simulation_mode and self.mode == "LIVE":
+            raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
+        if self.simulation_mode:
+            self.mode = "PAPER"
         self.config_hash = strategy_config_hash(self.config)
         self.git_identity = log_startup_identity(self.config_hash)
-        if not self.config["kite_api_key"] or not self.config["kite_access_token"]:
+        if (
+            not self.simulation_mode
+            and (not self.config["kite_api_key"] or not self.config["kite_access_token"])
+        ):
             raise RuntimeError(
                 "KITE_API_KEY and KITE_ACCESS_TOKEN must be set as environment variables."
             )
-        self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.entry_mode == "confirmed" and self.mode != "PAPER":
             raise ValueError("entry_mode=confirmed is available only in PAPER mode")
         self.config.pop("paper_trading_enabled", None)
         self.config.pop("live_orders_enabled", None)
         self.paper_trading_enabled = self.mode == "PAPER"
         self.live_orders_enabled = self.mode == "LIVE"
-        self.paper_trading_dir = self.config.get(
-            "paper_trading_dir", "paper_trading_data"
+        self.simulation_dir = (
+            Path(os.getenv("BOT_SIM_DIR", "sim")).resolve()
+            if self.simulation_mode
+            else None
         )
+        if self.simulation_dir is not None:
+            self.simulation_dir.mkdir(parents=True, exist_ok=True)
+            self.paper_trading_dir = str(self.simulation_dir / "paper_trading_data")
+        else:
+            self.paper_trading_dir = self.config.get(
+                "paper_trading_dir", "paper_trading_data"
+            )
 
         daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
         options_mode = self.config.get("trading_mode") in {
@@ -928,29 +959,40 @@ class KiteTradingBot:
             interval_seconds=self.config.get("bar_interval_seconds", 60),
             on_bar_callback=self.on_bar_complete,
         )
-        self.kite_stream = KiteMarketStream(
-            KiteConfig(
-                api_key=self.config["kite_api_key"],
-                access_token=self.config["kite_access_token"],
-                trading_mode=self.config.get("trading_mode", "intraday_futures"),
+        if self.simulation_mode:
+            self.kite_stream = SimulationMarketStream(
                 instrument_tokens=self.config["instrument_tokens"],
-                futures_underlyings=self.config.get("futures_underlyings", []),
-                auto_discover_futures=self.config.get("auto_discover_futures", False),
-                max_futures=self.config.get("max_futures", 20),
-                min_futures_volume=self.config.get("min_futures_volume", 0),
-                options_underlyings=self.config.get("options_underlyings", []),
-                option_expiry_days=self.config.get("option_expiry_days", 14),
-                option_expiry_mode=self.config.get("option_expiry_mode", "nearest"),
-                avoid_option_expiry_day=self.config.get(
-                    "avoid_option_expiry_day", True
+                on_tick_callback=self._on_simulation_tick,
+                on_connection_change=self._on_connection_change,
+                script_path=os.getenv("BOT_SIM_FEED_FILE"),
+                tick_interval_seconds=float(
+                    os.getenv("BOT_SIM_TICK_INTERVAL_SECONDS", "2")
                 ),
-                option_strike_step=self.config.get("option_strike_step", {}),
-                min_options_volume=self.config.get("min_options_volume", 0),
-            ),
-            on_tick_callback=self._on_tick,
-            on_connection_change=self._on_connection_change,
-        )
-        self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
+            )
+        else:
+            self.kite_stream = KiteMarketStream(
+                KiteConfig(
+                    api_key=self.config["kite_api_key"],
+                    access_token=self.config["kite_access_token"],
+                    trading_mode=self.config.get("trading_mode", "intraday_futures"),
+                    instrument_tokens=self.config["instrument_tokens"],
+                    futures_underlyings=self.config.get("futures_underlyings", []),
+                    auto_discover_futures=self.config.get("auto_discover_futures", False),
+                    max_futures=self.config.get("max_futures", 20),
+                    min_futures_volume=self.config.get("min_futures_volume", 0),
+                    options_underlyings=self.config.get("options_underlyings", []),
+                    option_expiry_days=self.config.get("option_expiry_days", 14),
+                    option_expiry_mode=self.config.get("option_expiry_mode", "nearest"),
+                    avoid_option_expiry_day=self.config.get(
+                        "avoid_option_expiry_day", True
+                    ),
+                    option_strike_step=self.config.get("option_strike_step", {}),
+                    min_options_volume=self.config.get("min_options_volume", 0),
+                ),
+                on_tick_callback=self._on_tick,
+                on_connection_change=self._on_connection_change,
+            )
+            self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
         self.option_capture_writer = OptionCaptureWriter(
             Path(self.paper_trading_dir) / "option_candles",
             config_hash=self.config_hash,
@@ -977,14 +1019,17 @@ class KiteTradingBot:
                 "LIVE mode requires live_orders_confirmed=true in kite_config.json"
             )
         self.intraday_manager.set_contract_specs(self.kite_stream.contract_specs)
-        self._warm_up_bars()
+        if not self.simulation_mode:
+            self._warm_up_bars()
         self.telegram_notifier = TelegramNotifier(
             token=self.config.get("telegram_token"),
             chat_id=self.config.get("telegram_chat_id"),
             trade_chat_id=self.config.get("telegram_trade_chat_id"),
         )
         self.trade_journal = TradeJournal(
-            "trades.jsonl",
+            str(self.simulation_dir / "trades.jsonl")
+            if self.simulation_dir is not None
+            else "trades.jsonl",
             self.paper_trading_dir,
             config_hash=self.config_hash,
             git_sha=self.git_identity.sha,
@@ -1016,7 +1061,9 @@ class KiteTradingBot:
         if self.paper_trading_enabled:
             self._restore_paper_positions(session_trades)
         self.decision_journal = DecisionJournal(
-            self.config.get("decision_log_path", "decision_log.jsonl"),
+            str(self.simulation_dir / "decision_log.jsonl")
+            if self.simulation_dir is not None
+            else self.config.get("decision_log_path", "decision_log.jsonl"),
             self.paper_trading_dir,
             config_hash=self.config_hash,
             git_sha=self.git_identity.sha,
@@ -1033,8 +1080,10 @@ class KiteTradingBot:
                     current_time=datetime.now(IST),
                     outcome="entry_cutoff",
                 )
-        self.weekly_report_dir = Path(
-            self.config.get("weekly_report_dir", ".")
+        self.weekly_report_dir = (
+            self.simulation_dir / "reports"
+            if self.simulation_dir is not None
+            else Path(self.config.get("weekly_report_dir", "."))
         )
         self.last_weekly_report_date = None
         self.last_daily_summary_date = None
@@ -1084,10 +1133,16 @@ class KiteTradingBot:
             raise ValueError(
                 "option_min_candle_body_ratio must be greater than 0 and at most 1"
             )
-        self.news_monitor = NewsMonitor(
-            feeds=self.config.get("news_feeds"),
-            refresh_seconds=self.config.get("news_refresh_seconds", 900),
-        ) if self.config.get("news_enabled", True) else None
+        self.news_monitor = (
+            None
+            if self.simulation_mode
+            else NewsMonitor(
+                feeds=self.config.get("news_feeds"),
+                refresh_seconds=self.config.get("news_refresh_seconds", 900),
+            )
+            if self.config.get("news_enabled", True)
+            else None
+        )
         self._telegram_entries_paused = False
         self.telegram_command_queue: queue.Queue[TelegramCommand] = queue.Queue()
         self.telegram_reply_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -1118,6 +1173,145 @@ class KiteTradingBot:
             "min_score_floor",
             int(self.config.get("min_entry_score", 70)),
         )
+
+    def _on_simulation_tick(self, tick: Tick) -> None:
+        for symbol, token in self.kite_stream.instrument_tokens.items():
+            if token == tick.instrument_token:
+                self.config["instrument_tokens"][symbol] = token
+                self.symbol_map[token] = symbol
+                break
+        self._on_tick(tick)
+
+    def _set_simulation_price(self, symbol: str, price: float) -> float:
+        if not self.simulation_mode:
+            raise RuntimeError("Simulation price overrides require BOT_SIM_MODE=true")
+        token = self.kite_stream.ensure_symbol(symbol)
+        self.config["instrument_tokens"][symbol] = token
+        self.symbol_map[token] = symbol
+        return self.kite_stream.set_price(symbol, price)
+
+    def _open_simulated_trade(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> tuple[int, str]:
+        if not self.simulation_mode or self.live_orders_enabled:
+            raise RuntimeError("Synthetic trades require PAPER simulation mode")
+        if getattr(self, "_telegram_entries_paused", False):
+            raise ValueError("New entries are paused.")
+        if symbol in self.intraday_manager.active_positions:
+            raise ValueError(f"{symbol} already has an open trade.")
+        if not math.isfinite(entry_price) or entry_price <= 0:
+            raise ValueError("Entry price must be finite and positive.")
+        if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
+            raise ValueError("Quantity must be a positive whole number.")
+
+        adaptive_exit = self._option_adaptive_exit_enabled(symbol)
+        staged_targets = (
+            False if adaptive_exit else self._staged_option_targets_enabled(symbol)
+        )
+        adaptive_values = (
+            self._option_adaptive_exit_r_values() if adaptive_exit else None
+        )
+        if stop_loss is None or take_profit is None:
+            premium_stop_pct = float(
+                self.config.get("option_premium_stop_pct", 0.20)
+            )
+            target_pct = self._option_entry_target_pct(staged_targets)
+            calculated_stop = max(entry_price * (1.0 - premium_stop_pct), 0.01)
+            if adaptive_values is not None:
+                calculated_target = entry_price + (
+                    (entry_price - calculated_stop) * adaptive_values[3]
+                )
+            else:
+                calculated_target = entry_price * (1.0 + target_pct)
+            stop_loss = calculated_stop if stop_loss is None else stop_loss
+            take_profit = calculated_target if take_profit is None else take_profit
+        if (
+            not math.isfinite(stop_loss)
+            or not math.isfinite(take_profit)
+            or stop_loss <= 0
+            or stop_loss >= entry_price
+            or take_profit <= entry_price
+        ):
+            raise ValueError("Synthetic long option requires SL < entry < target.")
+
+        token = self.kite_stream.ensure_symbol(symbol)
+        self.config["instrument_tokens"][symbol] = token
+        self.symbol_map[token] = symbol
+        self.kite_stream.set_price(symbol, entry_price, emit=False)
+        self.intraday_manager.register_position(
+            symbol,
+            "BUY",
+            quantity,
+            entry_price,
+            stop_loss,
+            take_profit,
+            staged_targets_enabled=staged_targets,
+            target_increment_pct=self._option_target_increment(),
+            strong_signal_score=int(self.config.get("strong_signal_score", 82)),
+            weak_signal_lockin_pct=float(
+                self.config.get("option_weak_signal_lockin_pct", 0.05)
+            ),
+            trailing_enabled=True if adaptive_exit else None,
+            exit_strategy=PAPER_OPTION_ADAPTIVE_EXIT if adaptive_exit else None,
+            adaptive_breakeven_r=adaptive_values[0] if adaptive_values else None,
+            adaptive_trail_activation_r=adaptive_values[1] if adaptive_values else None,
+            adaptive_trail_gap_r=adaptive_values[2] if adaptive_values else None,
+            adaptive_runner_activation_r=adaptive_values[3] if adaptive_values else None,
+            adaptive_runner_gap_r=adaptive_values[4] if adaptive_values else None,
+            milestone_window_minutes=int(
+                self.config.get("option_milestone_window_minutes", 5)
+            ),
+            strong_milestone_window_minutes=int(
+                self.config.get("strong_option_milestone_window_minutes", 10)
+            ),
+        )
+        position = self.intraday_manager.active_positions[symbol]
+        position["lowest_option_premium"] = entry_price
+        self.intraday_manager.record_trade_open(symbol, "BUY")
+        alert = self.telegram_notifier.format_trade(
+            ticker=symbol,
+            action="BUY",
+            score=0,
+            entry=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            mode="intraday_options",
+            option_leg=side,
+            trailing_enabled=bool(position.get("trailing_enabled")),
+        )
+        alert.update(
+            {
+                "contract_id": symbol,
+                "quantity": quantity,
+                "exit_strategy": position.get("exit_strategy"),
+                "entry_mode": "simulation",
+                "entry_fill_source": "simulation",
+                "simulation": True,
+            }
+        )
+        trade_id = self.trade_journal.log_trade(alert)
+        alert["trade_id"] = trade_id
+        alert["telegram_trade_id"] = trade_id
+        position["telegram_trade_id"] = trade_id
+        if adaptive_exit:
+            trade = self.trade_journal.get_open_trade(symbol, "BUY")
+            self._start_paper_shadow_runner(
+                symbol,
+                str(trade["trade_id"]),
+                entry_price,
+                stop_loss,
+                quantity,
+                str(trade["timestamp"]),
+            )
+        self.telegram_notifier.send_trade_alert(alert, trade_id=trade_id)
+        self.kite_stream.publish(symbol)
+        return trade_id, symbol
 
     def _can_open_trade_for_signal(
         self,
@@ -1393,7 +1587,9 @@ class KiteTradingBot:
                     {},
                 )
                 quote_managed = [
-                    symbol
+                    f"#{position.get('telegram_trade_id')} {symbol}"
+                    if position.get("telegram_trade_id") is not None
+                    else symbol
                     for symbol, position in positions.items()
                     if self._quote_validated_long_option(symbol, position)
                     and not position.get("protection_order_id")
@@ -1883,8 +2079,12 @@ class KiteTradingBot:
             self._entries_paused = False
         except Exception as exc:
             logger.exception("[%s] Broker state remains uncertain after order failure", symbol)
+            position = getattr(
+                getattr(self, "intraday_manager", None), "active_positions", {}
+            ).get(symbol, {})
             self.telegram_notifier.send_message(
-                f"URGENT: {symbol} order result is uncertain; trading paused.\n{exc}"
+                f"URGENT: {symbol} order result is uncertain; trading paused.\n{exc}",
+                trade_id=position.get("telegram_trade_id"),
             )
 
     def _persist_current_live_risk_state(self) -> None:
@@ -4377,11 +4577,16 @@ class KiteTradingBot:
             positions[str(trade["trade_id"])].update(fields)
 
     def _on_tick(self, tick: Tick) -> None:
-        with self._telegram_execution_lock:
+        lock = getattr(self, "_telegram_execution_lock", None)
+        if lock is None:
+            self._on_tick_serialized(tick)
+            return
+        with lock:
             self._on_tick_serialized(tick)
 
     def _on_tick_serialized(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
+        self._process_telegram_commands()
         writer = getattr(self, "option_capture_writer", None)
         if writer is not None:
             try:
@@ -4394,7 +4599,6 @@ class KiteTradingBot:
         symbol_map = getattr(self, "symbol_map", {})
         if tick.instrument_token not in symbol_map:
             return
-        self._process_telegram_commands()
         self._last_loop_tick_at = tick.timestamp
         symbol = symbol_map[tick.instrument_token]
         if symbol.endswith(("_CE", "_PE")):
@@ -4477,7 +4681,10 @@ class KiteTradingBot:
             "triggered",
         }:
             self._ema_reentry_premium_made_new_low(symbol, reentry_state)
-        if self.intraday_manager.should_exit_all_positions():
+        if (
+            not getattr(self, "simulation_mode", False)
+            and self.intraday_manager.should_exit_all_positions()
+        ):
             self._handle_market_close_exit()
         else:
             self._check_position_exit(symbol, tick.last_price)
@@ -4505,19 +4712,50 @@ class KiteTradingBot:
         command_queue: queue.Queue[TelegramCommand],
         reply_queue: queue.Queue[tuple[str, str]],
     ) -> None:
+        pending = getattr(self, "_telegram_pending_exit_confirmation", None)
+        if pending and time.monotonic() >= pending["expires_at"]:
+            self._telegram_pending_exit_confirmation = None
+            reply_queue.put(
+                (
+                    pending["chat_id"],
+                    "Exit confirmation expired; no order was placed.",
+                )
+            )
         while True:
             try:
                 command = command_queue.get_nowait()
             except queue.Empty:
                 return
             try:
-                reply = process_telegram_command(self, command.text)
+                reply = process_telegram_command(
+                    self, command.text, chat_id=command.chat_id
+                )
             except Exception:
                 logger.exception(
                     "Telegram command processing failed for update %s",
                     command.update_id,
                 )
                 reply = "Command failed; the trading loop is continuing."
+            journal = getattr(self, "trade_journal", None)
+            log_command = getattr(journal, "log_command", None)
+            if log_command is not None:
+                try:
+                    log_command(
+                        {
+                            "chat_id": command.chat_id,
+                            "user_id": command.user_id,
+                            "text": command.text,
+                            "update_id": command.update_id,
+                            "message_timestamp": command.message_timestamp,
+                            "response": reply,
+                        }
+                    )
+                except OSError:
+                    logger.exception(
+                        "Could not persist Telegram command update %s",
+                        command.update_id,
+                    )
+                    reply = f"{reply}\nCommand log could not be persisted."
             reply_queue.put((command.chat_id, reply))
 
     def _extend_option_timebox(self, symbol: str, position: dict) -> bool:
@@ -4558,6 +4796,10 @@ class KiteTradingBot:
                 position.get("max_favorable_r"),
             )
         previous_adaptive_mode = position.get("adaptive_exit_mode")
+        risk_values_before = {
+            field: position.get(field)
+            for field in ("stop_loss", "take_profit", "trailing_stop")
+        }
         trailing_enabled = (
             bool(position.get("trailing_enabled"))
             if position.get("trailing_enabled") is not None
@@ -4624,6 +4866,52 @@ class KiteTradingBot:
             position["last_valid_bid"] = quote_metrics["bid"]
 
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
+        risk_changes = {
+            field: position.get(field)
+            for field, old_value in risk_values_before.items()
+            if position.get(field) != old_value
+        }
+        if risk_changes:
+            journal = getattr(self, "trade_journal", None)
+            trade_record = (
+                journal.get_open_trade(symbol, str(position["direction"]))
+                if journal is not None
+                else None
+            )
+            if isinstance(trade_record, dict):
+                modifications = list(
+                    trade_record.get("risk_modifications") or []
+                )
+                changed_at = datetime.now(IST).isoformat(timespec="seconds")
+                for field, new_value in risk_changes.items():
+                    modifications.append(
+                        {
+                            "field": field,
+                            "old_value": risk_values_before[field],
+                            "new_value": new_value,
+                            "time": changed_at,
+                            "source": "BOT",
+                        }
+                    )
+                if not self.trade_journal.update_open_trade(
+                    symbol,
+                    {
+                        **risk_changes,
+                        "risk_modifications": modifications,
+                        "updated_at": changed_at,
+                    },
+                    str(position["direction"]),
+                ):
+                    logger.error(
+                        "[%s] Could not persist strategy SL/target modification",
+                        symbol,
+                    )
+            else:
+                logger.error(
+                    "[%s] Could not audit SL/target modification: "
+                    "open trade journal record is unavailable",
+                    symbol,
+                )
         if runner_state_before is not None:
             runner_state_after = (
                 position.get("highest_price"),
@@ -4670,8 +4958,18 @@ class KiteTradingBot:
                 not trailing_enabled
                 and not position.get("staged_targets_enabled")
                 and price >= position["take_profit"]
+                and (
+                    position.get("manual_exit_price") is None
+                    or float(position["manual_exit_price"])
+                    > float(position["take_profit"])
+                )
             ):
                 reason = "TAKE_PROFIT"
+            elif (
+                position.get("manual_exit_price") is not None
+                and price >= float(position["manual_exit_price"])
+            ):
+                reason = "MANUAL_TARGET"
             elif (
                 not self._is_option_dynamic_exit(position)
                 and position.get("exit_strategy") != "paper_range_breakout_2r"
@@ -4751,7 +5049,8 @@ class KiteTradingBot:
                 if notifier:
                     notifier.send_message(
                         f"WARNING: {symbol} paper exit state could not be saved; "
-                        "restart recovery may lose its trailing state."
+                        "restart recovery may lose its trailing state.",
+                        trade_id=position.get("telegram_trade_id"),
                     )
                 position["runner_persistence_alerted"] = True
             return
@@ -4943,33 +5242,58 @@ class KiteTradingBot:
             return True
         except Exception as exc:
             logger.exception("[%s] Protective stop could not be placed", symbol)
-            self.telegram_notifier.send_message(
-                f"URGENT: protective stop failed for {symbol}; emergency exit required.\n{exc}"
-            )
+            position["telegram_protective_stop_error"] = str(exc)
+            trade_id = position.get("telegram_trade_id")
+            if trade_id is None:
+                trade = self.trade_journal.get_open_trade(
+                    symbol, str(position["direction"])
+                )
+                trade_id = trade.get("telegram_trade_id") if trade else None
+            if trade_id is not None:
+                self.telegram_notifier.send_message(
+                    f"URGENT: protective stop failed for {symbol}; emergency exit required.\n{exc}",
+                    trade_id=trade_id,
+                )
             return False
 
     def _abort_live_entry(self, symbol: str, price: float, reason: str) -> None:
         self._entries_paused = True
         self._risk_state_reconciled = False
         position = self.intraday_manager.active_positions.get(symbol)
+        had_trade_id = bool(position and position.get("telegram_trade_id") is not None)
         if position and not self.trade_journal.get_open_trade(
             symbol, position["direction"]
         ):
             try:
-                self.trade_journal.log_trade({
-                    "ticker": symbol,
-                    "contract_id": self._contract_id(symbol),
-                    "action": position["direction"],
-                    "entry": position["entry_price"],
-                    "stop_loss": position["stop_loss"],
-                    "take_profit": position["take_profit"],
-                    "quantity": position["quantity"],
-                    "score": position.get("signal_score"),
-                    "protection_order_id": position.get("protection_order_id"),
-                    "status": "open",
-                })
+                position["telegram_trade_id"] = self.trade_journal.log_trade(
+                    {
+                        "ticker": symbol,
+                        "contract_id": self._contract_id(symbol),
+                        "action": position["direction"],
+                        "entry": position["entry_price"],
+                        "stop_loss": position["stop_loss"],
+                        "take_profit": position["take_profit"],
+                        "quantity": position["quantity"],
+                        "score": position.get("signal_score"),
+                        "protection_order_id": position.get("protection_order_id"),
+                        "status": "open",
+                    }
+                )
             except Exception:
                 logger.exception("[%s] Could not journal an aborted live entry", symbol)
+        if (
+            reason == "PROTECTION_FAILED"
+            and position
+            and not had_trade_id
+            and position.get("telegram_trade_id") is not None
+        ):
+            notifier = getattr(self, "telegram_notifier", None)
+            if notifier:
+                notifier.send_message(
+                    f"URGENT: protective stop failed for {symbol}; emergency exit required.\n"
+                    f"{position.get('telegram_protective_stop_error', '')}",
+                    trade_id=position["telegram_trade_id"],
+                )
         self._close_position(symbol, price, reason)
         self._reconcile_after_order_failure(symbol)
 
@@ -4986,7 +5310,8 @@ class KiteTradingBot:
             if not protection_order_id or trailing_stop is None:
                 logger.error("[%s] Cannot ratchet a missing protective stop", symbol)
                 self.telegram_notifier.send_message(
-                    f"URGENT: {symbol} reached a profit milestone but has no modifiable protective stop."
+                    f"URGENT: {symbol} reached a profit milestone but has no modifiable protective stop.",
+                    trade_id=position.get("telegram_trade_id"),
                 )
                 return False
             try:
@@ -5000,7 +5325,8 @@ class KiteTradingBot:
                 logger.exception("[%s] Could not move broker protective stop", symbol)
                 self.telegram_notifier.send_message(
                     f"URGENT: failed to move {symbol} protective stop after a milestone; "
-                    "attempting an immediate market exit."
+                    "attempting an immediate market exit.",
+                    trade_id=position.get("telegram_trade_id"),
                 )
                 return False
 
@@ -5022,12 +5348,45 @@ class KiteTradingBot:
             f"Next target: {position['take_profit']:.2f}\n"
             f"Trailing stop: {trailing_text}"
         )
-        self.telegram_notifier.send_trade_alert({"message": message})
+        self.telegram_notifier.send_trade_alert(
+            {"message": message},
+            trade_id=position.get("telegram_trade_id"),
+        )
         return True
 
-    def _close_position(self, symbol: str, price: float, reason: str) -> None:
+    def _close_position(self, symbol: str, price: float, reason: str) -> bool:
         position = self.intraday_manager.active_positions.get(symbol)
         action = position["direction"] if position else None
+        if (
+            self.live_orders_enabled
+            and reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+            and not getattr(self, "telegram_control_live_orders", False)
+        ):
+            if position and position.get("manual_exit_price") is not None:
+                position["manual_exit_price"] = None
+                self.trade_journal.update_open_trade(
+                    symbol, {"manual_exit_price": None}, action
+                )
+            logger.warning(
+                "[%s] Telegram-triggered live exit blocked by "
+                "TELEGRAM_CONTROL_LIVE_ORDERS",
+                symbol,
+            )
+            self.telegram_notifier.send_message(
+                f"Telegram-triggered live exit for {symbol} was blocked because "
+                "TELEGRAM_CONTROL_LIVE_ORDERS is disabled; the trade remains open.",
+                trade_id=position.get("telegram_trade_id") if position else None,
+            )
+            return False
+        if position and position.get("manual_exit_price") is not None:
+            position["manual_exit_price"] = None
+            if not self.trade_journal.update_open_trade(
+                symbol, {"manual_exit_price": None}, action
+            ):
+                logger.error(
+                    "[%s] Could not persist clearing of the manual exit trigger",
+                    symbol,
+                )
         if self.live_orders_enabled and position:
             exit_side = "SELL" if action == "BUY" else "BUY"
             protection_order_id = position.get("protection_order_id")
@@ -5040,17 +5399,19 @@ class KiteTradingBot:
                     logger.warning("[%s] Protective stop %s was already active or unavailable", symbol, protection_order_id)
             remaining = abs(int(position["quantity"]))
             max_attempts = int(self.config.get("max_exit_retries", 3))
+            last_exit_error = None
             for attempt in range(1, max_attempts + 1):
                 try:
                     exit_order_id = self.kite_stream.place_market_order(symbol, exit_side, remaining)
                     fill = self.kite_stream.wait_for_order_fill(exit_order_id, remaining)
                     price = float(fill["average_price"])
                     broker_remaining = abs(self.kite_stream.get_position_quantity(symbol))
+                    remaining = broker_remaining
                     if broker_remaining == 0:
                         break
-                    remaining = broker_remaining
                     logger.warning("[%s] Exit attempt %d left %d units; retrying", symbol, attempt, remaining)
-                except Exception:
+                except Exception as exc:
+                    last_exit_error = str(exc)
                     logger.exception("[%s] Live exit attempt %d failed", symbol, attempt)
                     try:
                         remaining = abs(self.kite_stream.get_position_quantity(symbol))
@@ -5062,6 +5423,23 @@ class KiteTradingBot:
                 if remaining <= 0:
                     break
             if remaining != 0:
+                if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}:
+                    position["telegram_exit_failed"] = True
+                    position["telegram_exit_error"] = (
+                        last_exit_error or "Broker position remained open after exit attempts."
+                    )
+                    if not self.trade_journal.update_open_trade(
+                        symbol,
+                        {
+                            "telegram_exit_failed": True,
+                            "telegram_exit_error": position["telegram_exit_error"],
+                        },
+                        action,
+                    ):
+                        logger.error(
+                            "[%s] Could not persist the failed Telegram exit flag",
+                            symbol,
+                        )
                 protection_restored = False
                 if remaining > 0 and protection_cancelled:
                     position["quantity"] = remaining
@@ -5087,11 +5465,18 @@ class KiteTradingBot:
                 self.telegram_notifier.send_message(
                     f"URGENT: {symbol} is not flat after {max_attempts} exit attempts; "
                     f"{protection_state}. New entries are paused."
+                    + (
+                        f" Exit error: {last_exit_error}"
+                        if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+                        and last_exit_error
+                        else ""
+                    ),
+                    trade_id=position.get("telegram_trade_id"),
                 )
                 logger.error("[%s] Broker position remains open after exit retries", symbol)
                 if protection_restored:
                     self._reconcile_after_order_failure(symbol)
-                return
+                return False
         trade = self.trade_journal.get_open_trade(symbol, action)
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         quote_metrics = self._option_quote_metrics(quote)
@@ -5132,7 +5517,7 @@ class KiteTradingBot:
         )
         exit_info = self.intraday_manager.close_position(symbol, price, reason)
         if not trade and not exit_info:
-            return
+            return False
 
         pnl = exit_info["pnl_rupees"] if exit_info else journal_pnl
         if exit_info is not None or trade is not None:
@@ -5309,10 +5694,17 @@ class KiteTradingBot:
             mode=mode,
             option_leg=option_leg,
             trading_symbol=trading_symbol,
-            telegram_trade_id=(trade or {}).get("telegram_trade_id"),
+            trade_id=(trade or {}).get("telegram_trade_id"),
+            exit_source=(
+                "MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT"
+            ),
+            exit_reason=reason,
         )
         logger.info(self.telegram_notifier.build_message(close_alert))
-        self.telegram_notifier.send_trade_alert(close_alert)
+        self.telegram_notifier.send_trade_alert(
+            close_alert, trade_id=(trade or {}).get("telegram_trade_id")
+        )
+        return True
 
     @staticmethod
     def _exit_reason_category(reason: str) -> str:
@@ -6278,6 +6670,7 @@ class KiteTradingBot:
                 alert.update(confirmed_entry_metadata)
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
+            alert["trade_id"] = telegram_trade_id
             if isinstance(alert.get("message"), str):
                 alert["message"] = f"#{telegram_trade_id} {alert['message']}"
             self.intraday_manager.active_positions[symbol][
@@ -6309,7 +6702,7 @@ class KiteTradingBot:
                 f"{target_label}={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
-            self.telegram_notifier.send_trade_alert(alert)
+            self.telegram_notifier.send_trade_alert(alert, trade_id=telegram_trade_id)
             return "trade_opened"
         else:
             logger.info(f"[{symbol}] BUY OPEN -> current={price:.2f}")
@@ -6608,6 +7001,7 @@ class KiteTradingBot:
             )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
+            alert["trade_id"] = telegram_trade_id
             if isinstance(alert.get("message"), str):
                 alert["message"] = f"#{telegram_trade_id} {alert['message']}"
             self.intraday_manager.active_positions[symbol][
@@ -6621,7 +7015,7 @@ class KiteTradingBot:
                 f"{target_label}={alert['take_profit']:.2f}"
             )
             logger.info(self.telegram_notifier.build_message(alert))
-            self.telegram_notifier.send_trade_alert(alert)
+            self.telegram_notifier.send_trade_alert(alert, trade_id=telegram_trade_id)
             return "trade_opened"
         else:
             logger.info(f"[{symbol}] SELL OPEN -> current={price:.2f}")
@@ -6750,31 +7144,55 @@ class KiteTradingBot:
                     instruments=len(self.config["instrument_tokens"]),
                     bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
                     mode=self.config.get("trading_mode", "intraday_futures"),
+                    execution_mode=(
+                        "SIM" if getattr(self, "simulation_mode", False)
+                        else "LIVE" if getattr(self, "live_orders_enabled", False)
+                        else "PAPER"
+                    ),
+                    state=(
+                        "PAUSED"
+                        if getattr(self, "_telegram_entries_paused", False)
+                        or getattr(self, "_entries_paused", False)
+                        else "RUNNING"
+                    ),
                 )
                 last_heartbeat = time.monotonic()
                 last_close_check = datetime.now(IST)
 
                 while True:
-                    self._process_telegram_commands()
                     now_monotonic = time.monotonic()
+                    if getattr(self, "simulation_mode", False):
+                        self._process_telegram_commands()
                     if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
                         self.telegram_notifier.send_heartbeat(
                             instruments=len(self.config["instrument_tokens"]),
                             bar_interval_seconds=self.config.get("bar_interval_seconds", 60),
                             mode=self.config.get("trading_mode", "intraday_futures"),
+                            execution_mode=(
+                                "SIM" if getattr(self, "simulation_mode", False)
+                                else "LIVE" if getattr(self, "live_orders_enabled", False)
+                                else "PAPER"
+                            ),
+                            state=(
+                                "PAUSED"
+                                if getattr(self, "_telegram_entries_paused", False)
+                                or getattr(self, "_entries_paused", False)
+                                else "RUNNING"
+                            ),
                         )
                         last_heartbeat = now_monotonic
 
-                    # Check every 30 seconds if it's time to force exit
-                    now = datetime.now(IST)
-                    if (now - last_close_check).total_seconds() >= 30:
-                        if self.intraday_manager.is_market_closed():
-                            if self._finalize_daily_session(now):
-                                logger.info("Market session complete; shutting down bot.")
-                                break
-                        if self.intraday_manager.should_exit_all_positions():
-                            self._handle_market_close_exit()
-                        last_close_check = now
+                    if not getattr(self, "simulation_mode", False):
+                        # Check every 30 seconds if it's time to force exit
+                        now = datetime.now(IST)
+                        if (now - last_close_check).total_seconds() >= 30:
+                            if self.intraday_manager.is_market_closed():
+                                if self._finalize_daily_session(now):
+                                    logger.info("Market session complete; shutting down bot.")
+                                    break
+                            if self.intraday_manager.should_exit_all_positions():
+                                self._handle_market_close_exit()
+                            last_close_check = now
 
                     time.sleep(1)
             else:

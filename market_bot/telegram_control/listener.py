@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import queue
 import threading
 import time
@@ -47,6 +48,7 @@ class TelegramCommandListener:
         self._allowed_ids = {str(value) for value in allowed_chat_ids}
         self._command_queue = command_queue
         self._reply_queue = reply_queue
+        self._callback_ack_queue: queue.Queue[str] = queue.Queue()
         self._on_failure = on_failure
         self._started_at = time.time()
         self.last_update_id: Optional[int] = None
@@ -80,11 +82,26 @@ class TelegramCommandListener:
         if self.last_update_id is None or update_id > self.last_update_id:
             self.last_update_id = update_id
 
-        message = update.get("message")
+        callback = update.get("callback_query")
+        is_callback = isinstance(callback, dict)
+        if is_callback:
+            message = callback.get("message")
+            text = {
+                "confirm_exit": "YES",
+                "cancel_exit": "CANCEL",
+            }.get(str(callback.get("data", "")))
+            if text is None:
+                return False
+            callback_id = callback.get("id")
+            if callback_id is not None:
+                self._callback_ack_queue.put(str(callback_id))
+        else:
+            message = update.get("message")
+            text = message.get("text") if isinstance(message, dict) else None
         if not isinstance(message, dict):
             return False
         chat = message.get("chat")
-        sender = message.get("from")
+        sender = callback.get("from") if is_callback else message.get("from")
         chat_id = str(chat.get("id")) if isinstance(chat, dict) and chat.get("id") is not None else ""
         user_id = (
             str(sender.get("id"))
@@ -98,14 +115,15 @@ class TelegramCommandListener:
             logger.warning("Ignoring Telegram update from unauthorized id %s", user_id)
             return False
 
-        try:
-            message_timestamp = float(message.get("date"))
-        except (TypeError, ValueError):
-            return False
-        if message_timestamp < self._started_at:
-            return False
-
-        text = message.get("text")
+        if is_callback:
+            message_timestamp = time.time()
+        else:
+            try:
+                message_timestamp = float(message.get("date"))
+            except (TypeError, ValueError):
+                return False
+            if message_timestamp < self._started_at:
+                return False
         if not isinstance(text, str) or not text.strip():
             return False
 
@@ -138,13 +156,45 @@ class TelegramCommandListener:
     def _send_replies(self) -> None:
         while True:
             try:
+                callback_id = self._callback_ack_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self._token}/answerCallbackQuery",
+                    data={"callback_query_id": callback_id},
+                    timeout=5,
+                )
+                response.raise_for_status()
+            except requests.RequestException:
+                logger.warning("Could not acknowledge a Telegram confirmation button")
+        while True:
+            try:
                 chat_id, text = self._reply_queue.get_nowait()
             except queue.Empty:
                 return
             try:
+                data = {"chat_id": chat_id, "text": text}
+                if text.startswith("Confirm LIVE exit for trade #"):
+                    data["reply_markup"] = json.dumps(
+                        {
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "Confirm",
+                                        "callback_data": "confirm_exit",
+                                    },
+                                    {
+                                        "text": "Cancel",
+                                        "callback_data": "cancel_exit",
+                                    },
+                                ]
+                            ]
+                        }
+                    )
                 response = requests.post(
                     f"https://api.telegram.org/bot{self._token}/sendMessage",
-                    data={"chat_id": chat_id, "text": text},
+                    data=data,
                     timeout=5,
                 )
                 response.raise_for_status()
