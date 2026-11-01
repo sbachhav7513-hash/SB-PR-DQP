@@ -187,8 +187,10 @@ In a private chat, Telegram's chat and sender IDs are the same. In a group,
 allowlist both the group chat ID and each permitted sender ID. Unauthorized
 updates are ignored and logged by ID; old messages from before startup are
 ignored. The listener only queues commands; the trading tick callback handles
-them so commands cannot race stop-loss/trailing management. If Telegram is
-unreachable, trading continues.
+them in the trading loop so commands cannot race stop-loss/trailing management.
+The idle loop also drains the queue between ticks, so read-only/control commands
+can be answered when the market is closed. If Telegram is unreachable, trading
+continues.
 
 Trade entry, exit, target-update, and watchlist alerts are sent to both
 `TELEGRAM_CHAT_ID` and the optional `TELEGRAM_TRADE_CHAT_ID`. Daily trade

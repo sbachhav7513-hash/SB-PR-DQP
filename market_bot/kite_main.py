@@ -9,6 +9,7 @@ import math
 import os
 import queue
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -840,6 +841,7 @@ class KiteTradingBot:
         return bool(value)
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
+        self._telegram_execution_lock = threading.RLock()
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
         self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
@@ -4375,6 +4377,10 @@ class KiteTradingBot:
             positions[str(trade["trade_id"])].update(fields)
 
     def _on_tick(self, tick: Tick) -> None:
+        with self._telegram_execution_lock:
+            self._on_tick_serialized(tick)
+
+    def _on_tick_serialized(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
         writer = getattr(self, "option_capture_writer", None)
         if writer is not None:
@@ -4487,6 +4493,18 @@ class KiteTradingBot:
         reply_queue = getattr(self, "telegram_reply_queue", None)
         if command_queue is None or reply_queue is None:
             return
+        lock = getattr(self, "_telegram_execution_lock", None)
+        if lock is None:
+            self._process_telegram_commands_locked(command_queue, reply_queue)
+            return
+        with lock:
+            self._process_telegram_commands_locked(command_queue, reply_queue)
+
+    def _process_telegram_commands_locked(
+        self,
+        command_queue: queue.Queue[TelegramCommand],
+        reply_queue: queue.Queue[tuple[str, str]],
+    ) -> None:
         while True:
             try:
                 command = command_queue.get_nowait()
@@ -6737,6 +6755,7 @@ class KiteTradingBot:
                 last_close_check = datetime.now(IST)
 
                 while True:
+                    self._process_telegram_commands()
                     now_monotonic = time.monotonic()
                     if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
                         self.telegram_notifier.send_heartbeat(
