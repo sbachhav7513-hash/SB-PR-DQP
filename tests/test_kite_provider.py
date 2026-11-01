@@ -877,9 +877,11 @@ def test_support_reversal_premium_exception_uses_shared_strategy_config():
     }
 
     assert bot._option_quality_gate("NIFTY_CE", "BUY")[0] is False
-    assert bot._option_quality_gate(
+    allowed, reason = bot._option_quality_gate(
         "NIFTY_CE", "BUY", minimum_premium_override=5.0
-    ) == (True, "OK")
+    )
+    assert allowed is False
+    assert reason == "premium too low: 5.5 < 12.0"
 
     bot.live_orders_enabled = True
     allowed, reason = bot._option_quality_gate(

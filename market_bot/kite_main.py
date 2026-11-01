@@ -48,6 +48,7 @@ from .strategy_config import (
     strategy_config_hash,
 )
 from .strategy import ema
+from .stop_reentry_journal import StopReentryJournal
 from .telegram_notifier import TelegramNotifier
 from .telegram_control.commands import process_telegram_command
 from .telegram_control.listener import (
@@ -96,6 +97,47 @@ OPTION_STALE_CANDLE_MAX_AGE_SECONDS = 120.0
 OPTION_STALE_CANDLE_SLIPPAGE = 0.05
 INDEX_PERSISTENCE_WINDOW_SECONDS = 300.0
 SIGNAL_WEAKEN_CONFIRMATIONS = 2
+PAPER_CHANGE_KEYS = (
+    "stale_quote_candle_fallback",
+    "option_candle_momentum",
+    "index_persistence_pass",
+    "premium_floor_v2",
+    "banknifty_caps_v2",
+    "nifty_vol_floor_v2",
+    "capital_based_risk_v2",
+)
+ATTRIBUTABLE_CHANGE_KEYS = (
+    "premium_floor_v2",
+    "banknifty_caps_v2",
+    "nifty_vol_floor_v2",
+)
+OPTION_ENTRY_RISK_FIELDS = (
+    "invested_amount",
+    "lots",
+    "lot_size",
+    "premium",
+    "option_stop_pct",
+    "risk_amount",
+    "proposed_invested_amount",
+    "proposed_lots",
+    "proposed_risk_amount",
+    "max_capital_per_trade_pct",
+    "max_capital_per_trade_amount",
+    "banknifty_max_capital_per_trade_pct",
+    "banknifty_max_capital_per_trade_amount",
+    "max_capital_per_trade_used_pct",
+    "max_capital_per_trade_used_amount",
+    "max_open_risk_pct",
+    "max_open_risk_amount",
+    "open_risk_amount",
+    "remaining_daily_risk_amount",
+    "max_risk_per_trade_ignored",
+    "max_lots",
+    "premium_cap",
+    "lots_reduced_reason",
+    "rejection_reason",
+    "capital_based_risk_v2",
+)
 
 
 def _aligned_option_volume_history(
@@ -388,6 +430,351 @@ class KiteTradingBot:
             and bool(getattr(self, "config", {}).get(key, True))
         )
 
+    def _active_paper_change_flags(self) -> list[str]:
+        return [
+            key for key in PAPER_CHANGE_KEYS if self._paper_change_enabled(key)
+        ]
+
+    @staticmethod
+    def _underlying_symbol(symbol: str) -> str:
+        return symbol.rsplit("_", 1)[0].upper() if symbol.endswith(("_CE", "_PE")) else symbol.upper()
+
+    def _minimum_volatility_pct(self, symbol: str) -> float:
+        if (
+            self._underlying_symbol(symbol) == "NIFTY"
+            and self._paper_change_enabled("nifty_vol_floor_v2")
+        ):
+            return 0.04
+        accuracy_filters = getattr(self, "accuracy_filters", None)
+        try:
+            value = float(
+                getattr(
+                    accuracy_filters,
+                    "min_volatility_pct",
+                    (getattr(self, "config", {}) or {}).get(
+                        "min_volatility_pct", 0.05
+                    ),
+                )
+            )
+            if math.isfinite(value):
+                return value
+        except (TypeError, ValueError, OverflowError):
+            pass
+        return float((getattr(self, "config", {}) or {}).get("min_volatility_pct", 0.05))
+
+    def _paper_change_gate_evaluations(
+        self,
+        symbol: str,
+        *,
+        premium: Optional[float] = None,
+        minimum_premium_override: Optional[float] = None,
+        history: Optional[list[dict]] = None,
+        score: Optional[int] = None,
+    ) -> dict:
+        config = getattr(self, "config", {}) or {}
+        underlying = self._underlying_symbol(symbol)
+        is_option = symbol.endswith(("_CE", "_PE"))
+        capital_based_risk = self._paper_change_enabled(
+            "capital_based_risk_v2"
+        )
+        quote = (getattr(self, "option_quote_cache", {}) or {}).get(symbol, {})
+        try:
+            measured_premium = (
+                float(premium)
+                if premium is not None
+                else float(quote.get("last_price", quote.get("premium")))
+            )
+        except (TypeError, ValueError, OverflowError):
+            measured_premium = None
+        if measured_premium is not None and (
+            not math.isfinite(measured_premium) or measured_premium <= 0
+        ):
+            measured_premium = None
+
+        baseline_floor = float(config.get("option_min_premium", 12.0))
+        if minimum_premium_override is not None:
+            baseline_floor = float(minimum_premium_override)
+        current_floor = baseline_floor
+        if self._paper_change_enabled("premium_floor_v2") and is_option:
+            current_floor = max(
+                baseline_floor,
+                12.0 if minimum_premium_override is not None else 15.0,
+            )
+        try:
+            min_volume = int(config.get("option_min_volume", 200))
+            min_oi = int(config.get("option_min_oi", 400))
+            strong_signal = False
+            volume = int(quote.get("volume", 0) or 0)
+            oi_value = quote.get("oi")
+            has_oi = oi_value is not None
+            oi = int(oi_value) if has_oi else 0
+            strong_signal = (
+                score is not None
+                and score >= int(config.get("strong_signal_score", 82))
+            )
+        except (TypeError, ValueError, OverflowError):
+            min_volume, min_oi, volume, oi, has_oi, strong_signal = (
+                200,
+                400,
+                0,
+                0,
+                False,
+                False,
+            )
+        soft_floor = baseline_floor * (0.55 if strong_signal else 0.65)
+        volume_floor = max(
+            int(min_volume * (0.6 if strong_signal else 0.7)), 150
+        )
+        oi_floor = max(int(min_oi * (0.6 if strong_signal else 0.7)), 300)
+        baseline_premium_pass = (
+            measured_premium is not None
+            and (
+                measured_premium >= baseline_floor
+                or (
+                    measured_premium >= soft_floor
+                    and volume >= volume_floor
+                    and (not has_oi or oi >= oi_floor)
+                )
+            )
+        )
+        premium_evaluation = {
+            "applies": is_option,
+            "premium": measured_premium,
+            "floor": current_floor,
+            "baseline_floor": baseline_floor,
+            "passed": (
+                measured_premium is not None
+                and (
+                    measured_premium >= current_floor
+                    if self._paper_change_enabled("premium_floor_v2")
+                    else baseline_premium_pass
+                )
+            ),
+            "would_pass_baseline": (
+                bool(baseline_premium_pass) if is_option else True
+            ),
+        }
+
+        volatility_pct = None
+        if history and len(history) >= 14:
+            try:
+                close = float(history[-1].get("close", 0))
+                atr = AccuracyFilters.calculate_atr(history, period=14)
+                if close > 0 and math.isfinite(close) and math.isfinite(atr):
+                    volatility_pct = atr / close * 100.0
+            except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+                volatility_pct = None
+        accuracy_filters = getattr(self, "accuracy_filters", None)
+        try:
+            baseline_volatility_floor = float(
+                getattr(
+                    accuracy_filters,
+                    "min_volatility_pct",
+                    config.get("min_volatility_pct", 0.05),
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            baseline_volatility_floor = float(
+                config.get("min_volatility_pct", 0.05)
+            )
+        try:
+            max_volatility_pct = float(
+                getattr(
+                    accuracy_filters,
+                    "max_volatility_pct",
+                    config.get("max_volatility_pct", 5.0),
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            max_volatility_pct = float(config.get("max_volatility_pct", 5.0))
+        current_volatility_floor = (
+            0.04
+            if underlying == "NIFTY"
+            and self._paper_change_enabled("nifty_vol_floor_v2")
+            else baseline_volatility_floor
+        )
+        volatility_pass = (
+            volatility_pct is None
+            or current_volatility_floor
+            <= volatility_pct
+            <= max_volatility_pct
+        )
+        baseline_volatility_pass = (
+            volatility_pct is None
+            or baseline_volatility_floor
+            <= volatility_pct
+            <= max_volatility_pct
+        )
+        volatility_evaluation = {
+            "applies": underlying == "NIFTY",
+            "atr_pct": volatility_pct,
+            "threshold": current_volatility_floor,
+            "baseline_threshold": baseline_volatility_floor,
+            "max_threshold": max_volatility_pct,
+            "passed": volatility_pass if underlying == "NIFTY" else True,
+            "would_pass_baseline": (
+                bool(baseline_volatility_pass)
+                if underlying == "NIFTY"
+                else True
+            ),
+        }
+
+        banknifty_evaluation = {
+            "applies": underlying == "BANKNIFTY",
+            "premium": measured_premium,
+            "premium_cap": (
+                1000.0
+                if (
+                    self._paper_change_enabled("banknifty_caps_v2")
+                    or self._paper_change_enabled("capital_based_risk_v2")
+                )
+                and underlying == "BANKNIFTY"
+                else float(config.get("option_max_premium", 800.0))
+            ),
+            "baseline_premium_cap": float(
+                config.get("option_max_premium", 800.0)
+            ),
+            "lot_size": None,
+            "risk_inr": None,
+            "risk_cap_inr": (
+                2500.0
+                if self._paper_change_enabled("banknifty_caps_v2")
+                and underlying == "BANKNIFTY"
+                else float(config.get("max_risk_per_trade", 1000.0))
+            ),
+            "baseline_risk_cap_inr": float(
+                config.get("max_risk_per_trade", 1000.0)
+            ),
+            "lots": (
+                1
+                if underlying == "BANKNIFTY"
+                and (
+                    self._paper_change_enabled("banknifty_caps_v2")
+                    or self._paper_change_enabled("capital_based_risk_v2")
+                )
+                else None
+            ),
+            "would_pass_baseline": True,
+            "passed": True,
+        }
+        if underlying == "BANKNIFTY":
+            manager = getattr(self, "intraday_manager", None)
+            specs = getattr(manager, "contract_specs", {}).get(symbol, {})
+            try:
+                lot_size = int(
+                    specs.get(
+                        "lot_size",
+                        getattr(manager, "LOT_SIZES", {}).get(symbol, 1),
+                    )
+                )
+                multiplier = float(
+                    specs.get(
+                        "multiplier",
+                        getattr(manager, "MULTIPLIERS", {}).get(symbol, 1),
+                    )
+                )
+                stop_pct = float(config.get("option_premium_stop_pct", 0.10))
+                risk_inr = (
+                    measured_premium * stop_pct * lot_size * multiplier
+                    if measured_premium is not None
+                    else None
+                )
+            except (TypeError, ValueError, OverflowError):
+                lot_size, risk_inr = None, None
+            baseline_risk_cap = float(config.get("max_risk_per_trade", 1000.0))
+            remaining_daily = None
+            open_risk = None
+            max_open_risk = None
+            if manager is not None:
+                try:
+                    open_risk = (
+                        self._capital_based_open_risk(
+                            float(config.get("option_premium_stop_pct", 0.10))
+                        )
+                        if capital_based_risk
+                        else float(manager.open_position_risk())
+                    )
+                    remaining_daily = max(
+                        0.0,
+                        float(manager.daily_max_loss)
+                        - float(manager.daily_realized_losses)
+                        - open_risk,
+                    )
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    remaining_daily = None
+            try:
+                max_open_risk = (
+                    float(config.get("account_size", 100000.0))
+                    * float(config.get("max_open_risk_pct", 4.0))
+                    / 100.0
+                )
+            except (TypeError, ValueError, OverflowError):
+                max_open_risk = None
+            baseline_pass = (
+                measured_premium is not None
+                and measured_premium <= float(config.get("option_max_premium", 800.0))
+                and risk_inr is not None
+                and risk_inr <= baseline_risk_cap
+                and (remaining_daily is None or risk_inr <= remaining_daily)
+            )
+            capital_cap_risk = (
+                float(config.get("banknifty_max_capital_per_trade_pct", 30.0))
+                * float(config.get("account_size", 100000.0))
+                / 100.0
+                * stop_pct
+            )
+            current_risk_cap = (
+                capital_cap_risk
+                if capital_based_risk
+                else 2500.0
+                if self._paper_change_enabled("banknifty_caps_v2")
+                else baseline_risk_cap
+            )
+            effective_risk_limit = current_risk_cap
+            banknifty_evaluation.update(
+                {
+                    "lot_size": lot_size,
+                    "risk_inr": risk_inr,
+                    "risk_cap_inr": current_risk_cap,
+                    "hard_risk_cap_inr": effective_risk_limit,
+                    "baseline_risk_cap_inr": baseline_risk_cap,
+                    "remaining_daily_risk_inr": remaining_daily,
+                    "open_risk_inr": open_risk,
+                    "max_open_risk_pct": float(
+                        config.get("max_open_risk_pct", 4.0)
+                    ),
+                    "max_open_risk_inr": max_open_risk,
+                    "proposed_open_risk_inr": (
+                        open_risk + risk_inr
+                        if open_risk is not None and risk_inr is not None
+                        else None
+                    ),
+                    "would_pass_baseline": bool(baseline_pass),
+                    "passed": (
+                        measured_premium is not None
+                        and measured_premium
+                        <= banknifty_evaluation["premium_cap"]
+                        and risk_inr is not None
+                        and risk_inr <= effective_risk_limit
+                        and (remaining_daily is None or risk_inr <= remaining_daily)
+                        and (
+                            not (
+                                self._paper_change_enabled("banknifty_caps_v2")
+                                or capital_based_risk
+                            )
+                            or max_open_risk is None
+                            or open_risk is None
+                            or risk_inr + open_risk <= max_open_risk + 1e-9
+                        )
+                    ),
+                }
+            )
+        return {
+            "premium_floor_v2": premium_evaluation,
+            "banknifty_caps_v2": banknifty_evaluation,
+            "nifty_vol_floor_v2": volatility_evaluation,
+        }
+
     def _latest_completed_option_candle(self, symbol: str) -> Optional[Bar]:
         token = (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
             symbol
@@ -466,9 +853,21 @@ class KiteTradingBot:
     def _calculate_option_quantity(
         self, symbol: str, premium: float, premium_stop_pct: float
     ) -> int:
+        if self._paper_change_enabled("capital_based_risk_v2"):
+            return self._calculate_capital_based_option_quantity(
+                symbol, premium, premium_stop_pct
+            )
+
         lot_size = int(self.intraday_manager.contract_specs.get(symbol, {}).get("lot_size", 1))
         minimum_lots = int(self.config.get("option_min_lots", 1))
         maximum_lots = int(self.config.get("option_max_lots", 3))
+        banknifty_caps_enabled = (
+            self._underlying_symbol(symbol) == "BANKNIFTY"
+            and self._paper_change_enabled("banknifty_caps_v2")
+        )
+        if banknifty_caps_enabled:
+            minimum_lots = 1
+            maximum_lots = 1
         if lot_size <= 0 or minimum_lots < 1 or maximum_lots < minimum_lots:
             raise ValueError("Option lot sizing requires valid lot bounds and contract specs")
 
@@ -480,14 +879,25 @@ class KiteTradingBot:
         if not math.isfinite(multiplier) or multiplier <= 0:
             raise ValueError(f"Option contract {symbol} has an invalid multiplier")
         unit_risk = max(premium, 0.01) * premium_stop_pct * multiplier
-        per_lot_risk = unit_risk * lot_size
+        per_lot_risk = round(unit_risk * lot_size, 10)
         risk_cap = self._entry_risk_cap()
-        risk_budget = min(
-            self.intraday_manager.available_daily_risk(),
-            self._option_trade_risk_limit(symbol, premium),
-        )
-        if risk_cap is not None:
-            risk_budget = min(risk_budget, risk_cap)
+        if banknifty_caps_enabled:
+            risk_cap = 2500.0
+            remaining_daily_risk = max(
+                0.0,
+                float(self.intraday_manager.daily_max_loss)
+                - float(self.intraday_manager.daily_realized_losses)
+                - float(self.intraday_manager.open_position_risk()),
+            )
+            risk_budget = min(risk_cap, remaining_daily_risk)
+        else:
+            remaining_daily_risk = self.intraday_manager.available_daily_risk()
+            risk_budget = min(
+                remaining_daily_risk,
+                self._option_trade_risk_limit(symbol, premium),
+            )
+            if risk_cap is not None:
+                risk_budget = min(risk_budget, risk_cap)
 
         evaluations = getattr(self, "_pending_entry_evaluations", None)
         if evaluations is None:
@@ -498,6 +908,11 @@ class KiteTradingBot:
             "option_lot_size": lot_size,
             "option_risk_per_lot_rupees": per_lot_risk,
             "entry_risk_budget_rupees": risk_budget,
+            "remaining_aggregate_daily_risk_rupees": remaining_daily_risk,
+            "banknifty_caps_v2": banknifty_caps_enabled,
+            "max_open_risk_pct": float(
+                self.config.get("max_open_risk_pct", 4.0)
+            ),
         }
         if (
             not math.isfinite(premium_stop_pct)
@@ -515,7 +930,32 @@ class KiteTradingBot:
             evaluation["rejection_reason"] = "invalid_entry_stop_risk"
             evaluations[symbol] = evaluation
             return 0
-        if risk_cap is not None and per_lot_risk > risk_cap:
+        if banknifty_caps_enabled and per_lot_risk > 2500.0 + 1e-9:
+            evaluation["accepted"] = False
+            evaluation["rejection_reason"] = "one_lot_exceeds_trade_risk_cap"
+            evaluations[symbol] = evaluation
+            logger.warning(
+                "[%s] Entry rejected: one lot risks INR %.2f, above BANKNIFTY cap INR 2500",
+                symbol,
+                per_lot_risk,
+            )
+            return 0
+        if not math.isfinite(risk_budget) or per_lot_risk > risk_budget:
+            if banknifty_caps_enabled and per_lot_risk <= 2500.0:
+                evaluation["accepted"] = False
+                evaluation["rejection_reason"] = (
+                    "aggregate_daily_risk_budget_exceeded"
+                )
+                evaluations[symbol] = evaluation
+                logger.info(
+                    "[%s] Entry rejected: one-lot risk INR %.2f exceeds remaining "
+                    "aggregate daily risk budget INR %.2f",
+                    symbol,
+                    per_lot_risk,
+                    remaining_daily_risk,
+                )
+                return 0
+        if risk_cap is not None and per_lot_risk > risk_cap + 1e-9:
             evaluation["accepted"] = False
             evaluation["rejection_reason"] = "one_lot_exceeds_trade_risk_cap"
             evaluations[symbol] = evaluation
@@ -530,7 +970,11 @@ class KiteTradingBot:
         risk_sized_quantity = self.intraday_manager.calculate_option_size(
             symbol,
             premium=max(premium, 0.01),
-            max_risk_per_trade=risk_budget,
+            max_risk_per_trade=(
+                risk_budget + 1e-9
+                if banknifty_caps_enabled
+                else risk_budget
+            ),
             premium_stop_pct=premium_stop_pct,
         )
         risk_sized_lots = risk_sized_quantity // lot_size
@@ -542,10 +986,52 @@ class KiteTradingBot:
         if risk_sized_lots < minimum_lots:
             if risk_cap is not None:
                 evaluation["accepted"] = False
-                evaluation["rejection_reason"] = "available_risk_budget_below_one_lot"
+                evaluation["rejection_reason"] = (
+                    "aggregate_daily_risk_budget_exceeded"
+                    if banknifty_caps_enabled
+                    else "available_risk_budget_below_one_lot"
+                )
                 evaluations[symbol] = evaluation
             return 0
         quantity = min(risk_sized_lots, maximum_lots) * lot_size
+        if banknifty_caps_enabled:
+            account_size = float(self.config.get("account_size", 100000.0))
+            max_open_risk_pct = float(
+                self.config.get("max_open_risk_pct", 4.0)
+            )
+            if (
+                not math.isfinite(account_size)
+                or account_size <= 0
+                or not math.isfinite(max_open_risk_pct)
+                or max_open_risk_pct < 0
+            ):
+                raise ValueError(
+                    "account_size must be positive and max_open_risk_pct "
+                    "must be finite and non-negative"
+                )
+            open_risk = float(self.intraday_manager.open_position_risk())
+            estimated_open_risk = open_risk + unit_risk * quantity
+            open_risk_cap = account_size * max_open_risk_pct / 100.0
+            evaluation.update(
+                {
+                    "open_risk_rupees": open_risk,
+                    "proposed_total_open_risk_rupees": estimated_open_risk,
+                    "max_open_risk_rupees": open_risk_cap,
+                }
+            )
+            if estimated_open_risk > open_risk_cap + 1e-9:
+                evaluation["accepted"] = False
+                evaluation["rejection_reason"] = "max_open_risk_pct_exceeded"
+                evaluations[symbol] = evaluation
+                logger.info(
+                    "[%s] Entry rejected: proposed open risk INR %.2f exceeds "
+                    "max_open_risk_pct %.2f%% (INR %.2f)",
+                    symbol,
+                    estimated_open_risk,
+                    max_open_risk_pct,
+                    open_risk_cap,
+                )
+                return 0
         evaluation.update(
             {
                 "accepted": True,
@@ -556,6 +1042,274 @@ class KiteTradingBot:
         if risk_cap is not None:
             evaluations[symbol] = evaluation
         return quantity
+
+    def _calculate_capital_based_option_quantity(
+        self, symbol: str, premium: float, premium_stop_pct: float
+    ) -> int:
+        underlying = self._underlying_symbol(symbol)
+        specs = self.intraday_manager.contract_specs.get(symbol, {})
+        lot_size = int(specs.get("lot_size", 1))
+        banknifty = underlying == "BANKNIFTY"
+        maximum_lots = 1 if banknifty else min(
+            int(self.config.get("option_max_lots", 3)), 3
+        )
+        account_size = float(self.config.get("account_size", 100000.0))
+        max_capital_pct = float(
+            self.config.get(
+                "banknifty_max_capital_per_trade_pct" if banknifty
+                else "max_capital_per_trade_pct",
+                30.0 if banknifty else 20.0,
+            )
+        )
+        max_capital = account_size * max_capital_pct / 100.0
+        max_open_risk_pct = float(self.config.get("max_open_risk_pct", 4.0))
+        max_open_risk = account_size * max_open_risk_pct / 100.0
+        option_stop_pct = float(
+            self.config.get("option_premium_stop_pct", 0.10)
+        )
+        open_risk = self._capital_based_open_risk(option_stop_pct)
+        remaining_daily = max(
+            0.0,
+            float(self.intraday_manager.daily_max_loss)
+            - float(self.intraday_manager.daily_realized_losses)
+            - open_risk,
+        )
+        per_lot_invested = float(premium) * lot_size
+        per_lot_risk = per_lot_invested * option_stop_pct
+
+        evaluation = {
+            "capital_based_risk_v2": True,
+            "premium": float(premium),
+            "lot_size": lot_size,
+            "option_stop_pct": option_stop_pct,
+            "lots": 0,
+            "invested_amount": 0.0,
+            "risk_amount": 0.0,
+            "proposed_lots": 0,
+            "proposed_invested_amount": 0.0,
+            "proposed_risk_amount": 0.0,
+            "max_capital_per_trade_pct": (
+                float(self.config.get("max_capital_per_trade_pct", 20.0))
+            ),
+            "max_capital_per_trade_amount": (
+                account_size
+                * float(self.config.get("max_capital_per_trade_pct", 20.0))
+                / 100.0
+            ),
+            "banknifty_max_capital_per_trade_pct": (
+                float(
+                    self.config.get(
+                        "banknifty_max_capital_per_trade_pct", 30.0
+                    )
+                )
+            ),
+            "banknifty_max_capital_per_trade_amount": (
+                account_size
+                * float(
+                    self.config.get(
+                        "banknifty_max_capital_per_trade_pct", 30.0
+                    )
+                )
+                / 100.0
+            ),
+            "max_capital_per_trade_used_pct": max_capital_pct,
+            "max_capital_per_trade_used_amount": max_capital,
+            "max_lots": maximum_lots,
+            "max_risk_per_trade_ignored": self.config.get(
+                "max_risk_per_trade", 1000.0
+            ),
+            "max_open_risk_pct": max_open_risk_pct,
+            "max_open_risk_amount": max_open_risk,
+            "open_risk_amount": open_risk,
+            "remaining_daily_risk_amount": remaining_daily,
+            "premium_cap": (
+                1000.0
+                if banknifty
+                and (
+                    self._paper_change_enabled("banknifty_caps_v2")
+                    or self._paper_change_enabled("capital_based_risk_v2")
+                )
+                else float(self.config.get("option_max_premium", 800.0))
+            ),
+            "lots_reduced_reason": (
+                "banknifty_exactly_one_lot" if banknifty else None
+            ),
+        }
+
+        def reject(reason: str) -> int:
+            evaluation["accepted"] = False
+            evaluation["rejection_reason"] = reason
+            evaluations = getattr(self, "_pending_entry_evaluations", None)
+            if evaluations is None:
+                evaluations = {}
+                self._pending_entry_evaluations = evaluations
+            evaluations[symbol] = evaluation
+            logger.info("[%s] Capital-based option sizing rejected: %s", symbol, reason)
+            return 0
+
+        if lot_size <= 0 or maximum_lots < 1:
+            raise ValueError("Option lot sizing requires valid lot bounds and contract specs")
+        if (
+            not math.isfinite(account_size)
+            or account_size <= 0
+            or not math.isfinite(max_capital_pct)
+            or not 0 < max_capital_pct <= 100
+            or not math.isfinite(max_open_risk_pct)
+            or max_open_risk_pct < 0
+        ):
+            raise ValueError(
+                "Capital and open-risk percentages must be finite and valid"
+            )
+        if (
+            not math.isfinite(float(premium))
+            or premium <= 0
+            or not math.isfinite(premium_stop_pct)
+            or not 0 < premium_stop_pct <= MAX_TRADE_RISK_PCT / 100.0
+            or not math.isfinite(option_stop_pct)
+            or not 0 < option_stop_pct <= MAX_TRADE_RISK_PCT / 100.0
+        ):
+            return reject("INVALID_OPTION_PREMIUM_OR_STOP_RISK")
+        if not math.isfinite(per_lot_invested) or per_lot_invested <= 0:
+            return reject("INVALID_OPTION_INVESTMENT_AMOUNT")
+
+        if per_lot_invested > max_capital + 1e-9:
+            evaluation.update(
+                {
+                    "proposed_lots": 1,
+                    "proposed_invested_amount": per_lot_invested,
+                    "proposed_risk_amount": per_lot_risk,
+                }
+            )
+            return reject("ONE_LOT_EXCEEDS_CAPITAL_CAP")
+
+        lots_allowed_by_capital = math.floor(max_capital / per_lot_invested)
+        lots = min(lots_allowed_by_capital, maximum_lots)
+        evaluation["proposed_lots"] = lots
+        evaluation["proposed_invested_amount"] = lots * per_lot_invested
+        evaluation["proposed_risk_amount"] = lots * per_lot_risk
+        if lots_allowed_by_capital > maximum_lots and not banknifty:
+            evaluation["lots_reduced_reason"] = "max_lots_limit"
+        elif lots < maximum_lots and not banknifty:
+            evaluation["lots_reduced_reason"] = "max_capital_per_trade_cap"
+
+        lots_before_daily_budget = lots
+        while lots > 0 and lots * per_lot_risk > remaining_daily + 1e-9:
+            lots -= 1
+        if lots < lots_before_daily_budget:
+            evaluation["lots_reduced_reason"] = "aggregate_daily_risk_budget"
+        if lots == 0:
+            evaluation["proposed_lots"] = lots_before_daily_budget
+            evaluation["proposed_invested_amount"] = (
+                lots_before_daily_budget * per_lot_invested
+            )
+            evaluation["proposed_risk_amount"] = (
+                lots_before_daily_budget * per_lot_risk
+            )
+            return reject("AGGREGATE_DAILY_RISK_BUDGET_EXCEEDED")
+
+        proposed_risk = lots * per_lot_risk
+        if open_risk + proposed_risk > max_open_risk + 1e-9:
+            evaluation["proposed_lots"] = lots
+            evaluation["proposed_invested_amount"] = lots * per_lot_invested
+            evaluation["proposed_risk_amount"] = proposed_risk
+            return reject("MAX_OPEN_RISK_PCT_EXCEEDED")
+
+        evaluation.update(
+            {
+                "lots": lots,
+                "invested_amount": lots * per_lot_invested,
+                "risk_amount": lots * per_lot_risk,
+                "accepted": True,
+                "rejection_reason": None,
+            }
+        )
+        evaluations = getattr(self, "_pending_entry_evaluations", None)
+        if evaluations is None:
+            evaluations = {}
+            self._pending_entry_evaluations = evaluations
+        evaluations[symbol] = evaluation
+        logger.info(
+            "[%s] Capital-based option sizing: premium=%.2f lot_size=%d "
+            "lots=%d invested=INR %.2f risk=INR %.2f daily_risk_remaining=INR %.2f",
+            symbol,
+            premium,
+            lot_size,
+            lots,
+            lots * per_lot_invested,
+            lots * per_lot_risk,
+            remaining_daily,
+        )
+        return lots * lot_size
+
+    def _validate_banknifty_entry_risk(
+        self, symbol: str, quantity: int, entry_price: float, stop_loss: float
+    ) -> bool:
+        is_banknifty = self._underlying_symbol(symbol) == "BANKNIFTY"
+        if (
+            not is_banknifty
+            or not self._paper_change_enabled("banknifty_caps_v2")
+            or self._paper_change_enabled("capital_based_risk_v2")
+        ):
+            return True
+        manager = self.intraday_manager
+        evaluation = getattr(self, "_pending_entry_evaluations", {}).setdefault(
+            symbol, {}
+        )
+        risk = manager.estimate_trade_risk(
+            symbol, quantity, entry_price, stop_loss
+        )
+        open_risk = float(manager.open_position_risk())
+        remaining_daily = max(
+            0.0,
+            float(manager.daily_max_loss)
+            - float(manager.daily_realized_losses)
+            - open_risk,
+        )
+        account_size = float(self.config.get("account_size", 100000.0))
+        max_open_risk_pct = float(self.config.get("max_open_risk_pct", 4.0))
+        if (
+            not math.isfinite(account_size)
+            or account_size <= 0
+            or not math.isfinite(max_open_risk_pct)
+            or max_open_risk_pct < 0
+        ):
+            raise ValueError(
+                "account_size must be positive and max_open_risk_pct "
+                "must be finite and non-negative"
+            )
+        max_open_risk = account_size * max_open_risk_pct / 100.0
+        evaluation.update(
+            {
+                "actual_initial_risk_rupees": risk,
+                "remaining_aggregate_daily_risk_rupees": remaining_daily,
+                "open_risk_rupees": open_risk,
+                "proposed_total_open_risk_rupees": open_risk + risk,
+                "max_open_risk_rupees": max_open_risk,
+            }
+        )
+        if is_banknifty:
+            evaluation["risk_cap_rupees"] = 2500.0
+        reason = None
+        if is_banknifty and risk > 2500.0 + 1e-9:
+            reason = "one_lot_exceeds_trade_risk_cap"
+        elif is_banknifty and risk > remaining_daily + 1e-9:
+            reason = "aggregate_daily_risk_budget_exceeded"
+        elif open_risk + risk > max_open_risk + 1e-9:
+            reason = "max_open_risk_pct_exceeded"
+        if reason is not None:
+            evaluation.update({"accepted": False, "rejection_reason": reason})
+            logger.warning(
+                "[%s] Entry rejected: %s (risk INR %.2f, remaining daily INR %.2f, "
+                "open-risk cap INR %.2f)",
+                symbol,
+                reason,
+                risk,
+                remaining_daily,
+                max_open_risk,
+            )
+            return False
+        evaluation.update({"accepted": True})
+        return True
 
     def _try_option_range_breakout(
         self, symbol: str, bars: list[Bar]
@@ -782,6 +1536,33 @@ class KiteTradingBot:
             candidate.level,
         )
         self._support_reversal_last_candidate = last_candidates
+
+    def _capital_based_open_risk(self, option_stop_pct: float) -> float:
+        manager = self.intraday_manager
+        total_risk = 0.0
+        for symbol, position in manager.active_positions.items():
+            saved_risk = position.get("capital_based_risk_amount")
+            if saved_risk is not None:
+                risk = float(saved_risk)
+            elif self._options_enabled() and symbol.endswith(("_CE", "_PE")):
+                risk = (
+                    abs(int(position.get("quantity", 0) or 0))
+                    * float(position["entry_price"])
+                    * option_stop_pct
+                )
+            else:
+                risk = manager.estimate_trade_risk(
+                    symbol,
+                    abs(int(position.get("quantity", 0) or 0)),
+                    float(position["entry_price"]),
+                    float(position["stop_loss"]),
+                )
+            if not math.isfinite(risk) or risk < 0:
+                raise ValueError(
+                    f"Open position {symbol} has invalid capital-based risk"
+                )
+            total_risk += risk
+        return total_risk
 
     def _option_trade_risk_limit(self, symbol: str, premium: float) -> float:
         specs = self.intraday_manager.contract_specs.get(symbol, {})
@@ -1069,6 +1850,12 @@ class KiteTradingBot:
             git_sha=self.git_identity.sha,
             git_dirty=self.git_identity.dirty,
         )
+        self.stop_reentry_journal = StopReentryJournal(
+            self.paper_trading_dir,
+            Path(self.paper_trading_dir) / "option_candles",
+            config_hash=self.config_hash,
+        )
+        self._stop_event_check_state: Dict[str, list[dict]] = {}
         self._pending_entries: Dict[tuple[str, str], dict] = {}
         self._expire_unfinished_confirmed_entries()
         for symbol, state in self._ema_reentry_states.items():
@@ -2271,7 +3058,24 @@ class KiteTradingBot:
                 return False, "invalid support-reversal premium floor"
             if not math.isfinite(min_premium) or min_premium <= 0:
                 return False, "invalid support-reversal premium floor"
-        max_premium = float(self.config.get("option_max_premium", 800.0))
+        baseline_min_premium = min_premium
+        premium_floor_v2 = self._paper_change_enabled("premium_floor_v2")
+        if premium_floor_v2:
+            min_premium = max(
+                min_premium,
+                12.0 if minimum_premium_override is not None else 15.0,
+            )
+        max_premium = (
+            1000.0
+            if (
+                self._underlying_symbol(symbol) == "BANKNIFTY"
+                and (
+                    self._paper_change_enabled("banknifty_caps_v2")
+                    or self._paper_change_enabled("capital_based_risk_v2")
+                )
+            )
+            else float(self.config.get("option_max_premium", 800.0))
+        )
         min_volume = int(self.config.get("option_min_volume", 200))
         min_oi = int(self.config.get("option_min_oi", 400))
         iv_min = float(self.config.get("option_iv_min", 0.08))
@@ -2281,8 +3085,35 @@ class KiteTradingBot:
         premium_floor = min_premium * (0.55 if strong_signal else 0.65)
         volume_floor = max(int(min_volume * (0.6 if strong_signal else 0.7)), 150)
         oi_floor = max(int(min_oi * (0.6 if strong_signal else 0.7)), 300)
+        change_evaluations = self._paper_change_gate_evaluations(
+            symbol,
+            premium=premium,
+            minimum_premium_override=minimum_premium_override,
+            score=score,
+        )
+        change_evaluations["premium_floor_v2"].update(
+            {
+                "floor": min_premium,
+                "baseline_floor": baseline_min_premium,
+                "passed": premium >= min_premium,
+            }
+        )
+        change_evaluations["banknifty_caps_v2"].update(
+            {
+                "premium_cap": max_premium,
+                "passed": (
+                    premium <= max_premium
+                    and change_evaluations["banknifty_caps_v2"]["passed"]
+                )
+                if self._underlying_symbol(symbol) == "BANKNIFTY"
+                else True,
+            }
+        )
+        quote_context["change_gate_evaluations"] = change_evaluations
 
         if premium < min_premium:
+            if premium_floor_v2:
+                return False, f"premium too low: {premium} < {min_premium}"
             if (
                 premium >= premium_floor
                 and volume >= volume_floor
@@ -2458,10 +3289,23 @@ class KiteTradingBot:
             "quote_source": gate_measurements.get("quote_source"),
             "quote_age_seconds": gate_measurements.get("quote_age_seconds"),
             "candle_age_seconds": gate_measurements.get("candle_age_seconds"),
-            "paper_change_flags": gate_measurements.get("paper_change_flags"),
+            "paper_change_flags": gate_measurements.get(
+                "paper_change_flags", self._active_paper_change_flags()
+            ),
             "paper_change_attributions": pending.get(
                 "paper_change_attributions", []
             ),
+            "paper_change_gate_evaluations": pending.get(
+                "paper_change_gate_evaluations", {}
+            ),
+            "would_pass_baseline": {
+                key: bool(
+                    pending.get("paper_change_gate_evaluations", {})
+                    .get(key, {})
+                    .get("would_pass_baseline", True)
+                )
+                for key in ATTRIBUTABLE_CHANGE_KEYS
+            },
             "confirmation_body_ratio": pending.get("confirmation_body_ratio"),
             "confirmation_body_ratio_threshold": pending.get(
                 "confirmation_body_ratio_threshold"
@@ -2591,6 +3435,7 @@ class KiteTradingBot:
         support_candidate: Optional[SupportResistanceReversal],
         now: datetime,
         paper_change_attributions: Optional[list[str]] = None,
+        paper_change_gate_evaluations: Optional[dict] = None,
     ) -> str:
         leg = "CE" if symbol.endswith("_CE") else "PE"
         key = (symbol, leg)
@@ -2668,6 +3513,9 @@ class KiteTradingBot:
             "signal_quote_age_seconds": quote_metrics["age_seconds"],
             "gate_measurements": gate_measurements,
             "paper_change_attributions": list(paper_change_attributions or []),
+            "paper_change_gate_evaluations": (
+                paper_change_gate_evaluations or {}
+            ),
             "support_resistance_level": (
                 support_candidate.level if support_route and support_candidate else None
             ),
@@ -2838,6 +3686,7 @@ class KiteTradingBot:
             minute=now.minute,
             record_entry=False,
             min_score=pending["minimum_signal_score"],
+            min_volatility_pct=self._minimum_volatility_pct(symbol),
         )
         if not allowed:
             return "filter"
@@ -3122,6 +3971,15 @@ class KiteTradingBot:
                     pending.get("paper_change_attributions", [])
                 ),
             }
+            gate_contexts = getattr(
+                self, "_signal_change_gate_evaluations", None
+            )
+            if gate_contexts is None:
+                gate_contexts = {}
+                self._signal_change_gate_evaluations = gate_contexts
+            gate_contexts[pending["symbol"]] = pending.get(
+                "paper_change_gate_evaluations", {}
+            )
             try:
                 outcome = self._handle_buy_signal(
                     pending["symbol"],
@@ -3919,6 +4777,37 @@ class KiteTradingBot:
                     news_context,
                 )
                 return
+            quote_context = getattr(self, "_option_gate_context", {}).get(
+                symbol, {}
+            )
+            quote_metrics = self._option_quote_metrics(
+                getattr(self, "option_quote_cache", {}).get(symbol, {})
+            )
+            premium_reference = (
+                quote_context.get("gate_reference_price")
+                or quote_metrics["ltp"]
+                or bar.close
+            )
+            premium_override = (
+                self.config.get("support_reversal_min_premium", 5.0)
+                if getattr(market_score, "strategy_variant", None)
+                == "paper_underlying_support_reversal"
+                else None
+            )
+            change_gate_evaluations = self._paper_change_gate_evaluations(
+                symbol,
+                premium=premium_reference,
+                minimum_premium_override=premium_override,
+                history=history,
+                score=market_score.score,
+            )
+            change_gate_contexts = getattr(
+                self, "_signal_change_gate_evaluations", None
+            )
+            if change_gate_contexts is None:
+                change_gate_contexts = {}
+                self._signal_change_gate_evaluations = change_gate_contexts
+            change_gate_contexts[symbol] = change_gate_evaluations
             if (
                 support_candidate is not None
                 and getattr(market_score, "strategy_variant", None)
@@ -5712,6 +6601,64 @@ class KiteTradingBot:
                     },
                     outcome=state["outcome"].lower(),
                 )
+        if reason in {"STOP_LOSS", "TRAILING_STOP"} and (
+            trade is not None or exit_info is not None
+        ):
+            try:
+                journal = getattr(self, "stop_reentry_journal", None)
+                if journal is not None:
+                    leg = (
+                        "CE"
+                        if symbol.endswith("_CE")
+                        else "PE"
+                        if symbol.endswith("_PE")
+                        else "FUTURE"
+                    )
+                    contract_id = str(
+                        (trade or {}).get("contract_id")
+                        or self._contract_id(symbol)
+                        or ""
+                    )
+                    event_id = journal.record_stop_event(
+                        {
+                            "original_trade_id": (trade or {}).get("trade_id")
+                            or (position or {}).get("trade_id"),
+                            "contract_id": contract_id,
+                            "underlying": self._underlying_symbol(symbol),
+                            "leg": leg,
+                            "stop_time": closed_at,
+                            "entry_price": (trade or {}).get("entry")
+                            or (position or {}).get("entry_price"),
+                            "stop_price": (
+                                (position or {}).get("trailing_stop")
+                                if reason == "TRAILING_STOP"
+                                and (position or {}).get("trailing_stop")
+                                is not None
+                                else (position or {}).get("stop_loss")
+                                or (trade or {}).get("stop_loss")
+                            ),
+                            "exit_price": price,
+                            "exit_reason": reason,
+                            "net_pnl": (
+                                (trade or {}).get("net_pnl")
+                                if (trade or {}).get("net_pnl") is not None
+                                else pnl
+                            ),
+                        }
+                    )
+                    if event_id is not None and leg in {"CE", "PE"}:
+                        self._stop_event_check_state.setdefault(symbol, []).append(
+                            {
+                                "stop_event_id": event_id,
+                                "stop_time": closed_at,
+                                "reentry_opened": False,
+                            }
+                        )
+            except Exception:
+                logger.exception(
+                    "[%s] Could not record stop-out telemetry; trade handling continues",
+                    symbol,
+                )
         self._persist_current_live_risk_state()
         mode = "intraday_options" if self._options_enabled() else "futures"
         option_leg = "CE" if symbol.endswith("_CE") else "PE" if symbol.endswith("_PE") else None
@@ -5859,15 +6806,7 @@ class KiteTradingBot:
             if is_option and token is not None
             else {}
         )
-        active_changes = [
-            key
-            for key in (
-                "stale_quote_candle_fallback",
-                "option_candle_momentum",
-                "index_persistence_pass",
-            )
-            if self._paper_change_enabled(key)
-        ]
+        active_changes = self._active_paper_change_flags()
         try:
             configured_quote_age = float(
                 config.get("option_quote_max_age_seconds", 60)
@@ -5901,11 +6840,16 @@ class KiteTradingBot:
             return value if math.isfinite(value) else None
 
         accuracy_filters = getattr(self, "accuracy_filters", None)
-        volatility_min_pct = getattr(accuracy_filters, "min_volatility_pct", None)
-        if volatility_min_pct is None:
+        try:
+            volatility_min_pct = self._minimum_volatility_pct(symbol)
+        except (AttributeError, TypeError, ValueError, OverflowError):
             volatility_min_pct = configured_float("min_volatility_pct", 0.05)
         volatility_max_pct = getattr(accuracy_filters, "max_volatility_pct", None)
-        if volatility_max_pct is None:
+        try:
+            volatility_max_pct = float(volatility_max_pct)
+            if not math.isfinite(volatility_max_pct):
+                raise ValueError("non-finite volatility ceiling")
+        except (TypeError, ValueError, OverflowError):
             volatility_max_pct = configured_float("max_volatility_pct", 5.0)
         try:
             score_threshold = self._entry_score_floor()
@@ -5914,6 +6858,43 @@ class KiteTradingBot:
                 score_threshold = int(config.get("min_entry_score", 70))
             except (TypeError, ValueError, OverflowError):
                 score_threshold = None
+
+        premium_reference = (
+            quote_context.get("gate_reference_price")
+            or quote_metrics["ltp"]
+        )
+        if premium_reference is None:
+            premium_reference = quote.get("last_price", quote.get("premium"))
+        minimum_premium_override = (
+            config.get("support_reversal_min_premium", 5.0)
+            if route == "support_reversal"
+            else None
+        )
+        change_gate_evaluations = (
+            quote_context.get("change_gate_evaluations")
+            if isinstance(quote_context.get("change_gate_evaluations"), dict)
+            else self._paper_change_gate_evaluations(
+                symbol,
+                premium=premium_reference,
+                minimum_premium_override=minimum_premium_override,
+                history=history,
+                score=score,
+            )
+        )
+        if history:
+            change_gate_evaluations["nifty_vol_floor_v2"] = (
+                self._paper_change_gate_evaluations(
+                    symbol,
+                    premium=premium_reference,
+                    minimum_premium_override=minimum_premium_override,
+                    history=history,
+                    score=score,
+                )["nifty_vol_floor_v2"]
+            )
+        would_pass_baseline = {
+            key: bool(change_gate_evaluations[key]["would_pass_baseline"])
+            for key in ATTRIBUTABLE_CHANGE_KEYS
+        }
 
         return {
             "route": route,
@@ -5955,6 +6936,8 @@ class KiteTradingBot:
             "paper_change_attributions": list(
                 getattr(self, "_signal_change_attributions", {}).get(symbol, [])
             ),
+            "paper_change_gate_evaluations": change_gate_evaluations,
+            "would_pass_baseline": would_pass_baseline,
             "volatility_pct": volatility_pct,
             "volatility_min_pct": volatility_min_pct,
             "volatility_max_pct": volatility_max_pct,
@@ -5966,6 +6949,183 @@ class KiteTradingBot:
             "ask": quote_metrics["ask"],
             "ltp": quote_metrics["ltp"],
         }
+
+    def _record_stop_reentry_checks(
+        self,
+        symbol: str,
+        bar: Bar,
+        signal: str,
+        score: Optional[int],
+        outcome: str,
+        gate_measurements: dict,
+        entry_evaluation: Optional[dict],
+        strategy_variant: str,
+        ema_reentry_context: Optional[dict],
+    ) -> None:
+        journal = getattr(self, "stop_reentry_journal", None)
+        tracked = getattr(self, "_stop_event_check_state", {}).get(symbol, [])
+        if journal is None or not tracked:
+            return
+
+        try:
+            now = self._journal_datetime(bar.timestamp) or datetime.now(IST)
+            if symbol.endswith(("_CE", "_PE")):
+                underlying = self._underlying_symbol(symbol)
+                underlying_token = self.config.get("instrument_tokens", {}).get(
+                    underlying
+                )
+                underlying_bars = (
+                    self.bar_builder.get_bars(underlying_token, limit=50)
+                    if underlying_token is not None
+                    else []
+                )
+                underlying_history = [
+                    item.to_dict() for item in underlying_bars
+                ]
+            else:
+                underlying_history = []
+
+            manager = self.intraday_manager
+            trade_count = int(
+                manager.session_trade_counts.get(
+                    symbol, int(symbol in manager.session_trade_symbols)
+                )
+            )
+            if outcome == "trade_opened":
+                trade_count = max(trade_count - 1, 0)
+            performance = manager.symbol_performance.get(symbol, {})
+            stop_time = manager.session_loss_stop_times.get(symbol)
+            recent_loss_time = manager.recent_loss_symbols.get(symbol)
+            open_risk = manager.open_position_risk()
+            remaining_budget = max(
+                0.0,
+                min(
+                    manager.max_risk_per_trade,
+                    manager.daily_max_loss
+                    - manager.daily_realized_losses
+                    - open_risk,
+                ),
+            )
+            manager_state = {
+                "session_trade_count": trade_count,
+                "reentries_used": max(trade_count - 1, 0),
+                "has_loss_stop": stop_time is not None,
+                "reversal_locked": symbol in manager.session_reversal_symbols,
+                "recent_loss_elapsed_seconds": (
+                    (now - recent_loss_time).total_seconds()
+                    if recent_loss_time is not None
+                    else None
+                ),
+                "loss_cooldown_seconds": manager.loss_cooldown_seconds,
+                "consecutive_losses": manager.consecutive_losses,
+                "max_consecutive_losses": manager.max_consecutive_losses,
+                "symbol_trades": int(performance.get("trades", 0)),
+                "symbol_win_rate": performance.get("win_rate", 100.0),
+                "min_symbol_trades_for_cap": manager.min_symbol_trades_for_cap,
+                "symbol_min_win_rate": manager.symbol_min_win_rate,
+                "daily_pnl": manager.daily_pnl,
+                "daily_realized_losses": manager.daily_realized_losses,
+                "daily_max_loss": manager.daily_max_loss,
+                "open_risk": open_risk,
+                "available_daily_risk": remaining_budget,
+            }
+            quote = dict(getattr(self, "option_quote_cache", {}).get(symbol, {}))
+            entry_state = dict(
+                getattr(self, "_ema_reentry_states", {}).get(symbol, {})
+            )
+            config_keys = (
+                "stop_reentry_enabled",
+                "stop_reentry_min_score",
+                "stop_reentry_cooldown_minutes",
+                "ema_reentry_enabled",
+                "trading_mode",
+                "min_entry_score",
+                "option_quote_max_age_seconds",
+                "option_min_premium",
+                "option_max_premium",
+                "option_min_volume",
+                "option_min_oi",
+                "option_iv_min",
+                "option_iv_max",
+                "entry_cutoff_minutes_before_close",
+                "account_size",
+                "max_open_risk_pct",
+                "max_capital_per_trade_pct",
+                "max_capital_per_trade_amount",
+                "banknifty_max_capital_per_trade_pct",
+                "banknifty_max_capital_per_trade_amount",
+            )
+            snapshot = {
+                "timestamp": now,
+                "bar_time": bar.timestamp,
+                "ticker": symbol,
+                "signal": signal,
+                "score": score,
+                "outcome": outcome,
+                "strategy_variant": strategy_variant,
+                "reentry_opened": outcome == "trade_opened",
+                "ema_reentry_confirmed": ema_reentry_context is not None,
+                "entry_cutoff_reason": (
+                    outcome if "cutoff" in outcome.lower() else None
+                ),
+                "gate_measurements": dict(gate_measurements),
+                "entry_evaluation": (
+                    dict(entry_evaluation)
+                    if isinstance(entry_evaluation, dict)
+                    else {}
+                ),
+                "underlying_history": underlying_history,
+                "ema_reentry_state": entry_state,
+                "quote": quote,
+                "config": {
+                    key: self.config.get(key) for key in config_keys
+                },
+                "manager": manager_state,
+            }
+        except Exception:
+            logger.exception(
+                "[%s] Could not collect stop re-entry telemetry; writing null measurements",
+                symbol,
+            )
+            now = self._journal_datetime(bar.timestamp) or datetime.now(IST)
+            snapshot = {
+                "timestamp": now,
+                "bar_time": bar.timestamp,
+                "ticker": symbol,
+                "signal": signal,
+                "score": None,
+                "outcome": outcome,
+                "config": {},
+                "manager": {},
+                "gate_measurements": {},
+                "entry_evaluation": {},
+                "underlying_history": [],
+                "quote": {},
+                "ema_reentry_state": {},
+            }
+
+        still_tracking = []
+        for item in tracked:
+            elapsed = (now - item["stop_time"]).total_seconds()
+            if now.date() != item["stop_time"].date() or elapsed > 90 * 60:
+                continue
+            try:
+                journal.record_path_poll(item["stop_event_id"], now)
+                if not item["reentry_opened"] and elapsed <= 90 * 60:
+                    journal.record_check(item["stop_event_id"], snapshot)
+                if outcome == "trade_opened" and not item["reentry_opened"]:
+                    journal.record_reentry_opened(
+                        item["stop_event_id"],
+                        None,
+                        now,
+                    )
+                    item["reentry_opened"] = True
+            except Exception:
+                logger.exception(
+                    "[%s] Could not enqueue stop re-entry telemetry", symbol
+                )
+            still_tracking.append(item)
+        self._stop_event_check_state[symbol] = still_tracking
 
     def _record_decision(
         self,
@@ -6083,9 +7243,18 @@ class KiteTradingBot:
                     "body_ratio_threshold"
                 ),
                 "body_ratio_source": gate_measurements.get("body_ratio_source"),
-                "paper_change_flags": gate_measurements.get("paper_change_flags"),
+                "paper_change_flags": gate_measurements.get(
+                    "paper_change_flags", self._active_paper_change_flags()
+                ),
                 "paper_change_attributions": gate_measurements.get(
                     "paper_change_attributions"
+                ),
+                "paper_change_gate_evaluations": gate_measurements.get(
+                    "paper_change_gate_evaluations", {}
+                ),
+                "would_pass_baseline": gate_measurements.get(
+                    "would_pass_baseline",
+                    {key: True for key in ATTRIBUTABLE_CHANGE_KEYS},
                 ),
                 "forward_reference_time": forward_reference_time.isoformat(),
                 "bar_interval_seconds": bar_interval_seconds,
@@ -6093,6 +7262,15 @@ class KiteTradingBot:
                 "news_sentiment": news_context.sentiment if news_context else "DISABLED",
                 "news_headlines": news_context.headlines[:5] if news_context else [],
                 "entry_evaluation": entry_evaluation,
+                **(
+                    {
+                        key: entry_evaluation[key]
+                        for key in OPTION_ENTRY_RISK_FIELDS
+                        if key in entry_evaluation
+                    }
+                    if isinstance(entry_evaluation, dict)
+                    else {}
+                ),
                 "original_trade_id": (
                     ema_reentry_context.get("original_trade_id")
                     if ema_reentry_context
@@ -6126,6 +7304,18 @@ class KiteTradingBot:
                 ),
             }
         )
+        if option_decision:
+            self._record_stop_reentry_checks(
+                symbol,
+                bar,
+                signal,
+                market_score.score if market_score else None,
+                outcome,
+                gate_measurements,
+                entry_evaluation,
+                variant,
+                ema_reentry_context,
+            )
         if option_decision and signal_id:
             writer = getattr(self, "option_capture_writer", None)
             if writer is not None:
@@ -6190,6 +7380,7 @@ class KiteTradingBot:
         paper_change_attributions: Optional[list[str]] = None,
     ) -> str:
         """Handle a BUY signal."""
+        paper_change_attributions = list(paper_change_attributions or [])
         entry_quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         entry_quote_metrics = self._option_quote_metrics(entry_quote)
         entry_fill_source = "last_price"
@@ -6360,11 +7551,24 @@ class KiteTradingBot:
                     stop_loss,
                 )
 
+            if quantity > 0 and not self._validate_banknifty_entry_risk(
+                symbol, quantity, price, stop_loss
+            ):
+                quantity = 0
+
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
+                if (
+                    self._paper_change_enabled("capital_based_risk_v2")
+                    and evaluation.get("rejection_reason")
+                ):
+                    return (
+                        "risk_blocked:"
+                        f"{evaluation['rejection_reason']}"
+                    )
                 if evaluation.get("rejection_reason") == "one_lot_exceeds_trade_risk_cap":
                     cap = float(evaluation["risk_cap_rupees"])
                     return (
@@ -6375,6 +7579,14 @@ class KiteTradingBot:
                     "stop_risk_exceeds_deployed_capital_limit"
                 ):
                     return "risk_blocked:stop_risk_exceeds_deployed_capital_limit"
+                if evaluation.get("rejection_reason") == (
+                    "aggregate_daily_risk_budget_exceeded"
+                ):
+                    return "risk_blocked:aggregate_daily_risk_budget_exceeded"
+                if evaluation.get("rejection_reason") == (
+                    "max_open_risk_pct_exceeded"
+                ):
+                    return "risk_blocked:max_open_risk_pct_exceeded"
                 return "position_size_zero"
 
             order_id = None
@@ -6456,6 +7668,18 @@ class KiteTradingBot:
                     self.config.get("strong_option_milestone_window_minutes", 10)
                 ),
             )
+            if (
+                self._options_enabled()
+                and "_" in symbol
+                and self._paper_change_enabled("capital_based_risk_v2")
+            ):
+                sizing_evaluation = getattr(
+                    self, "_pending_entry_evaluations", {}
+                ).get(symbol, {})
+                if sizing_evaluation.get("risk_amount") is not None:
+                    self.intraday_manager.active_positions[symbol][
+                        "capital_based_risk_amount"
+                    ] = float(sizing_evaluation["risk_amount"])
             if self._quote_validated_long_option(
                 symbol, self.intraday_manager.active_positions[symbol]
             ):
@@ -6528,6 +7752,138 @@ class KiteTradingBot:
             quote_context = getattr(self, "_option_gate_context", {}).get(
                 symbol, {}
             )
+            change_gate_evaluations = (
+                getattr(self, "_signal_change_gate_evaluations", {}).get(symbol)
+                or quote_context.get("change_gate_evaluations")
+                or self._paper_change_gate_evaluations(
+                    symbol,
+                    premium=(
+                        premium
+                        if self._options_enabled() and "_" in symbol
+                        else None
+                    ),
+                    score=score,
+                )
+            )
+            entry_evaluation = getattr(
+                self, "_pending_entry_evaluations", {}
+            ).get(symbol, {})
+            if self._options_enabled() and "_" in symbol:
+                alert.update(
+                    {
+                        key: entry_evaluation[key]
+                        for key in OPTION_ENTRY_RISK_FIELDS
+                        if key in entry_evaluation
+                    }
+                )
+            banknifty_gate = change_gate_evaluations["banknifty_caps_v2"]
+            if self._underlying_symbol(symbol) == "BANKNIFTY":
+                actual_risk = entry_evaluation.get(
+                    "risk_amount",
+                    entry_evaluation.get(
+                        "actual_initial_risk_rupees",
+                        entry_evaluation.get("option_risk_per_lot_rupees"),
+                    ),
+                )
+                remaining_daily = entry_evaluation.get(
+                    "remaining_daily_risk_amount",
+                    entry_evaluation.get("remaining_aggregate_daily_risk_rupees"),
+                )
+                capital_risk_cap = (
+                    float(
+                        self.config.get(
+                            "banknifty_max_capital_per_trade_pct", 30.0
+                        )
+                    )
+                    * float(self.config.get("account_size", 100000.0))
+                    / 100.0
+                    * float(self.config.get("option_premium_stop_pct", 0.10))
+                )
+                banknifty_gate.update(
+                    {
+                        "risk_inr": actual_risk,
+                        "risk_cap_inr": (
+                            capital_risk_cap
+                            if self._paper_change_enabled("capital_based_risk_v2")
+                            and self._underlying_symbol(symbol) == "BANKNIFTY"
+                            else 2500.0
+                            if actual_risk is not None
+                            and self._paper_change_enabled("banknifty_caps_v2")
+                            else float(
+                                self.config.get("max_risk_per_trade", 1000.0)
+                            )
+                        ),
+                        "hard_risk_cap_inr": (
+                            capital_risk_cap
+                            if self._paper_change_enabled("capital_based_risk_v2")
+                            and self._underlying_symbol(symbol) == "BANKNIFTY"
+                            else 2500.0
+                            if self._paper_change_enabled("banknifty_caps_v2")
+                            else float(
+                                self.config.get("max_risk_per_trade", 1000.0)
+                            )
+                        ),
+                        "lots": int(quantity)
+                        // max(int(banknifty_gate.get("lot_size") or 1), 1),
+                        "passed": bool(entry_evaluation.get("accepted")),
+                        "remaining_daily_risk_inr": remaining_daily,
+                        "would_pass_baseline": (
+                            actual_risk is not None
+                            and actual_risk
+                            <= float(
+                                self.config.get("max_risk_per_trade", 1000.0)
+                            )
+                            and (
+                                remaining_daily is None
+                                or actual_risk <= remaining_daily
+                            )
+                            and (
+                                banknifty_gate.get("premium") is None
+                                or banknifty_gate["premium"]
+                                <= float(
+                                    self.config.get(
+                                        "option_max_premium", 800.0
+                                    )
+                                )
+                            )
+                        ),
+                    }
+                )
+            if (
+                self._paper_change_enabled("banknifty_caps_v2")
+                and self._underlying_symbol(symbol) == "BANKNIFTY"
+                and not banknifty_gate["would_pass_baseline"]
+            ):
+                if "banknifty_caps_v2" not in paper_change_attributions:
+                    paper_change_attributions.append("banknifty_caps_v2")
+                signal_attributions = getattr(
+                    self, "_signal_change_attributions", {}
+                ).setdefault(symbol, [])
+                if "banknifty_caps_v2" not in signal_attributions:
+                    signal_attributions.append("banknifty_caps_v2")
+            if (
+                self._paper_change_enabled("nifty_vol_floor_v2")
+                and change_gate_evaluations["nifty_vol_floor_v2"]["applies"]
+                and not change_gate_evaluations["nifty_vol_floor_v2"][
+                    "would_pass_baseline"
+                ]
+                and "nifty_vol_floor_v2" not in paper_change_attributions
+            ):
+                paper_change_attributions.append("nifty_vol_floor_v2")
+                getattr(self, "_signal_change_attributions", {}).setdefault(
+                    symbol, []
+                ).append("nifty_vol_floor_v2")
+            if (
+                self._paper_change_enabled("capital_based_risk_v2")
+                and "capital_based_risk_v2" not in paper_change_attributions
+            ):
+                paper_change_attributions.append("capital_based_risk_v2")
+            would_pass_baseline = {
+                key: bool(
+                    change_gate_evaluations[key]["would_pass_baseline"]
+                )
+                for key in ATTRIBUTABLE_CHANGE_KEYS
+            }
             token = (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
                 symbol
             )
@@ -6536,15 +7892,14 @@ class KiteTradingBot:
                 if token is not None
                 else {}
             )
-            active_changes = [
-                key
-                for key in (
-                    "stale_quote_candle_fallback",
-                    "option_candle_momentum",
-                    "index_persistence_pass",
-                )
-                if self._paper_change_enabled(key)
-            ]
+            active_changes = self._active_paper_change_flags()
+            entry_spread = (
+                entry_quote_metrics["ask"] - entry_quote_metrics["bid"]
+                if self._underlying_symbol(symbol) == "BANKNIFTY"
+                and entry_quote_metrics["ask"] is not None
+                and entry_quote_metrics["bid"] is not None
+                else None
+            )
             alert.update(
                 {
                     "quote_source": (
@@ -6570,9 +7925,10 @@ class KiteTradingBot:
                         "daily_tick_gaps_over_30s", 0
                     ),
                     "paper_change_flags": active_changes,
-                    "paper_change_attributions": list(
-                        paper_change_attributions or []
-                    ),
+                    "paper_change_attributions": paper_change_attributions,
+                    "paper_change_gate_evaluations": change_gate_evaluations,
+                    "would_pass_baseline": would_pass_baseline,
+                    "paper_entry_bid_ask_spread": entry_spread,
                 }
             )
             if ema_reentry_context is not None:
@@ -6619,7 +7975,23 @@ class KiteTradingBot:
                         symbol, quantity, price, stop_loss
                     )
                 )
-                alert["risk_cap_rupees"] = self._entry_risk_cap()
+                alert["risk_cap_rupees"] = (
+                    capital_risk_cap
+                    if self._underlying_symbol(symbol) == "BANKNIFTY"
+                    and self._paper_change_enabled("capital_based_risk_v2")
+                    else 2500.0
+                    if self._underlying_symbol(symbol) == "BANKNIFTY"
+                    and self._paper_change_enabled("banknifty_caps_v2")
+                    else self._entry_risk_cap()
+                )
+            if self._underlying_symbol(symbol) == "BANKNIFTY":
+                logger.info(
+                    "[%s] PAPER entry bid-ask spread: %s (bid=%s ask=%s)",
+                    symbol,
+                    entry_spread,
+                    entry_quote_metrics["bid"],
+                    entry_quote_metrics["ask"],
+                )
             alert["entry_quote_ltp"] = entry_quote_metrics["ltp"]
             alert["entry_quote_bid"] = entry_quote_metrics["bid"]
             alert["entry_quote_ask"] = entry_quote_metrics["ask"]
@@ -6837,6 +8209,14 @@ class KiteTradingBot:
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
+                if (
+                    self._paper_change_enabled("capital_based_risk_v2")
+                    and evaluation.get("rejection_reason")
+                ):
+                    return (
+                        "risk_blocked:"
+                        f"{evaluation['rejection_reason']}"
+                    )
                 if evaluation.get("rejection_reason") == "one_lot_exceeds_trade_risk_cap":
                     cap = float(evaluation["risk_cap_rupees"])
                     return (
@@ -6921,6 +8301,18 @@ class KiteTradingBot:
                     self.config.get("strong_option_milestone_window_minutes", 10)
                 ),
             )
+            if (
+                self._options_enabled()
+                and "_" in symbol
+                and self._paper_change_enabled("capital_based_risk_v2")
+            ):
+                sizing_evaluation = getattr(
+                    self, "_pending_entry_evaluations", {}
+                ).get(symbol, {})
+                if sizing_evaluation.get("risk_amount") is not None:
+                    self.intraday_manager.active_positions[symbol][
+                        "capital_based_risk_amount"
+                    ] = float(sizing_evaluation["risk_amount"])
             self.intraday_manager.record_trade_open(symbol, "SELL")
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
@@ -6977,6 +8369,23 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            if self._options_enabled() and "_" in symbol:
+                entry_evaluation = getattr(
+                    self, "_pending_entry_evaluations", {}
+                ).get(symbol, {})
+                alert.update(
+                    {
+                        key: entry_evaluation[key]
+                        for key in OPTION_ENTRY_RISK_FIELDS
+                        if key in entry_evaluation
+                    }
+                )
+                alert["paper_change_flags"] = self._active_paper_change_flags()
+                alert["paper_change_attributions"] = (
+                    ["capital_based_risk_v2"]
+                    if self._paper_change_enabled("capital_based_risk_v2")
+                    else []
+                )
             if staged_option_targets:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
@@ -7108,6 +8517,11 @@ class KiteTradingBot:
                 current_time=now,
                 outcome="no_signal",
             )
+        stop_journal = getattr(self, "stop_reentry_journal", None)
+        if stop_journal is not None:
+            stop_journal.end_session(now)
+            stop_journal.flush(timeout=1.0)
+        self._stop_event_check_state = {}
         self._write_daily_summary_if_due()
         self._run_weekly_report_if_due(now)
         return True
