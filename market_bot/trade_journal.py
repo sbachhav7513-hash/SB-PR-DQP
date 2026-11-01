@@ -173,7 +173,8 @@ class PaperTradingRecorder:
     ]
     DECISION_COLUMNS = [
         "timestamp", "config_hash", "git_sha", "git_dirty",
-        "ticker", "contract_id", "signal", "outcome", "score", "reasons",
+        "ticker", "contract_id", "strike", "expiry", "lot_size",
+        "underlying_price_at_selection", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
