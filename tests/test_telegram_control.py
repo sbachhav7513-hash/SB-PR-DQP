@@ -215,6 +215,38 @@ def test_commands_are_processed_without_waiting_for_a_market_tick():
     assert reply.startswith("Commands:")
 
 
+def test_read_only_commands_are_processed_without_market_ticks(tmp_path):
+    bot, trade_id, _, _ = _trade_bot(tmp_path)
+    bot.intraday_manager.contract_specs = {}
+    bot.intraday_manager.MULTIPLIERS = {}
+    for update_id, text in enumerate(
+        (f"/exit {trade_id}", "/help", "/status"),
+        start=10,
+    ):
+        bot.telegram_command_queue.put(
+            TelegramCommand(
+                chat_id="101",
+                user_id="101",
+                text=text,
+                update_id=update_id,
+                message_timestamp=time.time(),
+            )
+        )
+
+    bot._process_telegram_commands(read_only_only=True)
+
+    replies = [
+        bot.telegram_reply_queue.get_nowait(),
+        bot.telegram_reply_queue.get_nowait(),
+    ]
+    assert [reply[0] for reply in replies] == ["101", "101"]
+    assert replies[0][1].startswith("Commands:")
+    assert replies[1][1].startswith("State:")
+    queued = bot.telegram_command_queue.get_nowait()
+    assert queued.text == f"/exit {trade_id}"
+    assert bot.trade_journal.read_trades()[0]["status"] == "open"
+
+
 def test_telegram_trade_ids_are_persisted_and_increment_across_journal_reload(tmp_path):
     journal_path = tmp_path / "trades.jsonl"
     first_journal = TradeJournal(str(journal_path))
