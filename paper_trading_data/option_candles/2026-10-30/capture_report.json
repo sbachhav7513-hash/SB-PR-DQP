@@ -1,0 +1,15 @@
+{
+  "candle_gaps_per_contract": {},
+  "contracts_captured": [],
+  "contracts_captured_count": 0,
+  "contracts_skipped": [],
+  "contracts_skipped_count": 0,
+  "date": "2026-10-30",
+  "dropped_rows": 0,
+  "match_rate": 1.0,
+  "signals": 0,
+  "signals_with_60_minutes_forward_candles": 0,
+  "signals_with_resolved_contract_id": 0,
+  "subscription_start_delays": [],
+  "tick_gaps_over_30_seconds_per_contract": {}
+}
