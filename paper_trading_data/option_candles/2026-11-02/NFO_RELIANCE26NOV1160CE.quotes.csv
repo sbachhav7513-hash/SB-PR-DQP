@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-02T15:30:16+05:30,NFO:RELIANCE26NOV1160CE,RELIANCE,CE,1160.0,2026-11-23,117.0,117.1,117.8,2026-11-02T15:17:40+05:30,756.599435,d88104127db78425dd1b9477ac9f2c76cc942a02c039c312ae0c4295528e4651,1dc6afae45d621ac6592a00869fd64bd46540e59,True
