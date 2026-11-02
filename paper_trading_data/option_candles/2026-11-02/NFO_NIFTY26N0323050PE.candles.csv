@@ -1,0 +1,2 @@
+contract_id,underlying,leg,strike,expiry,candle_start_time,open,high,low,close,volume,oi,tick_count,last_tick_time,bid,ask,config_hash,git_sha,capture_all_evaluated_contracts,low_tick,gap
+NFO:NIFTY26N0323050PE,NIFTY,PE,23050.0,2026-11-03,2026-11-02T15:30:00+05:30,,,,,0,,0,,,,d88104127db78425dd1b9477ac9f2c76cc942a02c039c312ae0c4295528e4651,1dc6afae45d621ac6592a00869fd64bd46540e59,True,False,True

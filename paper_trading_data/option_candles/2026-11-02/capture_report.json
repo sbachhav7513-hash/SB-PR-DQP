@@ -1,0 +1,32 @@
+{
+  "candle_gaps_per_contract": {
+    "NFO:BANKNIFTY26NOV54700CE": 1,
+    "NFO:BANKNIFTY26NOV54700PE": 1,
+    "NFO:HDFCBANK26NOV690CE": 1,
+    "NFO:HDFCBANK26NOV690PE": 1,
+    "NFO:ICICIBANK26NOV1400CE": 1,
+    "NFO:ICICIBANK26NOV1400PE": 1,
+    "NFO:INFY26NOV1180CE": 1,
+    "NFO:INFY26NOV1180PE": 1,
+    "NFO:NIFTY26N0323050CE": 1,
+    "NFO:NIFTY26N0323050PE": 1,
+    "NFO:RELIANCE26NOV1160CE": 1,
+    "NFO:RELIANCE26NOV1160PE": 1,
+    "NFO:SBIN26NOV960CE": 1,
+    "NFO:SBIN26NOV960PE": 1,
+    "NFO:TCS26NOV2500CE": 1,
+    "NFO:TCS26NOV2500PE": 1
+  },
+  "contracts_captured": [],
+  "contracts_captured_count": 0,
+  "contracts_skipped": [],
+  "contracts_skipped_count": 0,
+  "date": "2026-11-02",
+  "dropped_rows": 0,
+  "match_rate": 1.0,
+  "signals": 0,
+  "signals_with_60_minutes_forward_candles": 0,
+  "signals_with_resolved_contract_id": 0,
+  "subscription_start_delays": [],
+  "tick_gaps_over_30_seconds_per_contract": {}
+}
