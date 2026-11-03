@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
-from .trade_journal import PaperTradingRecorder, normalize_decision_outcome
+from .trade_journal import (
+    PaperTradingRecorder,
+    normalize_decision_outcome,
+    read_decisions,
+)
 from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
 
 
@@ -194,6 +198,23 @@ def _recent_parquet_records(
     columns: List[str],
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
+    if filename == "decisions.parquet":
+        for day_dir in sorted(root.glob("*/*/day_*")):
+            if not day_dir.is_dir():
+                continue
+            try:
+                frame = read_decisions(day_dir)
+                if columns:
+                    frame = frame.reindex(columns=columns)
+                records.extend(
+                    frame.astype(object)
+                    .where(frame.notna(), None)
+                    .to_dict(orient="records")
+                )
+            except Exception:
+                logger.exception("Could not read paper decision journal %s", day_dir)
+        return _recent_records(records, days)
+
     for path in sorted(root.glob(f"*/*/day_*/{filename}")):
         try:
             rows = PaperTradingRecorder._read_parquet(path, columns=columns)
@@ -213,6 +234,12 @@ def _recent_parquet_records(
                         row[field] = [value] if value else []
             records.append(row)
 
+    return _recent_records(records, days)
+
+
+def _recent_records(
+    records: List[Dict[str, Any]], days: int
+) -> List[Dict[str, Any]]:
     valid_records: List[tuple[datetime, Dict[str, Any]]] = []
     for record in records:
         try:

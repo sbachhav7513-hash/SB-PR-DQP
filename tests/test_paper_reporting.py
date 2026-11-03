@@ -3,9 +3,13 @@ from datetime import timezone
 import json
 
 import pandas as pd
-from fastparquet import ParquetFile
 
-from market_bot.trade_journal import DecisionJournal, PaperTradingRecorder, TradeJournal
+from market_bot.trade_journal import (
+    DecisionJournal,
+    PaperTradingRecorder,
+    TradeJournal,
+    read_decisions,
+)
 from market_bot.weekly_report import (
     build_weekly_report,
     write_daily_review,
@@ -31,6 +35,7 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
         "signal": "BUY",
     })
     decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "HOLD"})
+    assert decisions.flush_decisions()
     trades.log_trade({
         "timestamp": timestamp,
         "ticker": "NIFTY",
@@ -63,15 +68,15 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
     assert rows[0]["exit_price"] == "101"
     assert rows[0]["trading_symbol"] == "NIFTY26SEP25000CE"
     assert rows[0]["contract_id"] == "NFO:NIFTY26SEP25000CE"
-    assert (day_dir / "decisions.parquet").exists()
-    decision_file = ParquetFile(day_dir / "decisions.parquet")
-    assert decision_file.to_pandas()["signal"].tolist() == ["BUY", "HOLD"]
-    assert decision_file.to_pandas()["config_hash"].tolist() == ["abc123", "abc123"]
-    assert decision_file.to_pandas()["contract_id"].tolist() == [
+    assert (day_dir / "decisions").is_dir()
+    decision_frame = read_decisions(day_dir)
+    assert decision_frame["signal"].tolist() == ["BUY", "HOLD"]
+    assert decision_frame["config_hash"].tolist() == ["abc123", "abc123"]
+    assert decision_frame["contract_id"].tolist() == [
         "NFO:NIFTY26SEP25000CE",
         "",
     ]
-    assert decision_file.row_groups
+    assert list((day_dir / "decisions").glob("decisions_*.parquet"))
 
 
 def test_weekly_analyzer_separates_strategy_variant_metrics():
@@ -371,10 +376,11 @@ def test_decision_parquet_schema_migrates_when_new_session_fields_are_added(tmp_
         "strategy_variant": "trend_shadow_paper",
     })
 
-    rows = PaperTradingRecorder._read_parquet(path)
+    rows = read_decisions(path.parent).to_dict(orient="records")
     assert len(rows) == 2
-    assert rows[1]["outcome_detail"] == "accuracy_filter_rejected:volatility"
-    assert rows[1]["market_session"] == "regular_session"
-    assert rows[1]["trend_shadow_signal"] == "SELL"
-    assert rows[1]["trend_shadow_rejection_reason"] == "confirmation"
-    assert rows[1]["strategy_variant"] == "trend_shadow_paper"
+    new_row = next(row for row in rows if row["signal"] == "BUY")
+    assert new_row["outcome_detail"] == "accuracy_filter_rejected:volatility"
+    assert new_row["market_session"] == "regular_session"
+    assert new_row["trend_shadow_signal"] == "SELL"
+    assert new_row["trend_shadow_rejection_reason"] == "confirmation"
+    assert new_row["strategy_variant"] == "trend_shadow_paper"
