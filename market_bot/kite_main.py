@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -5500,6 +5501,7 @@ class KiteTradingBot:
                 "last_flush_ms": 0.0,
                 "drops": 0,
                 "compaction_status": "disabled",
+                "writer_cpu_ms": 0.0,
             }
         )
         with getattr(self, "_tick_duration_lock", threading.Lock()):
@@ -5523,6 +5525,7 @@ class KiteTradingBot:
         logger.info(
             "Decision persistence telemetry: queue_depth=%d last_flush_rows=%d "
             "last_flush_ms=%.3f total_drops=%d compaction=%s "
+            "writer_cpu_ms_total=%.3f "
             "tick_callback_p95_ms=%.3f tick_callback_max_ms=%.3f "
             "rejected_seen_ids=%d shadow_latest=%d option_capture_sizes=%s",
             decision["queue_depth"],
@@ -5530,6 +5533,7 @@ class KiteTradingBot:
             decision["last_flush_ms"],
             decision["drops"],
             decision["compaction_status"],
+            decision["writer_cpu_ms"],
             p95,
             maximum,
             len(rejected),
@@ -8651,8 +8655,15 @@ class KiteTradingBot:
         except Exception:
             logger.exception("Daily paper-trading summary failed; trading remains active")
 
+    @staticmethod
+    def _handle_sigterm(signum: int, frame: object) -> None:
+        logger.info("Received SIGTERM; shutting down bot gracefully")
+        raise KeyboardInterrupt
+
     def run(self) -> None:
         """Start the bot and stream market data with intraday monitoring."""
+        manage_sigterm = threading.current_thread() is threading.main_thread()
+        previous_sigterm_handler = None
         logger.info(
             "Starting Kite Trading Bot - %s MODE",
             self.config.get("trading_mode", "intraday_futures").upper(),
@@ -8667,6 +8678,9 @@ class KiteTradingBot:
         logger.info(f"Risk per trade: {self.intraday_manager.risk_per_trade_pct}%")
 
         try:
+            if manage_sigterm:
+                previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, self._handle_sigterm)
             if self.telegram_listener:
                 self.telegram_listener.start()
             if self.news_monitor:
@@ -8736,20 +8750,28 @@ class KiteTradingBot:
                 logger.error("Failed to connect to Kite WebSocket")
                 sys.exit(1)
         except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
+            logger.info("Bot stop requested")
         finally:
-            if self.telegram_listener:
-                self.telegram_listener.stop()
-            if self.news_monitor:
-                self.news_monitor.stop()
-            self.kite_stream.stop()
-            decision_journal = getattr(self, "decision_journal", None)
-            if decision_journal is not None and not decision_journal.close(timeout=20.0):
-                logger.error("Decision journal shutdown flush did not complete")
-            writer = getattr(self, "option_capture_writer", None)
-            if writer is not None:
-                writer.close()
-            logger.info("Bot shutdown complete")
+            if manage_sigterm:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            try:
+                if self.telegram_listener:
+                    self.telegram_listener.stop()
+                if self.news_monitor:
+                    self.news_monitor.stop()
+                self.kite_stream.stop()
+                decision_journal = getattr(self, "decision_journal", None)
+                if decision_journal is not None and not decision_journal.close(
+                    timeout=20.0
+                ):
+                    logger.error("Decision journal shutdown flush did not complete")
+                writer = getattr(self, "option_capture_writer", None)
+                if writer is not None:
+                    writer.close()
+                logger.info("Bot shutdown complete")
+            finally:
+                if manage_sigterm:
+                    signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
     def _run_weekly_report_if_due(self, now: datetime) -> None:
         """Publish one protected weekly report after Friday's close check."""
