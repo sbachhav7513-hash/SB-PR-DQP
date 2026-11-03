@@ -1,11 +1,13 @@
 import json
 import logging
 import queue
+import signal
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -18,7 +20,7 @@ from market_bot.trade_journal import (
 )
 from market_bot.kite_main import KiteTradingBot
 from merge_decisions_to_legacy import merge_day_to_legacy
-from market_bot.weekly_report import _date_records
+from market_bot.weekly_report import _date_records, _recent_parquet_records
 
 
 def _row(index, timestamp=None):
@@ -128,7 +130,57 @@ def test_tick_callback_duration_is_measured_and_reported(caplog):
     with caplog.at_level(logging.INFO):
         bot._log_persistence_telemetry()
     assert "tick_callback_p95_ms=" in caplog.text
+    assert "writer_cpu_ms_total=" in caplog.text
     assert "option_capture_sizes=" in caplog.text
+
+
+def test_sigterm_runs_graceful_journal_shutdown(monkeypatch, caplog):
+    bot = KiteTradingBot.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {},
+        "bar_interval_seconds": 60,
+    }
+    bot.paper_trading_enabled = True
+    bot.intraday_manager = SimpleNamespace(
+        AUTO_EXIT_TIME="15:15",
+        risk_per_trade_pct=1.0,
+    )
+    bot.telegram_listener = None
+    bot.news_monitor = None
+    bot.kite_stream = SimpleNamespace(
+        start=lambda: None,
+        wait_for_connection=lambda timeout: True,
+        stop=lambda: None,
+    )
+    bot.telegram_notifier = SimpleNamespace(send_heartbeat=lambda **kwargs: None)
+    bot.simulation_mode = True
+    bot._last_telemetry_at = time.monotonic()
+    bot._process_telegram_commands = lambda **kwargs: None
+    bot._closed = []
+    bot.decision_journal = SimpleNamespace(
+        close=lambda timeout: bot._closed.append(timeout) or True
+    )
+    bot.option_capture_writer = None
+    handlers = {}
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    def capture_signal(signum, handler):
+        handlers[signum] = handler
+        return original_handler
+
+    def request_stop(seconds):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    monkeypatch.setattr("market_bot.kite_main.signal.signal", capture_signal)
+    monkeypatch.setattr("market_bot.kite_main.time.sleep", request_stop)
+
+    with caplog.at_level(logging.INFO):
+        bot.run()
+
+    assert bot._closed == [20.0]
+    assert "Received SIGTERM; shutting down bot gracefully" in caplog.text
+    assert handlers[signal.SIGTERM] is original_handler
 
 
 def test_incomplete_temp_file_is_not_readable_before_atomic_rename(
@@ -282,6 +334,73 @@ def test_reader_aligns_legacy_and_part_schemas_with_nulls(tmp_path):
     assert str(aligned["event_at"].dtype) == "datetime64[ns, UTC]"
 
 
+def test_reader_projects_available_columns_without_dropping_rows(tmp_path):
+    day_dir = tmp_path / "legacy"
+    day_dir.mkdir()
+    pd.DataFrame([
+        {
+            "timestamp": "2026-11-03T09:30:00+05:30",
+            "ticker": "NIFTY",
+            "signal": "BUY",
+            "unused": "first",
+        },
+        {
+            "timestamp": "2026-11-03T09:31:00+05:30",
+            "ticker": "NIFTY",
+            "signal": "HOLD",
+            "unused": "second",
+        },
+    ]).to_parquet(day_dir / "decisions.parquet", engine="fastparquet")
+
+    projected = read_decisions(
+        day_dir, columns=["timestamp", "signal", "missing_column"]
+    )
+
+    assert list(projected.columns) == [
+        "timestamp",
+        "signal",
+        "missing_column",
+    ]
+    assert projected[["timestamp", "signal"]].to_dict("records") == [
+        {
+            "timestamp": "2026-11-03T09:30:00+05:30",
+            "signal": "BUY",
+        },
+        {
+            "timestamp": "2026-11-03T09:31:00+05:30",
+            "signal": "HOLD",
+        },
+    ]
+    assert projected["missing_column"].isna().all()
+
+
+def test_weekly_report_requests_projected_decision_columns(tmp_path):
+    root = tmp_path / "paper"
+    day_dir = root / "2026-11" / "week_45" / "day_03"
+    day_dir.mkdir(parents=True)
+    pd.DataFrame([
+        {
+            "timestamp": "2026-11-03T09:30:00+05:30",
+            "ticker": "NIFTY",
+            "signal": "BUY",
+            "unused": "not requested",
+        }
+    ]).to_parquet(day_dir / "decisions.parquet", engine="fastparquet")
+
+    records = _recent_parquet_records(
+        root,
+        "decisions.parquet",
+        30,
+        ["timestamp", "ticker", "signal"],
+    )
+
+    assert records == [{
+        "timestamp": "2026-11-03T09:30:00+05:30",
+        "ticker": "NIFTY",
+        "signal": "BUY",
+    }]
+
+
 def test_hour_boundary_splits_decision_parts_by_ist_hour(tmp_path):
     recorder = PaperTradingRecorder(str(tmp_path / "paper"))
     recorder._flush_decision_batch([
@@ -294,6 +413,28 @@ def test_hour_boundary_splits_decision_parts_by_ist_hour(tmp_path):
     assert any(path.name.startswith("decisions_14_") for path in parts)
     assert any(path.name.startswith("decisions_15_") for path in parts)
     assert len(read_decisions(day_dir)) == 2
+
+
+def test_reader_handles_midday_restart_with_legacy_and_parts(tmp_path):
+    root = tmp_path / "paper"
+    timestamp = "2026-11-03T10:00:00+05:30"
+    recorder, day_dir, parts_dir = _parts_dir(root, timestamp)
+    legacy_row = _row(1, timestamp)
+    recorder._write_parquet(
+        day_dir / "decisions.parquet",
+        [legacy_row],
+        recorder.DECISION_COLUMNS,
+    )
+    recorder._write_decision_part(day_dir, 10, [legacy_row])
+
+    restarted_recorder = PaperTradingRecorder(str(root))
+    restarted_recorder._flush_decision_batch([_row(2, timestamp)])
+
+    rows = read_decisions(day_dir)
+
+    assert len(rows) == 2
+    assert set(rows["ticker"]) == {"TEST_1", "TEST_2"}
+    assert len(list(parts_dir.glob("decisions_10_*.parquet"))) == 2
 
 
 def test_end_of_day_reader_flushes_pending_decisions_before_reading(tmp_path):

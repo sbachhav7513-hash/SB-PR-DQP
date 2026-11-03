@@ -203,9 +203,7 @@ def _recent_parquet_records(
             if not day_dir.is_dir():
                 continue
             try:
-                frame = read_decisions(day_dir)
-                if columns:
-                    frame = frame.reindex(columns=columns)
+                frame = read_decisions(day_dir, columns=columns)
                 records.extend(
                     frame.astype(object)
                     .where(frame.notna(), None)

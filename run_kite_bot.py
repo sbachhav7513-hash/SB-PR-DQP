@@ -154,7 +154,12 @@ def main() -> None:
         authorize(args.config, open_browser=args.open_browser)
         return
 
-    if not has_valid_access_token(args.config):
+    sim_mode = os.getenv("BOT_SIM_MODE", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not sim_mode and not has_valid_access_token(args.config):
         if args.no_auth or not sys.stdin.isatty():
             raise RuntimeError(
                 "KITE_ACCESS_TOKEN is missing or expired. Refresh it interactively "

@@ -17,7 +17,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from fastparquet import write as write_parquet
+from fastparquet import ParquetFile, write as write_parquet
 
 from .change_tracking import get_git_identity
 
@@ -731,8 +731,10 @@ def _deduplicate_decision_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[~comparable.duplicated(keep="first")].reset_index(drop=True)
 
 
-def read_decisions(day_path: str | Path) -> pd.DataFrame:
-    """Read legacy, compacted, and part-file decisions from one day directory."""
+def read_decisions(
+    day_path: str | Path, columns: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """Read day decisions; single-source projections retain source row multiplicity."""
     directory = Path(day_path)
     with DECISION_WRITERS_LOCK:
         writers = list(DECISION_WRITERS)
@@ -753,6 +755,32 @@ def read_decisions(day_path: str | Path) -> pd.DataFrame:
         sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
     if not sources:
         return pd.DataFrame()
+
+    if columns and len(sources) == 1:
+        source = sources[0]
+        available_columns = ParquetFile(source).columns
+        selected_columns = [
+            column for column in columns if column in available_columns
+        ]
+        if selected_columns:
+            result = pd.read_parquet(
+                source, engine="fastparquet", columns=selected_columns
+            ).reindex(columns=columns)
+            if "timestamp" in result.columns and not result.empty:
+                order = pd.to_datetime(
+                    result["timestamp"], utc=True, errors="coerce"
+                )
+                result = (
+                    result.assign(_decision_sort_timestamp=order)
+                    .sort_values(
+                        "_decision_sort_timestamp",
+                        kind="mergesort",
+                        na_position="last",
+                    )
+                    .drop(columns="_decision_sort_timestamp")
+                    .reset_index(drop=True)
+                )
+            return result
 
     frames = [
         pd.read_parquet(source, engine="fastparquet")
@@ -778,6 +806,8 @@ def read_decisions(day_path: str | Path) -> pd.DataFrame:
             .drop(columns="_decision_sort_timestamp")
             .reset_index(drop=True)
         )
+    if columns:
+        result = result.reindex(columns=columns)
     return result
 
 
