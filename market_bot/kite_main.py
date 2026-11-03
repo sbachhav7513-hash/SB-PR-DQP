@@ -8,9 +8,11 @@ import logging
 import math
 import os
 import queue
+import signal
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
@@ -1634,6 +1636,9 @@ class KiteTradingBot:
 
     def __init__(self, config_path: str = "kite_config.json") -> None:
         self._telegram_execution_lock = threading.RLock()
+        self._tick_duration_lock = threading.Lock()
+        self._tick_duration_samples = deque(maxlen=10000)
+        self._last_telemetry_at = time.monotonic()
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
         self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
@@ -5466,12 +5471,79 @@ class KiteTradingBot:
             positions[str(trade["trade_id"])].update(fields)
 
     def _on_tick(self, tick: Tick) -> None:
-        lock = getattr(self, "_telegram_execution_lock", None)
-        if lock is None:
-            self._on_tick_serialized(tick)
-            return
-        with lock:
-            self._on_tick_serialized(tick)
+        started = time.perf_counter()
+        try:
+            lock = getattr(self, "_telegram_execution_lock", None)
+            if lock is None:
+                self._on_tick_serialized(tick)
+                return
+            with lock:
+                self._on_tick_serialized(tick)
+        finally:
+            samples = getattr(self, "_tick_duration_samples", None)
+            lock = getattr(self, "_tick_duration_lock", None)
+            if samples is not None:
+                if lock is None:
+                    samples.append(time.perf_counter() - started)
+                else:
+                    with lock:
+                        samples.append(time.perf_counter() - started)
+
+    def _log_persistence_telemetry(self) -> None:
+        journal = getattr(self, "decision_journal", None)
+        recorder = getattr(journal, "paper_recorder", None)
+        decision = (
+            recorder.decision_telemetry()
+            if recorder is not None
+            else {
+                "queue_depth": 0,
+                "last_flush_rows": 0,
+                "last_flush_ms": 0.0,
+                "drops": 0,
+                "compaction_status": "disabled",
+                "writer_cpu_ms": 0.0,
+            }
+        )
+        with getattr(self, "_tick_duration_lock", threading.Lock()):
+            samples = list(getattr(self, "_tick_duration_samples", ()))
+        if samples:
+            ordered = sorted(samples)
+            p95 = ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)] * 1000
+            maximum = ordered[-1] * 1000
+        else:
+            p95 = maximum = 0.0
+        rejected = getattr(
+            getattr(journal, "rejected_signal_journal", None), "seen_ids", set()
+        )
+        shadow = getattr(self, "paper_shadow_exit_journal", None)
+        option_writer = getattr(self, "option_capture_writer", None)
+        option_sizes = (
+            option_writer.memory_state_sizes() if option_writer is not None else {}
+        )
+        signal_ids = getattr(self, "_option_capture_signal_ids", {})
+        option_sizes["bot_signal_id_map"] = len(signal_ids)
+        logger.info(
+            "Decision persistence telemetry: queue_depth=%d last_flush_rows=%d "
+            "last_flush_ms=%.3f total_drops=%d compaction=%s "
+            "writer_cpu_ms_total=%.3f "
+            "tick_callback_p95_ms=%.3f tick_callback_max_ms=%.3f "
+            "rejected_seen_ids=%d shadow_latest=%d option_capture_sizes=%s",
+            decision["queue_depth"],
+            decision["last_flush_rows"],
+            decision["last_flush_ms"],
+            decision["drops"],
+            decision["compaction_status"],
+            decision["writer_cpu_ms"],
+            p95,
+            maximum,
+            len(rejected),
+            len(getattr(shadow, "latest", {})),
+            json.dumps(option_sizes, sort_keys=True),
+        )
+        samples_collection = getattr(self, "_tick_duration_samples", None)
+        if samples_collection is not None:
+            with getattr(self, "_tick_duration_lock", threading.Lock()):
+                samples_collection.clear()
 
     def _on_tick_serialized(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
@@ -8517,14 +8589,31 @@ class KiteTradingBot:
                 current_time=now,
                 outcome="no_signal",
             )
-        stop_journal = getattr(self, "stop_reentry_journal", None)
-        if stop_journal is not None:
-            stop_journal.end_session(now)
-            stop_journal.flush(timeout=1.0)
-        self._stop_event_check_state = {}
-        self._write_daily_summary_if_due()
-        self._run_weekly_report_if_due(now)
-        return True
+        stream = getattr(self, "kite_stream", None)
+        if stream is not None:
+            stream.stop()
+        tick_lock = getattr(self, "_telegram_execution_lock", None)
+        if tick_lock is not None:
+            tick_lock.acquire()
+        try:
+            stop_journal = getattr(self, "stop_reentry_journal", None)
+            if stop_journal is not None:
+                stop_journal.end_session(now)
+                stop_journal.flush(timeout=1.0)
+            decision_journal = getattr(self, "decision_journal", None)
+            if decision_journal is not None and not decision_journal.flush_decisions(
+                timeout=20.0, compact_final_hour=True
+            ):
+                raise TimeoutError(
+                    "Decision journal did not flush before end-of-day reporting"
+                )
+            self._stop_event_check_state = {}
+            self._write_daily_summary_if_due()
+            self._run_weekly_report_if_due(now)
+            return True
+        finally:
+            if tick_lock is not None:
+                tick_lock.release()
 
     def _write_daily_summary_if_due(self) -> None:
         """Publish one daily paper-trading summary after the session closes."""
@@ -8532,6 +8621,11 @@ class KiteTradingBot:
         if self.last_daily_summary_date == today:
             return
         try:
+            decision_journal = getattr(self, "decision_journal", None)
+            if decision_journal is not None and not decision_journal.flush_decisions(
+                timeout=20.0, compact_final_hour=True
+            ):
+                raise TimeoutError("Decision journal did not flush before daily reporting")
             today_trades = [
                 trade
                 for trade in self.trade_journal.read_trades()
@@ -8561,8 +8655,15 @@ class KiteTradingBot:
         except Exception:
             logger.exception("Daily paper-trading summary failed; trading remains active")
 
+    @staticmethod
+    def _handle_sigterm(signum: int, frame: object) -> None:
+        logger.info("Received SIGTERM; shutting down bot gracefully")
+        raise KeyboardInterrupt
+
     def run(self) -> None:
         """Start the bot and stream market data with intraday monitoring."""
+        manage_sigterm = threading.current_thread() is threading.main_thread()
+        previous_sigterm_handler = None
         logger.info(
             "Starting Kite Trading Bot - %s MODE",
             self.config.get("trading_mode", "intraday_futures").upper(),
@@ -8577,6 +8678,9 @@ class KiteTradingBot:
         logger.info(f"Risk per trade: {self.intraday_manager.risk_per_trade_pct}%")
 
         try:
+            if manage_sigterm:
+                previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, self._handle_sigterm)
             if self.telegram_listener:
                 self.telegram_listener.start()
             if self.news_monitor:
@@ -8607,6 +8711,9 @@ class KiteTradingBot:
                 while True:
                     now_monotonic = time.monotonic()
                     self._process_telegram_commands(read_only_only=True)
+                    if now_monotonic - self._last_telemetry_at >= 60.0:
+                        self._log_persistence_telemetry()
+                        self._last_telemetry_at = now_monotonic
                     if now_monotonic - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
                         self.telegram_notifier.send_heartbeat(
                             instruments=len(self.config["instrument_tokens"]),
@@ -8643,17 +8750,28 @@ class KiteTradingBot:
                 logger.error("Failed to connect to Kite WebSocket")
                 sys.exit(1)
         except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
+            logger.info("Bot stop requested")
         finally:
-            if self.telegram_listener:
-                self.telegram_listener.stop()
-            if self.news_monitor:
-                self.news_monitor.stop()
-            self.kite_stream.stop()
-            writer = getattr(self, "option_capture_writer", None)
-            if writer is not None:
-                writer.close()
-            logger.info("Bot shutdown complete")
+            if manage_sigterm:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            try:
+                if self.telegram_listener:
+                    self.telegram_listener.stop()
+                if self.news_monitor:
+                    self.news_monitor.stop()
+                self.kite_stream.stop()
+                decision_journal = getattr(self, "decision_journal", None)
+                if decision_journal is not None and not decision_journal.close(
+                    timeout=20.0
+                ):
+                    logger.error("Decision journal shutdown flush did not complete")
+                writer = getattr(self, "option_capture_writer", None)
+                if writer is not None:
+                    writer.close()
+                logger.info("Bot shutdown complete")
+            finally:
+                if manage_sigterm:
+                    signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
     def _run_weekly_report_if_due(self, now: datetime) -> None:
         """Publish one protected weekly report after Friday's close check."""

@@ -5,7 +5,7 @@ import subprocess
 import pandas as pd
 
 from market_bot.change_tracking import log_startup_identity
-from market_bot.trade_journal import DecisionJournal, TradeJournal
+from market_bot.trade_journal import DecisionJournal, TradeJournal, read_decisions
 import hash_report
 
 
@@ -72,6 +72,7 @@ def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
 
     trade_journal.log_trade({"ticker": "NIFTY", "action": "BUY"})
     decision_journal.log_decision({"ticker": "NIFTY", "signal": "BUY"})
+    assert decision_journal.flush_decisions()
 
     trade = json.loads(trades_path.read_text(encoding="utf-8"))
     decision = json.loads(decisions_path.read_text(encoding="utf-8"))
@@ -80,9 +81,10 @@ def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
         assert record["git_sha"] == "commit"
         assert record["git_dirty"] is True
     parquet_trade = next(paper_data_dir.glob("**/trades.parquet"))
-    parquet_decision = next(paper_data_dir.glob("**/decisions.parquet"))
-    for path in (parquet_trade, parquet_decision):
-        record = pd.read_parquet(path).iloc[0]
+    parquet_decisions_dir = next(paper_data_dir.glob("**/day_*/decisions"))
+    trade_record = pd.read_parquet(parquet_trade).iloc[0]
+    decision_record = read_decisions(parquet_decisions_dir.parent).iloc[0]
+    for record in (trade_record, decision_record):
         assert record["config_hash"] == "config"
         assert record["git_sha"] == "commit"
         assert record["git_dirty"] == "True"

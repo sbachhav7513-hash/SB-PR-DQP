@@ -4,6 +4,12 @@ import json
 import logging
 import math
 import os
+import queue
+import re
+import threading
+import time as time_module
+import weakref
+from copy import deepcopy
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,6 +24,11 @@ from .change_tracking import get_git_identity
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+DECISION_QUEUE_SIZE = 50_000
+DECISION_BATCH_SIZE = 200
+DECISION_FLUSH_INTERVAL_SECONDS = 60.0
+DECISION_WRITERS: weakref.WeakSet = weakref.WeakSet()
+DECISION_WRITERS_LOCK = threading.Lock()
 
 
 def normalize_decision_outcome(value: Any) -> str:
@@ -259,6 +270,19 @@ class PaperTradingRecorder:
         self.config_hash = config_hash
         self.git_sha = git_sha
         self.git_dirty = git_dirty
+        self._decision_queue: queue.Queue = queue.Queue(maxsize=DECISION_QUEUE_SIZE)
+        self._decision_worker: Optional[threading.Thread] = None
+        self._decision_lock = threading.Lock()
+        self._decision_closed = False
+        self._decision_shutdown_complete = False
+        self._decision_drops = 0
+        self._decision_last_flush_rows = 0
+        self._decision_last_flush_ms = 0.0
+        self._decision_compaction_status = "idle"
+        self._decision_failure_count = 0
+        self._decision_writer_cpu_ms = 0.0
+        self._decision_touched_days: set[Path] = set()
+        self._decision_sequences: Dict[tuple[Path, int], int] = {}
 
     def _stamp_identity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = dict(payload)
@@ -322,19 +346,360 @@ class PaperTradingRecorder:
         write_parquet(temporary, frame, compression="SNAPPY")
         temporary.replace(path)
 
-    def _append(self, path: Path, record: Dict[str, Any], columns: List[str]) -> None:
-        if path.exists() and ParquetFile(path).columns != columns:
-            existing_rows = self._read_parquet(path)
-            self._write_parquet(path, existing_rows, columns)
-        frame = pd.DataFrame([{
-            column: self._parquet_value(record.get(column)) for column in columns
-        }], columns=columns)
-        write_parquet(path, frame, compression="SNAPPY", append=path.exists())
-
     def record_decision(self, payload: Dict[str, Any]) -> None:
         entry = self._stamp_identity(payload)
-        timestamp = entry.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        self._append(self._day_path(timestamp, "decisions.parquet"), entry, self.DECISION_COLUMNS)
+        for key, value in entry.items():
+            if isinstance(value, (dict, list, set, tuple, bytearray)):
+                entry[key] = deepcopy(value)
+        with self._decision_lock:
+            if self._decision_closed:
+                self._decision_drops += 1
+                self._log_decision_drop()
+                return
+            if self._decision_worker is None or not self._decision_worker.is_alive():
+                if self._decision_worker is not None:
+                    self._decision_failure_count += 1
+                    logger.error("Restarting stopped paper decision writer")
+                self._decision_worker = threading.Thread(
+                    target=self._run_decision_writer,
+                    name="paper-decision-writer",
+                    daemon=True,
+                )
+                self._decision_worker.start()
+                with DECISION_WRITERS_LOCK:
+                    DECISION_WRITERS.add(self)
+            try:
+                self._decision_queue.put_nowait(("decision", entry))
+            except queue.Full:
+                self._decision_drops += 1
+                self._log_decision_drop()
+
+    def _log_decision_drop(self) -> None:
+        if self._decision_drops == 1 or self._decision_drops % 100 == 0:
+            logger.warning(
+                "Paper decision queue full or closed; dropped rows=%d",
+                self._decision_drops,
+            )
+
+    def decision_telemetry(self) -> Dict[str, Any]:
+        return {
+            "queue_depth": self._decision_queue.qsize(),
+            "last_flush_rows": self._decision_last_flush_rows,
+            "last_flush_ms": round(self._decision_last_flush_ms, 3),
+            "drops": self._decision_drops,
+            "compaction_status": self._decision_compaction_status,
+            "write_failures": self._decision_failure_count,
+            "writer_cpu_ms": round(self._decision_writer_cpu_ms, 3),
+        }
+
+    def _write_decision_part(self, day_dir: Path, hour: int, rows: List[Dict[str, Any]]) -> None:
+        parts_dir = day_dir / "decisions"
+        parts_dir.mkdir(parents=True, exist_ok=True)
+        sequence_key = (parts_dir, hour)
+        sequence = self._decision_sequences.get(sequence_key)
+        if sequence is None:
+            existing = [
+                int(match.group(1))
+                for path in parts_dir.glob(f"decisions_{hour:02d}_*_*")
+                if (match := re.fullmatch(
+                    rf"decisions_{hour:02d}_\d{{6}}_(\d+)\.parquet",
+                    path.name,
+                ))
+            ]
+            sequence = max(existing, default=0)
+        sequence += 1
+        self._decision_sequences[sequence_key] = sequence
+        stamp = datetime.now(IST).strftime("%H%M%S")
+        destination = parts_dir / (
+            f"decisions_{hour:02d}_{stamp}_{sequence:06d}.parquet"
+        )
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        nested_columns = {
+            column
+            for row in rows
+            for column, value in row.items()
+            if isinstance(value, (dict, list, tuple))
+        }
+        frame = pd.DataFrame(rows, columns=self.DECISION_COLUMNS).fillna("")
+        for column in self.DECISION_COLUMNS:
+            if column in nested_columns:
+                frame[column] = frame[column].map(self._parquet_value)
+            else:
+                frame[column] = frame[column].astype(str)
+        write_parquet(temporary, frame, compression="SNAPPY")
+        os.replace(temporary, destination)
+        self._decision_touched_days.add(day_dir)
+
+    def _flush_decision_batch(self, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        started = time_module.perf_counter()
+        cpu_started = time_module.thread_time()
+        grouped: Dict[tuple[Path, int], List[Dict[str, Any]]] = {}
+        for row in rows:
+            timestamp = row.get(
+                "timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds")
+            )
+            event_time = self._event_datetime(timestamp)
+            day_dir = self._day_path(timestamp, "decisions.parquet").parent
+            grouped.setdefault((day_dir, event_time.hour), []).append(row)
+        written = 0
+        try:
+            for (day_dir, hour), group in grouped.items():
+                self._write_decision_part(day_dir, hour, group)
+                written += len(group)
+        except (OSError, TypeError, ValueError):
+            self._decision_failure_count += 1
+            logger.exception("Could not flush paper decision batch")
+        finally:
+            self._decision_last_flush_rows = written
+            self._decision_last_flush_ms = (
+                time_module.perf_counter() - started
+            ) * 1000
+            self._decision_writer_cpu_ms += (
+                time_module.thread_time() - cpu_started
+            ) * 1000
+
+    def _compact_decision_hour(self, day_dir: Path, hour: int) -> bool:
+        parts_dir = day_dir / "decisions"
+        destination = parts_dir / f"decisions_{hour:02d}.parquet"
+        parts = sorted(parts_dir.glob(f"decisions_{hour:02d}_*.parquet"))
+        if not parts:
+            return destination.exists()
+        frames = []
+        if destination.exists():
+            frames.append(pd.read_parquet(destination, engine="fastparquet"))
+        frames.extend(pd.read_parquet(path, engine="fastparquet") for path in parts)
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        combined = _deduplicate_decision_frame(combined)
+        expected_rows = len(combined)
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        try:
+            if not destination.exists() or len(pd.read_parquet(
+                destination, engine="fastparquet"
+            )) != expected_rows:
+                write_parquet(temporary, combined, compression="SNAPPY")
+                written_rows = len(pd.read_parquet(temporary, engine="fastparquet"))
+                if written_rows != expected_rows:
+                    raise IOError(
+                        f"Compaction row-count mismatch for {destination}: "
+                        f"{written_rows} != {expected_rows}"
+                    )
+                os.replace(temporary, destination)
+            compacted_rows = len(pd.read_parquet(destination, engine="fastparquet"))
+            if compacted_rows != expected_rows:
+                raise IOError(
+                    f"Compaction row-count mismatch for {destination}: "
+                    f"{compacted_rows} != {expected_rows}"
+                )
+            for path in parts:
+                path.unlink(missing_ok=True)
+            return True
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _compact_ended_decision_hours(self, final: bool = False) -> None:
+        cpu_started = time_module.thread_time()
+        now = datetime.now(IST)
+        try:
+            for day_dir in tuple(self._decision_touched_days):
+                parts_dir = day_dir / "decisions"
+                hours = {
+                    int(match.group(1))
+                    for path in parts_dir.glob("decisions_*.parquet")
+                    if (match := re.fullmatch(
+                        r"decisions_(\d{2})_\d{6}_\d+\.parquet", path.name
+                    ))
+                }
+                for hour in sorted(hours):
+                    try:
+                        day = datetime.strptime(
+                            f"{day_dir.parent.parent.name}-"
+                            f"{day_dir.name.removeprefix('day_')}",
+                            "%Y-%m-%d",
+                        ).date()
+                    except ValueError:
+                        logger.error(
+                            "Could not determine date for decision directory %s",
+                            day_dir,
+                        )
+                        continue
+                    if final or day < now.date() or (
+                        day == now.date() and hour < now.hour
+                    ):
+                        self._decision_compaction_status = (
+                            f"compacting {day_dir.name} {hour:02d}"
+                        )
+                        self._compact_decision_hour(day_dir, hour)
+        finally:
+            self._decision_compaction_status = "idle"
+            self._decision_writer_cpu_ms += (
+                time_module.thread_time() - cpu_started
+            ) * 1000
+
+    def _run_decision_writer(self) -> None:
+        pending: List[Dict[str, Any]] = []
+        last_flush = time_module.monotonic()
+        while True:
+            timeout = max(
+                0.05,
+                DECISION_FLUSH_INTERVAL_SECONDS
+                - (time_module.monotonic() - last_flush),
+            )
+            try:
+                kind, payload = self._decision_queue.get(timeout=timeout)
+            except queue.Empty:
+                if pending:
+                    self._flush_decision_batch(pending)
+                    pending = []
+                    last_flush = time_module.monotonic()
+                try:
+                    self._compact_ended_decision_hours()
+                except (OSError, TypeError, ValueError):
+                    self._decision_failure_count += 1
+                    logger.exception("Could not compact ended paper decision hours")
+                except Exception:
+                    self._decision_failure_count += 1
+                    logger.exception("Unexpected paper decision compaction failure")
+                continue
+            try:
+                if kind == "decision":
+                    pending.append(payload)
+                    while self._decision_closed or (
+                        len(pending) < DECISION_BATCH_SIZE
+                    ):
+                        try:
+                            next_kind, next_payload = self._decision_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        try:
+                            if next_kind == "decision":
+                                pending.append(next_payload)
+                            else:
+                                self._decision_queue.put_nowait((next_kind, next_payload))
+                                break
+                        finally:
+                            self._decision_queue.task_done()
+                    if len(pending) >= DECISION_BATCH_SIZE:
+                        self._flush_decision_batch(pending)
+                        pending = []
+                        last_flush = time_module.monotonic()
+                        self._compact_after_flush()
+                elif kind == "flush":
+                    completed, compact_final_hour = payload
+                    try:
+                        self._flush_decision_batch(pending)
+                        pending = []
+                        last_flush = time_module.monotonic()
+                        if compact_final_hour:
+                            self._compact_ended_decision_hours(final=True)
+                        else:
+                            self._compact_after_flush()
+                    except (OSError, TypeError, ValueError):
+                        self._decision_failure_count += 1
+                        logger.exception("Could not flush or compact paper decisions")
+                    except Exception:
+                        self._decision_failure_count += 1
+                        logger.exception("Unexpected error flushing paper decisions")
+                    finally:
+                        completed.set()
+                elif kind == "close":
+                    try:
+                        self._flush_decision_batch(pending)
+                        pending = []
+                        self._decision_compaction_status = "compacting final hours"
+                        self._compact_ended_decision_hours(final=True)
+                    except (OSError, TypeError, ValueError):
+                        self._decision_failure_count += 1
+                        logger.exception("Could not flush or compact final paper decisions")
+                    except Exception:
+                        self._decision_failure_count += 1
+                        logger.exception("Unexpected final paper decision writer error")
+                    finally:
+                        self._decision_compaction_status = "idle"
+                        payload.set()
+                    logger.info(
+                        "Paper decision writer shutdown complete; queue_depth=%d drops=%d",
+                        self._decision_queue.qsize(),
+                        self._decision_drops,
+                    )
+                    return
+            except Exception:
+                self._decision_failure_count += 1
+                logger.exception("Paper decision writer failed processing a queue item")
+            finally:
+                self._decision_queue.task_done()
+
+    def _compact_after_flush(self) -> None:
+        try:
+            self._compact_ended_decision_hours()
+        except (OSError, TypeError, ValueError):
+            self._decision_failure_count += 1
+            logger.exception("Could not compact ended paper decision hours")
+
+    def flush_decisions(
+        self, timeout: float = 20.0, *, compact_final_hour: bool = False
+    ) -> bool:
+        worker = self._decision_worker
+        if worker is None:
+            return True
+        if not worker.is_alive():
+            if self._decision_shutdown_complete:
+                return self._decision_failure_count == 0
+            logger.error("Paper decision writer stopped before a flush completed")
+            return False
+        if self._decision_closed:
+            return False
+        completed = threading.Event()
+        started = time_module.monotonic()
+        try:
+            self._decision_queue.put(
+                ("flush", (completed, compact_final_hour)),
+                timeout=max(timeout, 0.0),
+            )
+        except queue.Full:
+            logger.error("Could not queue decision flush before timeout")
+            return False
+        remaining = max(0.0, timeout - (time_module.monotonic() - started))
+        if not completed.wait(remaining):
+            logger.error("Paper decision flush did not complete within %.1f seconds", timeout)
+            return False
+        return self._decision_failure_count == 0
+
+    def close_decisions(self, timeout: float = 20.0) -> bool:
+        with self._decision_lock:
+            if self._decision_closed:
+                worker = self._decision_worker
+                return (
+                    (worker is None or not worker.is_alive())
+                    and self._decision_shutdown_complete
+                    and self._decision_failure_count == 0
+                )
+            self._decision_closed = True
+            worker = self._decision_worker
+        if worker is None:
+            self._decision_shutdown_complete = True
+            return True
+        if not worker.is_alive():
+            logger.error("Paper decision writer stopped before shutdown")
+            return False
+        completed = threading.Event()
+        started = time_module.monotonic()
+        try:
+            self._decision_queue.put(("close", completed), timeout=timeout)
+        except queue.Full:
+            logger.error("Could not queue paper decision shutdown before timeout")
+            return False
+        remaining = max(0.0, timeout - (time_module.monotonic() - started))
+        finished = completed.wait(remaining)
+        worker.join(max(0.0, timeout - (time_module.monotonic() - started)))
+        if not finished or worker.is_alive():
+            logger.error("Paper decision writer did not stop within %.1f seconds", timeout)
+            return False
+        self._decision_shutdown_complete = True
+        with DECISION_WRITERS_LOCK:
+            DECISION_WRITERS.discard(self)
+        return self._decision_failure_count == 0
 
     def record_trade(self, payload: Dict[str, Any]) -> None:
         entry = self._stamp_identity(payload)
@@ -357,6 +722,93 @@ class PaperTradingRecorder:
                 for column in self.TRADE_COLUMNS
             })
         self._write_parquet(path, rows, self.TRADE_COLUMNS)
+
+
+def _deduplicate_decision_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    comparable = frame.astype("string").fillna("\0")
+    return frame.loc[~comparable.duplicated(keep="first")].reset_index(drop=True)
+
+
+def read_decisions(
+    day_path: str | Path, columns: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """Read day decisions; single-source projections retain source row multiplicity."""
+    directory = Path(day_path)
+    with DECISION_WRITERS_LOCK:
+        writers = list(DECISION_WRITERS)
+    for writer in writers:
+        try:
+            directory.resolve().relative_to(writer.root.resolve())
+        except ValueError:
+            continue
+        if not writer.flush_decisions(timeout=20.0):
+            raise TimeoutError(f"Timed out flushing decisions before reading {directory}")
+
+    sources = []
+    legacy = directory / "decisions.parquet"
+    if legacy.is_file():
+        sources.append(legacy)
+    parts_dir = directory / "decisions"
+    if parts_dir.is_dir():
+        sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
+    if not sources:
+        return pd.DataFrame()
+
+    if columns and len(sources) == 1:
+        source = sources[0]
+        available_columns = ParquetFile(source).columns
+        selected_columns = [
+            column for column in columns if column in available_columns
+        ]
+        if selected_columns:
+            result = pd.read_parquet(
+                source, engine="fastparquet", columns=selected_columns
+            ).reindex(columns=columns)
+            if "timestamp" in result.columns and not result.empty:
+                order = pd.to_datetime(
+                    result["timestamp"], utc=True, errors="coerce"
+                )
+                result = (
+                    result.assign(_decision_sort_timestamp=order)
+                    .sort_values(
+                        "_decision_sort_timestamp",
+                        kind="mergesort",
+                        na_position="last",
+                    )
+                    .drop(columns="_decision_sort_timestamp")
+                    .reset_index(drop=True)
+                )
+            return result
+
+    frames = [
+        pd.read_parquet(source, engine="fastparquet")
+        for source in sources
+    ]
+    if len(frames) == 1:
+        result = frames[0]
+    else:
+        columns = list(dict.fromkeys(
+            column for frame in frames for column in frame.columns
+        ))
+        aligned = [
+            frame.reindex(columns=columns).astype(object)
+            for frame in frames
+        ]
+        result = pd.concat(aligned, ignore_index=True, sort=False).convert_dtypes()
+    result = _deduplicate_decision_frame(result)
+    if "timestamp" in result.columns and not result.empty:
+        order = pd.to_datetime(result["timestamp"], utc=True, errors="coerce")
+        result = (
+            result.assign(_decision_sort_timestamp=order)
+            .sort_values("_decision_sort_timestamp", kind="mergesort", na_position="last")
+            .drop(columns="_decision_sort_timestamp")
+            .reset_index(drop=True)
+        )
+    if columns:
+        result = result.reindex(columns=columns)
+    return result
 
 
 class RejectedSignalJournal:
@@ -787,6 +1239,20 @@ class DecisionJournal:
             if paper_data_dir
             else None
         )
+
+    def flush_decisions(
+        self, timeout: float = 20.0, *, compact_final_hour: bool = False
+    ) -> bool:
+        if self.paper_recorder is None:
+            return True
+        return self.paper_recorder.flush_decisions(
+            timeout, compact_final_hour=compact_final_hour
+        )
+
+    def close(self, timeout: float = 20.0) -> bool:
+        if self.paper_recorder is None:
+            return True
+        return self.paper_recorder.close_decisions(timeout)
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)

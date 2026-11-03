@@ -7,6 +7,8 @@ from typing import Dict, Iterable
 
 import pandas as pd
 
+from market_bot.trade_journal import read_decisions
+
 
 BACKFILL_DATES = (date(2026, 10, 29), date(2026, 10, 30))
 
@@ -46,9 +48,12 @@ def backfill_day(
     source_path = directory / "decisions.parquet"
     output_path = directory / "decisions.contract-id-backfilled.parquet"
     trades_path = directory / "trades.parquet"
-    if not source_path.exists():
+    if not source_path.exists() and not (directory / "decisions").is_dir():
         raise FileNotFoundError(f"Decision journal not found: {source_path}")
-    decisions = pd.read_parquet(source_path, engine="fastparquet")
+    decisions = read_decisions(directory)
+    if decisions.empty:
+        raise FileNotFoundError(f"Decision journal contains no rows: {directory}")
+    decisions = decisions.astype(object).where(decisions.notna(), None)
     mapping_frames = [decisions]
     if trades_path.exists():
         mapping_frames.append(pd.read_parquet(trades_path, engine="fastparquet"))

@@ -11,7 +11,11 @@ from pathlib import Path
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
-from market_bot.trade_journal import PaperTradingRecorder, normalize_decision_outcome
+from market_bot.trade_journal import (
+    PaperTradingRecorder,
+    normalize_decision_outcome,
+    read_decisions,
+)
 
 
 IST = ZoneInfo('Asia/Kolkata')
@@ -30,6 +34,32 @@ def parse_timestamp(value):
 
 def load_paper_records(parquet_name, days, columns):
     paper_root = Path('paper_trading_data')
+    if parquet_name == 'decisions.parquet':
+        day_dirs = sorted(paper_root.glob('*/*/day_*'))
+        day_dirs = [
+            path for path in day_dirs
+            if (path / 'decisions.parquet').is_file()
+            or list((path / 'decisions').glob('decisions_*.parquet'))
+        ]
+        if not day_dirs:
+            return None
+
+        valid_records = []
+        for day_dir in day_dirs:
+            frame = read_decisions(day_dir)
+            if columns:
+                frame = frame.reindex(columns=columns)
+            records = (
+                frame.astype(object)
+                .where(frame.notna(), None)
+                .to_dict(orient='records')
+            )
+            for record in records:
+                timestamp = parse_timestamp(record.get('timestamp', ''))
+                if timestamp is not None:
+                    valid_records.append((timestamp, record))
+        return _recent_paper_records(valid_records, days)
+
     paths = sorted(paper_root.glob(f'*/*/day_*/{parquet_name}'))
     if not paths:
         return None
@@ -49,6 +79,10 @@ def load_paper_records(parquet_name, days, columns):
             if timestamp is not None:
                 valid_records.append((timestamp, record))
 
+    return _recent_paper_records(valid_records, days)
+
+
+def _recent_paper_records(valid_records, days):
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     recent = [record for timestamp, record in valid_records if timestamp > cutoff_date]
     if recent:

@@ -150,6 +150,24 @@ class OptionCaptureWriter:
         with self._stats_lock:
             return self._dropped_rows
 
+    def memory_state_sizes(self) -> Dict[str, int]:
+        sizes: Dict[str, int] = {}
+        for name, value in self._thread_state.items():
+            if isinstance(value, dict):
+                values = list(value.values())
+                sizes[f"{name}_keys"] = len(values)
+                sizes[f"{name}_items"] = sum(
+                    len(item)
+                    for item in values
+                    if isinstance(item, (dict, set, list, tuple, deque))
+                )
+            elif isinstance(value, set):
+                sizes[f"{name}_items"] = len(value)
+        attempts = list(self._signal_attempts.values())
+        sizes["signal_attempts_days"] = len(attempts)
+        sizes["signal_attempts_items"] = sum(len(day) for day in attempts)
+        return sizes
+
     def start(self) -> None:
         if not self.enabled or self._worker is not None:
             return
