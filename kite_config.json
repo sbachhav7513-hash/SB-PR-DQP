@@ -124,6 +124,7 @@
   "option_quote_max_age_seconds": 60,
   "stale_quote_candle_fallback": true,
   "option_candle_momentum": true,
+  "option_premium_rising_momentum_v2": true,
   "index_persistence_pass": true,
   "premium_floor_v2": true,
   "banknifty_caps_v2": true,
