@@ -83,6 +83,7 @@ def test_capture_configuration_does_not_change_strategy_hash():
     [
         "stale_quote_candle_fallback",
         "option_candle_momentum",
+        "option_premium_rising_momentum_v2",
         "index_persistence_pass",
         "premium_floor_v2",
         "banknifty_caps_v2",

@@ -102,6 +102,7 @@ SIGNAL_WEAKEN_CONFIRMATIONS = 2
 PAPER_CHANGE_KEYS = (
     "stale_quote_candle_fallback",
     "option_candle_momentum",
+    "option_premium_rising_momentum_v2",
     "index_persistence_pass",
     "premium_floor_v2",
     "banknifty_caps_v2",
@@ -388,6 +389,8 @@ class KiteTradingBot:
         signal: str,
         candle: Dict,
         minimum_body_ratio: float = OPTION_MIN_CANDLE_BODY_RATIO,
+        *,
+        rising_option_premium: bool = False,
     ) -> bool:
         """Require a directional candle body to meet the configured range ratio."""
         try:
@@ -410,13 +413,14 @@ class KiteTradingBot:
         ):
             return False
 
-        direction_matches = (
-            candle_close > candle_open
-            if signal == "BUY"
-            else candle_close < candle_open
-            if signal == "SELL"
-            else False
-        )
+        if signal == "BUY" or (
+            signal == "SELL" and rising_option_premium
+        ):
+            direction_matches = candle_close > candle_open
+        elif signal == "SELL":
+            direction_matches = candle_close < candle_open
+        else:
+            direction_matches = False
         body_ratio = abs(candle_close - candle_open) / candle_range
         return (
             math.isfinite(minimum_body_ratio)
@@ -1658,6 +1662,7 @@ class KiteTradingBot:
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
         self.config.setdefault("capture_all_evaluated_contracts", True)
+        self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.simulation_mode and self.mode == "LIVE":
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
@@ -3717,6 +3722,11 @@ class KiteTradingBot:
             pending["signal"],
             momentum_candle,
             minimum_body_ratio=minimum_body_ratio,
+            rising_option_premium=(
+                self._paper_change_enabled("option_premium_rising_momentum_v2")
+                and self._paper_change_enabled("option_candle_momentum")
+                and option_candle is not None
+            ),
         )
         candle_range = (
             float(momentum_candle["high"]) - float(momentum_candle["low"])
@@ -4643,6 +4653,13 @@ class KiteTradingBot:
                 market_score.signal,
                 momentum_candle,
                 minimum_body_ratio=minimum_body_ratio,
+                rising_option_premium=(
+                    option_momentum_enabled
+                    and self._paper_change_enabled(
+                        "option_premium_rising_momentum_v2"
+                    )
+                    and symbol.endswith(("_CE", "_PE"))
+                ),
             )
             legacy_momentum_passed = (
                 self._has_option_candle_momentum(

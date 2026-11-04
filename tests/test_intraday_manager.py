@@ -2771,7 +2771,8 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         option_bars[-1].to_dict(),
     )
     assert bot._has_option_candle_momentum.call_args_list[0].kwargs == {
-        "minimum_body_ratio": 0.2
+        "minimum_body_ratio": 0.2,
+        "rising_option_premium": True,
     }
     bot._mark_support_reversal_attempt.assert_called_once()
     bot._handle_buy_signal.assert_called_once_with(
@@ -2806,6 +2807,49 @@ def test_option_candle_momentum_uses_requested_directional_body_ratio():
     assert KiteTradingBot._has_option_candle_momentum(
         "BUY", {"open": 100, "high": 100, "low": 100, "close": 100}
     ) is False
+
+
+def test_option_premium_rising_momentum_v2_keeps_body_thresholds():
+    rising_option_candle = {
+        "open": 100,
+        "high": 110,
+        "low": 90,
+        "close": 104,
+    }
+    falling_option_candle = {
+        "open": 104,
+        "high": 110,
+        "low": 90,
+        "close": 100,
+    }
+
+    assert KiteTradingBot._has_option_candle_momentum(
+        "SELL",
+        rising_option_candle,
+        minimum_body_ratio=0.20,
+        rising_option_premium=True,
+    )
+    assert not KiteTradingBot._has_option_candle_momentum(
+        "SELL",
+        falling_option_candle,
+        minimum_body_ratio=0.20,
+        rising_option_premium=True,
+    )
+    assert KiteTradingBot._has_option_candle_momentum(
+        "BUY", rising_option_candle, minimum_body_ratio=0.20
+    )
+    assert not KiteTradingBot._has_option_candle_momentum(
+        "BUY", falling_option_candle, minimum_body_ratio=0.20
+    )
+    assert KiteTradingBot._has_option_candle_momentum(
+        "SELL", falling_option_candle, minimum_body_ratio=0.20
+    )
+    assert not KiteTradingBot._has_option_candle_momentum(
+        "SELL",
+        rising_option_candle,
+        minimum_body_ratio=0.21,
+        rising_option_premium=True,
+    )
 
 
 def test_option_candle_threshold_is_shared_across_modes():
