@@ -92,6 +92,24 @@ def test_stale_quote_fallback_rejects_old_candle_and_is_paper_only():
     assert reason.startswith("option quote stale")
 
 
+def test_option_premium_rising_momentum_flag_is_paper_only():
+    now = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
+    paper_bot = _option_bot(now)
+    paper_bot.config["option_premium_rising_momentum_v2"] = True
+    assert paper_bot._paper_change_enabled("option_premium_rising_momentum_v2")
+
+    paper_bot.config["option_premium_rising_momentum_v2"] = False
+    assert not paper_bot._paper_change_enabled(
+        "option_premium_rising_momentum_v2"
+    )
+
+    live_bot = _option_bot(now, mode="LIVE")
+    live_bot.config["option_premium_rising_momentum_v2"] = True
+    assert not live_bot._paper_change_enabled(
+        "option_premium_rising_momentum_v2"
+    )
+
+
 def test_option_momentum_measurement_uses_last_completed_option_candle():
     now = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
     bot = _option_bot(now)

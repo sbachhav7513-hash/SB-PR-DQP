@@ -19,6 +19,7 @@ IST = ZoneInfo("Asia/Kolkata")
 CHANGE_KEYS = (
     "stale_quote_candle_fallback",
     "option_candle_momentum",
+    "option_premium_rising_momentum_v2",
     "index_persistence_pass",
     "premium_floor_v2",
     "banknifty_caps_v2",

@@ -201,6 +201,12 @@ def iter_decisions(days=7):
     except OSError as e:
         print(f"⚠️  Could not read decision_log.jsonl: {e}")
 
+def _decision_outcome_category(decision):
+    outcome = normalize_decision_outcome(decision.get('outcome', 'UNKNOWN'))
+    detail = normalize_decision_outcome(decision.get('outcome_detail'))
+    return 'trade_opened' if detail == 'trade_opened' else outcome
+
+
 def analyze_decisions(decisions):
     """Summarize what the strategy evaluated, rejected, and attempted."""
     signal_counts = defaultdict(int)
@@ -214,7 +220,7 @@ def analyze_decisions(decisions):
         signal = decision.get('signal', 'UNKNOWN')
         symbol = decision.get('ticker', 'UNKNOWN')
         signal_counts[signal] += 1
-        outcome_counts[normalize_decision_outcome(decision.get('outcome', 'UNKNOWN'))] += 1
+        outcome_counts[_decision_outcome_category(decision)] += 1
         session = decision.get('market_session')
         if not session:
             timestamp = parse_timestamp(decision.get('timestamp', ''))
@@ -277,7 +283,7 @@ def load_filter_stats(days=7, decisions=None):
             has_decisions = True
             outcome = str(decision.get('outcome', ''))
             detail = str(decision.get('outcome_detail') or outcome)
-            category = normalize_decision_outcome(outcome)
+            category = _decision_outcome_category(decision)
             if category == 'trade_opened':
                 stats['approved_entries'] += 1
             elif category == 'accuracy_filter' or detail.startswith('accuracy_filter_rejected:'):

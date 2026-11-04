@@ -9,6 +9,7 @@ import pytest
 from market_bot.bar_builder import Bar
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import KiteTradingBot
+from market_bot.telegram_notifier import TelegramNotifier
 from market_bot.trade_journal import DecisionJournal
 
 
@@ -402,7 +403,7 @@ def test_confirmation_exception_cancels_without_retry(tmp_path):
     assert event["cancellation_sub_reason"] == "revalidation_exception"
 
 
-def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price():
+def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price(monkeypatch):
     now = datetime.now(IST)
     bot = object.__new__(KiteTradingBot)
     bot.config = {
@@ -432,13 +433,14 @@ def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price():
     bot.intraday_manager = manager
     bot.trade_journal = Mock()
     bot.trade_journal.get_open_trade.return_value = None
-    bot.telegram_notifier = Mock()
-    bot.telegram_notifier.format_trade.side_effect = lambda **fields: {
-        "ticker": "NIFTY_CE",
-        "entry": fields["entry"],
-        "stop_loss": fields["stop_loss"],
-        "take_profit": fields["take_profit"],
-    }
+    bot.trade_journal.log_trade.return_value = 7
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {"ok": True}
+    post = Mock(return_value=response)
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    bot.telegram_notifier = notifier
     bot.kite_stream = SimpleNamespace(contract_symbols={})
     bot._entry_cutoff_reason = Mock(return_value=None)
     bot._live_entry_allowed = Mock(return_value=True)
@@ -453,36 +455,43 @@ def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price():
     bot._entry_risk_cap = Mock(return_value=1000.0)
     bot._persist_current_live_risk_state = Mock()
 
-    result = bot._handle_buy_signal(
-        "NIFTY_CE",
-        18.25,
-        80,
-        confirmed_entry_metadata={
-            "entry_mode": "confirmed",
-            "route": "scored",
-            "signal_time": now.isoformat(),
-            "signal_close": 100.0,
-            "confirmation_candle_time": (now + timedelta(minutes=1)).isoformat(),
-            "confirmation_close": 101.0,
-            "confirmation_result": "passed",
-        },
-        force_ask_fill=True,
-    )
+    try:
+        result = bot._handle_buy_signal(
+            "NIFTY_CE",
+            18.25,
+            80,
+            confirmed_entry_metadata={
+                "entry_mode": "confirmed",
+                "route": "scored",
+                "signal_time": now.isoformat(),
+                "signal_close": 100.0,
+                "confirmation_candle_time": (now + timedelta(minutes=1)).isoformat(),
+                "confirmation_close": 101.0,
+                "confirmation_result": "passed",
+            },
+            force_ask_fill=True,
+        )
 
-    assert result == "trade_opened"
-    position = manager.active_positions["NIFTY_CE"]
-    assert position["entry_price"] == 18.30
-    assert position["stop_loss"] == pytest.approx(18.30 * 0.9)
-    assert position["take_profit"] == pytest.approx(18.30 * 1.2)
-    bot._calculate_option_quantity.assert_called_once_with(
-        "NIFTY_CE", 18.25, 0.10
-    )
-    trade = bot.trade_journal.log_trade.call_args.args[0]
-    assert trade["entry_mode"] == "confirmed"
-    assert trade["route"] == "scored"
-    assert trade["entry"] == 18.30
-    assert trade["entry_quote_bid"] == 18.20
-    assert trade["entry_quote_ask"] == 18.30
+        assert result == "trade_opened"
+        assert notifier.wait_until_idle()
+        post.assert_called_once()
+        assert "&lt;price&gt;" in post.call_args.kwargs["data"]["text"]
+        assert notifier.telemetry()["sent"] == 1
+        position = manager.active_positions["NIFTY_CE"]
+        assert position["entry_price"] == 18.30
+        assert position["stop_loss"] == pytest.approx(18.30 * 0.9)
+        assert position["take_profit"] == pytest.approx(18.30 * 1.2)
+        bot._calculate_option_quantity.assert_called_once_with(
+            "NIFTY_CE", 18.25, 0.10
+        )
+        trade = bot.trade_journal.log_trade.call_args.args[0]
+        assert trade["entry_mode"] == "confirmed"
+        assert trade["route"] == "scored"
+        assert trade["entry"] == 18.30
+        assert trade["entry_quote_bid"] == 18.20
+        assert trade["entry_quote_ask"] == 18.30
+    finally:
+        notifier.close(timeout=1)
 
 
 def test_prior_process_pending_signal_is_logged_as_expired_on_restart(tmp_path):

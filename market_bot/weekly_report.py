@@ -477,7 +477,7 @@ def _load_filter_stats(
         for entry in decisions:
             outcome = str(entry.get("outcome", ""))
             detail = str(entry.get("outcome_detail") or outcome)
-            category = normalize_decision_outcome(outcome)
+            category = _decision_outcome_category(entry)
             if category == "trade_opened":
                 stats["approved_entries"] += 1
             elif category == "accuracy_filter" or detail.startswith("accuracy_filter_rejected:"):
@@ -511,6 +511,12 @@ def _load_filter_stats(
             stats[entry["filter"]] += 1
     stats["total_rejected"] = sum(stats[name] for name in names)
     return stats
+
+
+def _decision_outcome_category(decision: Dict[str, Any]) -> str:
+    outcome = normalize_decision_outcome(decision.get("outcome"))
+    detail = normalize_decision_outcome(decision.get("outcome_detail"))
+    return "trade_opened" if detail == "trade_opened" else outcome
 
 
 def build_weekly_report(
@@ -582,7 +588,7 @@ def build_weekly_report(
     outcome_counts: Dict[str, int] = defaultdict(int)
     market_session_counts: Dict[str, int] = defaultdict(int)
     for decision in decisions:
-        outcome_counts[normalize_decision_outcome(decision.get("outcome", "UNKNOWN"))] += 1
+        outcome_counts[_decision_outcome_category(decision)] += 1
         session = decision.get("market_session")
         if not session:
             event_time = PaperTradingRecorder._event_datetime(decision.get("timestamp", ""))
@@ -1047,7 +1053,7 @@ def write_daily_review(
     for decision in decisions:
         signal = str(decision.get("signal") or "UNKNOWN")
         signal_counts[signal] += 1
-        outcome = normalize_decision_outcome(decision.get("outcome"))
+        outcome = _decision_outcome_category(decision)
         outcome_counts[outcome] += 1
         detail = str(decision.get("outcome_detail") or decision.get("outcome") or "")
         if detail == "OPTION_LEG_SKIPPED":
@@ -1270,6 +1276,7 @@ def write_daily_review(
             "",
             "## Review Notes",
             "- Reason counts are mentions; one decision may contain multiple reasons.",
+            "- Stop-loss exits count only records whose reason is exactly STOP_LOSS; TRAILING_STOP is excluded even when exit_reason_category is SL.",
             (
                 "- With no closed trades, assess candidate and rejection flow only; do not infer strategy accuracy."
                 if not trades
