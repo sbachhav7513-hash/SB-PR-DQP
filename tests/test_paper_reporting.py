@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from datetime import timezone
 import json
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -184,6 +185,41 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert "Sideways regime: 1" in content
     assert "Directional candidates: 1" in content
     assert "confirmation: 1" in content
+
+
+def test_trade_opened_outcome_detail_counts_as_an_entry_in_all_reports(tmp_path):
+    from analyze_weekly import analyze_decisions, load_filter_stats
+
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds")
+    decision = {
+        "timestamp": timestamp,
+        "ticker": "NIFTY_CE",
+        "signal": "BUY",
+        "outcome": "operational",
+        "outcome_detail": "trade_opened",
+    }
+    (tmp_path / "decision_log.jsonl").write_text(
+        json.dumps(decision) + "\n", encoding="utf-8"
+    )
+
+    daily_review = write_daily_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        target_date=datetime.fromisoformat(timestamp).date(),
+    )
+    weekly_report = build_weekly_report(str(tmp_path))
+    analysis = analyze_decisions([decision])
+
+    assert "- Entries opened: 1" in daily_review.read_text(encoding="utf-8")
+    assert "reason is exactly STOP_LOSS" in daily_review.read_text(encoding="utf-8")
+    assert weekly_report["outcome_counts"]["trade_opened"] == 1
+    assert "operational" not in weekly_report["outcome_counts"]
+    assert weekly_report["filter_stats"]["approved_entries"] == 1
+    assert weekly_report["decision_reconciliation"]["approved_entries"] == 1
+    assert analysis["outcome_counts"]["trade_opened"] == 1
+    assert "operational" not in analysis["outcome_counts"]
+    assert analysis["decision_reconciliation"]["approved_entries"] == 1
+    assert load_filter_stats(decisions=[decision])["approved_entries"] == 1
 
 
 def test_weekly_report_groups_option_exit_strategies_separately(tmp_path):
