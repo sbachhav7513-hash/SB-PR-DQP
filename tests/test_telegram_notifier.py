@@ -1,6 +1,13 @@
+import queue
+import threading
+import time
 from unittest.mock import Mock
 
+import requests
+
+from market_bot.kite_main import KiteTradingBot
 from market_bot.telegram_notifier import TelegramNotifier
+from market_bot.telegram_control.listener import TelegramCommandListener
 
 
 def test_option_trade_message_includes_exact_trading_symbol():
@@ -166,11 +173,13 @@ def test_trade_alert_is_sent_to_existing_and_trade_chats(monkeypatch):
     )
 
     assert notifier.send_trade_alert({"message": "Trade opened"})
+    assert notifier.wait_until_idle()
 
     assert [call.kwargs["data"]["chat_id"] for call in post.call_args_list] == [
         "existing-chat",
         "trade-group",
     ]
+    notifier.close(timeout=1)
 
 
 def test_trade_alert_deduplicates_same_primary_and_trade_chat(monkeypatch):
@@ -185,8 +194,10 @@ def test_trade_alert_deduplicates_same_primary_and_trade_chat(monkeypatch):
     )
 
     assert notifier.send_trade_alert({"message": "Trade closed"})
+    assert notifier.wait_until_idle()
 
     post.assert_called_once()
+    notifier.close(timeout=1)
 
 
 def test_regular_status_message_stays_in_existing_chat(monkeypatch):
@@ -201,6 +212,178 @@ def test_regular_status_message_stays_in_existing_chat(monkeypatch):
     )
 
     assert notifier.send_message("Bot is online")
+    assert notifier.wait_until_idle()
 
     post.assert_called_once()
     assert post.call_args.kwargs["data"]["chat_id"] == "existing-chat"
+    notifier.close(timeout=1)
+
+
+def _telegram_response():
+    response = Mock()
+    response.json.return_value = {"ok": True}
+    return response
+
+
+def test_slow_send_does_not_delay_on_tick(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hanging_post(*_args, **_kwargs):
+        entered.set()
+        release.wait(60)
+        return _telegram_response()
+
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", hanging_post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    bot = KiteTradingBot.__new__(KiteTradingBot)
+    bot._telegram_execution_lock = threading.RLock()
+    bot._on_tick_serialized = lambda _tick: notifier.send_message("tick alert")
+
+    try:
+        started = time.perf_counter()
+        bot._on_tick(None)
+        assert time.perf_counter() - started < 0.1
+        assert entered.wait(1)
+    finally:
+        release.set()
+        notifier.close(timeout=1)
+
+
+def test_tick_message_is_queued_after_execution_lock_is_released(monkeypatch):
+    acquired_during_send = threading.Event()
+    lock = threading.RLock()
+
+    def post(*_args, **_kwargs):
+        if lock.acquire(blocking=False):
+            acquired_during_send.set()
+            lock.release()
+        return _telegram_response()
+
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    bot = KiteTradingBot.__new__(KiteTradingBot)
+    bot._telegram_execution_lock = lock
+    bot._on_tick_serialized = lambda _tick: notifier.send_message("tick alert")
+
+    bot._on_tick(None)
+
+    assert notifier.wait_until_idle()
+    assert acquired_during_send.is_set()
+    notifier.close(timeout=1)
+
+
+def test_send_retries_then_succeeds(monkeypatch):
+    post = Mock(side_effect=[requests.Timeout(), _telegram_response()])
+    delays = []
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    monkeypatch.setattr(
+        "market_bot.telegram_notifier.time.sleep", lambda seconds: delays.append(seconds)
+    )
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+
+    assert notifier.send_message("retry")
+    assert notifier.wait_until_idle()
+
+    assert post.call_count == 2
+    assert post.call_args.kwargs["timeout"] == 5
+    assert delays == [1]
+    assert notifier.telemetry()["sent"] == 1
+    assert notifier.telemetry()["failed"] == 0
+    assert notifier.telemetry()["last_success_time"] != "never"
+    notifier.close(timeout=1)
+
+
+def test_exhausted_retries_count_one_failed_message(monkeypatch, caplog):
+    post = Mock(side_effect=requests.Timeout())
+    delays = []
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    monkeypatch.setattr(
+        "market_bot.telegram_notifier.time.sleep", lambda seconds: delays.append(seconds)
+    )
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+
+    assert notifier.send_message("failure")
+    assert notifier.wait_until_idle()
+
+    assert post.call_count == 3
+    assert post.call_args.kwargs["timeout"] == 5
+    assert delays == [1, 3]
+    assert notifier.telemetry()["failed"] == 1
+    assert "Telegram delivery failed chat=chat attempts=3" in caplog.text
+    notifier.close(timeout=1)
+
+
+def test_queue_full_drops_heartbeat_before_regular_messages(monkeypatch):
+    monkeypatch.setattr("market_bot.telegram_notifier.TELEGRAM_QUEUE_SIZE", 3)
+    entered = threading.Event()
+    release = threading.Event()
+    delivered = []
+
+    def post(_url, *, data, **_kwargs):
+        if data["text"] == "first":
+            entered.set()
+            release.wait(2)
+        delivered.append(data["text"])
+        return _telegram_response()
+
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    notifier.send_message("first")
+    assert entered.wait(1)
+    notifier.send_heartbeat(1, 60)
+    notifier.send_message("second")
+    notifier.send_message("third")
+    notifier.send_message("fourth")
+
+    assert notifier.telemetry()["dropped"] == 1
+    release.set()
+    assert notifier.wait_until_idle()
+
+    assert delivered == ["first", "second", "third", "fourth"]
+    notifier.close(timeout=1)
+
+
+def test_command_reply_uses_the_shared_sender(monkeypatch):
+    post = Mock(return_value=_telegram_response())
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="primary")
+    listener = TelegramCommandListener(
+        token="token",
+        allowed_chat_ids=("chat",),
+        command_queue=queue.Queue(),
+        reply_queue=queue.Queue(),
+        enqueue_reply=notifier.enqueue_command_reply,
+        enqueue_callback_ack=notifier.enqueue_callback_ack,
+    )
+    listener._callback_ack_queue.put("callback-1")
+    listener._reply_queue.put(("chat", "Command completed"))
+
+    listener._send_replies()
+    assert notifier.wait_until_idle()
+
+    assert post.call_count == 2
+    assert post.call_args_list[0].args[0].endswith("/answerCallbackQuery")
+    assert post.call_args_list[0].kwargs["data"]["callback_query_id"] == "callback-1"
+    assert post.call_args_list[1].args[0].endswith("/sendMessage")
+    assert post.call_args_list[1].kwargs["data"]["chat_id"] == "chat"
+    assert post.call_args_list[1].kwargs["data"]["text"] == "Command completed"
+    notifier.close(timeout=1)
+
+
+def test_messages_remain_ordered_per_chat(monkeypatch):
+    delivered = []
+    post = Mock(
+        side_effect=lambda _url, *, data, **_kwargs: (
+            delivered.append(data["text"]) or _telegram_response()
+        )
+    )
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+
+    for text in ("one", "two", "three"):
+        notifier.send_message(text)
+    assert notifier.wait_until_idle()
+
+    assert delivered == ["one", "two", "three"]
+    notifier.close(timeout=1)

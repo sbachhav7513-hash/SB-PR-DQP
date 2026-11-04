@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_type, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
@@ -1879,6 +1879,9 @@ class KiteTradingBot:
         )
         self.last_weekly_report_date = None
         self.last_daily_summary_date = None
+        self._finalization_attempts = 0
+        self._next_finalization_attempt_at = 0.0
+        self._finalization_complete = False
         self._entries_paused = False
         self._risk_state_reconciled = not self.live_orders_enabled
         self._daily_shutdown_date = None
@@ -1952,6 +1955,8 @@ class KiteTradingBot:
                 command_queue=self.telegram_command_queue,
                 reply_queue=self.telegram_reply_queue,
                 on_failure=self.telegram_notifier.send_message,
+                enqueue_reply=self.telegram_notifier.enqueue_command_reply,
+                enqueue_callback_ack=self.telegram_notifier.enqueue_callback_ack,
             )
         elif self.config.get("telegram_token"):
             logger.warning(
@@ -5472,6 +5477,9 @@ class KiteTradingBot:
 
     def _on_tick(self, tick: Tick) -> None:
         started = time.perf_counter()
+        notifier = getattr(self, "telegram_notifier", None)
+        if notifier is not None and hasattr(notifier, "begin_defer"):
+            notifier.begin_defer()
         try:
             lock = getattr(self, "_telegram_execution_lock", None)
             if lock is None:
@@ -5480,6 +5488,8 @@ class KiteTradingBot:
             with lock:
                 self._on_tick_serialized(tick)
         finally:
+            if notifier is not None and hasattr(notifier, "end_defer"):
+                notifier.end_defer()
             samples = getattr(self, "_tick_duration_samples", None)
             lock = getattr(self, "_tick_duration_lock", None)
             if samples is not None:
@@ -5517,6 +5527,18 @@ class KiteTradingBot:
         )
         shadow = getattr(self, "paper_shadow_exit_journal", None)
         option_writer = getattr(self, "option_capture_writer", None)
+        telegram = getattr(self, "telegram_notifier", None)
+        telegram_stats = (
+            telegram.telemetry()
+            if telegram is not None and hasattr(telegram, "telemetry")
+            else {
+                "queue_depth": 0,
+                "sent": 0,
+                "failed": 0,
+                "dropped": 0,
+                "last_success_time": "never",
+            }
+        )
         option_sizes = (
             option_writer.memory_state_sizes() if option_writer is not None else {}
         )
@@ -5527,7 +5549,9 @@ class KiteTradingBot:
             "last_flush_ms=%.3f total_drops=%d compaction=%s "
             "writer_cpu_ms_total=%.3f "
             "tick_callback_p95_ms=%.3f tick_callback_max_ms=%.3f "
-            "rejected_seen_ids=%d shadow_latest=%d option_capture_sizes=%s",
+            "rejected_seen_ids=%d shadow_latest=%d option_capture_sizes=%s "
+            "telegram_queue_depth=%d telegram_sent=%d telegram_failed=%d "
+            "telegram_dropped=%d telegram_last_success=%s",
             decision["queue_depth"],
             decision["last_flush_rows"],
             decision["last_flush_ms"],
@@ -5539,6 +5563,11 @@ class KiteTradingBot:
             len(rejected),
             len(getattr(shadow, "latest", {})),
             json.dumps(option_sizes, sort_keys=True),
+            telegram_stats["queue_depth"],
+            telegram_stats["sent"],
+            telegram_stats["failed"],
+            telegram_stats["dropped"],
+            telegram_stats["last_success_time"],
         )
         samples_collection = getattr(self, "_tick_duration_samples", None)
         if samples_collection is not None:
@@ -5669,12 +5698,20 @@ class KiteTradingBot:
                 read_only_only=read_only_only,
             )
             return
-        with lock:
-            self._process_telegram_commands_locked(
-                command_queue,
-                reply_queue,
-                read_only_only=read_only_only,
-            )
+        notifier = getattr(self, "telegram_notifier", None)
+        can_defer = notifier is not None and hasattr(notifier, "begin_defer")
+        if can_defer:
+            notifier.begin_defer()
+        try:
+            with lock:
+                self._process_telegram_commands_locked(
+                    command_queue,
+                    reply_queue,
+                    read_only_only=read_only_only,
+                )
+        finally:
+            if can_defer:
+                notifier.end_defer()
 
     def _process_telegram_commands_locked(
         self,
@@ -8544,116 +8581,215 @@ class KiteTradingBot:
 
     def _finalize_daily_session(self, now: datetime) -> bool:
         """Complete post-close reporting only after the broker confirms flatness."""
-        self._handle_market_close_exit()
-        if self.intraday_manager.get_all_open_positions():
-            self.telegram_notifier.send_message(
-                "URGENT: session cannot complete; local positions remain open after exit retries."
-            )
-            return False
-        if self.live_orders_enabled:
-            try:
-                open_positions = [
-                    position
-                    for position in self.kite_stream.get_positions()
-                    if int(position.get("quantity", 0) or 0) != 0
-                ]
-                if open_positions:
-                    self.telegram_notifier.send_message(
-                        "URGENT: session cannot complete; broker account is not flat: "
-                        + ", ".join(
-                            str(position.get("tradingsymbol", "unknown"))
-                            for position in open_positions
-                        )
-                    )
-                    return False
-            except Exception as exc:
-                logger.exception("Could not confirm broker flatness at session close")
-                self.telegram_notifier.send_message(
-                    f"URGENT: session cannot complete; broker flatness is unknown.\n{exc}"
-                )
-                return False
-        for symbol, state in getattr(self, "_ema_reentry_states", {}).items():
-            if state.get("status") != "observing":
-                continue
-            state["status"] = "expired"
-            state["outcome"] = "NO_SIGNAL"
-            self.trade_journal.annotate_trade(
-                symbol,
-                {"ema_reentry_outcome": "NO_SIGNAL"},
-                action="BUY",
-            )
-            self._log_ema_reentry_event(
-                symbol,
-                state,
-                "SESSION_ENDED",
-                current_time=now,
-                outcome="no_signal",
-            )
-        stream = getattr(self, "kite_stream", None)
-        if stream is not None:
-            stream.stop()
+        logger.info("Daily finalization started")
         tick_lock = getattr(self, "_telegram_execution_lock", None)
-        if tick_lock is not None:
-            tick_lock.acquire()
+        notifier = getattr(self, "telegram_notifier", None)
+        defer_notifications = (
+            tick_lock is not None
+            and notifier is not None
+            and hasattr(notifier, "begin_defer")
+        )
+        summary = None
         try:
-            stop_journal = getattr(self, "stop_reentry_journal", None)
-            if stop_journal is not None:
-                stop_journal.end_session(now)
-                stop_journal.flush(timeout=1.0)
-            decision_journal = getattr(self, "decision_journal", None)
-            if decision_journal is not None and not decision_journal.flush_decisions(
-                timeout=20.0, compact_final_hour=True
-            ):
-                raise TimeoutError(
-                    "Decision journal did not flush before end-of-day reporting"
-                )
-            self._stop_event_check_state = {}
-            self._write_daily_summary_if_due()
+            if defer_notifications:
+                notifier.begin_defer()
+            if tick_lock is not None:
+                tick_lock.acquire()
+            try:
+                self._handle_market_close_exit()
+                logger.info("Daily finalization exits done")
+                if self.intraday_manager.get_all_open_positions():
+                    self.telegram_notifier.send_message(
+                        "URGENT: session cannot complete; local positions remain open after exit retries."
+                    )
+                    raise RuntimeError(
+                        "Daily finalization blocked: local positions remain open"
+                    )
+                if self.live_orders_enabled:
+                    try:
+                        open_positions = [
+                            position
+                            for position in self.kite_stream.get_positions()
+                            if int(position.get("quantity", 0) or 0) != 0
+                        ]
+                        if open_positions:
+                            self.telegram_notifier.send_message(
+                                "URGENT: session cannot complete; broker account is not flat: "
+                                + ", ".join(
+                                    str(position.get("tradingsymbol", "unknown"))
+                                    for position in open_positions
+                                )
+                            )
+                            raise RuntimeError(
+                                "Daily finalization blocked: broker positions remain open"
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Could not confirm broker flatness at session close"
+                        )
+                        self.telegram_notifier.send_message(
+                            "URGENT: session cannot complete; broker flatness is unknown."
+                        )
+                        return False
+                logger.info("Daily finalization no open positions")
+
+                for symbol, state in getattr(self, "_ema_reentry_states", {}).items():
+                    if state.get("status") != "observing":
+                        continue
+                    state["status"] = "expired"
+                    state["outcome"] = "NO_SIGNAL"
+                    self.trade_journal.annotate_trade(
+                        symbol,
+                        {"ema_reentry_outcome": "NO_SIGNAL"},
+                        action="BUY",
+                    )
+                    self._log_ema_reentry_event(
+                        symbol,
+                        state,
+                        "SESSION_ENDED",
+                        current_time=now,
+                        outcome="no_signal",
+                    )
+            finally:
+                if tick_lock is not None:
+                    tick_lock.release()
+                if defer_notifications:
+                    notifier.end_defer()
+
+            stream = getattr(self, "kite_stream", None)
+            if stream is not None:
+                stream.stop()
+            logger.info("Daily finalization stream stopped")
+
+            if tick_lock is not None:
+                tick_lock.acquire()
+            try:
+                stop_journal = getattr(self, "stop_reentry_journal", None)
+                if stop_journal is not None:
+                    stop_journal.end_session(now)
+                    stop_journal.flush(timeout=1.0)
+                decision_journal = getattr(self, "decision_journal", None)
+                if decision_journal is not None and not decision_journal.flush_decisions(
+                    timeout=20.0, compact_final_hour=True
+                ):
+                    raise TimeoutError(
+                        "Decision journal did not flush before end-of-day reporting"
+                    )
+                logger.info("Daily finalization journals flushed")
+                self._stop_event_check_state = {}
+                summary = self._write_daily_summary_if_due(now.date())
+            finally:
+                if tick_lock is not None:
+                    tick_lock.release()
+
+            if summary is not None:
+                queued = self.telegram_notifier.send_daily_summary(**summary)
+                if not queued:
+                    raise RuntimeError("Daily summary Telegram message was not queued")
+                self.last_daily_summary_date = now.date()
+            logger.info("Daily finalization Telegram queued")
             self._run_weekly_report_if_due(now)
             return True
-        finally:
-            if tick_lock is not None:
-                tick_lock.release()
-
-    def _write_daily_summary_if_due(self) -> None:
-        """Publish one daily paper-trading summary after the session closes."""
-        today = datetime.now(IST).date()
-        if self.last_daily_summary_date == today:
-            return
-        try:
-            decision_journal = getattr(self, "decision_journal", None)
-            if decision_journal is not None and not decision_journal.flush_decisions(
-                timeout=20.0, compact_final_hour=True
-            ):
-                raise TimeoutError("Decision journal did not flush before daily reporting")
-            today_trades = [
-                trade
-                for trade in self.trade_journal.read_trades()
-                if trade.get("status") == "closed"
-                and str(trade.get("closed_at", "")).startswith(today.isoformat())
-            ]
-            pnls = [float(trade.get("pnl", 0.0)) for trade in today_trades]
-            summary_path = write_daily_summary(
-                data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
-            )
-            review_path = write_daily_review(
-                data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
-            )
-            self.last_daily_summary_date = today
-            logger.info(
-                "Daily paper-trading summary written to %s; review written to %s",
-                summary_path,
-                review_path,
-            )
-            self.telegram_notifier.send_daily_summary(
-                summary_date=today.isoformat(),
-                closed_trades=len(today_trades),
-                winning_trades=sum(1 for pnl in pnls if pnl > 0),
-                losing_trades=sum(1 for pnl in pnls if pnl <= 0),
-                total_pnl=sum(pnls),
-            )
         except Exception:
-            logger.exception("Daily paper-trading summary failed; trading remains active")
+            logger.exception("Daily finalization failed")
+            return False
+
+    def _attempt_daily_finalization(
+        self, now: datetime, monotonic_now: Optional[float] = None
+    ) -> bool:
+        if self._finalization_attempts >= 11:
+            return False
+        current_monotonic = (
+            time.monotonic() if monotonic_now is None else monotonic_now
+        )
+        if current_monotonic < self._next_finalization_attempt_at:
+            return False
+        self._finalization_attempts += 1
+        if self._finalize_daily_session(now):
+            self._finalization_complete = True
+            return True
+        if self._finalization_attempts == 11:
+            logger.error("Daily finalization failed after 10 retries")
+        else:
+            self._next_finalization_attempt_at = current_monotonic + 60.0
+        return False
+
+    def _attempt_shutdown_finalization(self, now: datetime) -> bool:
+        if (
+            now.time() < getattr(
+                self.intraday_manager, "MARKET_CLOSE", time_type(15, 30)
+            )
+            or getattr(self, "_finalization_complete", False)
+        ):
+            return bool(getattr(self, "_finalization_complete", False))
+        logger.info(
+            "Shutdown finalization attempt started with 15-second budget"
+        )
+        completed = threading.Event()
+        result = {}
+
+        def finalize():
+            result["success"] = self._finalize_daily_session(now)
+            completed.set()
+
+        finalizer = threading.Thread(
+            target=finalize,
+            name="daily-finalization-shutdown",
+            daemon=True,
+        )
+        finalizer.start()
+        finalizer.join(timeout=15.0)
+        if completed.is_set() and result.get("success"):
+            self._finalization_complete = True
+            return True
+        if not completed.is_set():
+            logger.error("Shutdown finalization exceeded its 15-second budget")
+        return False
+
+    def _write_daily_summary_if_due(self, target_date=None) -> Optional[dict]:
+        """Write daily reports after decision data is flushed and compacted."""
+        today = target_date or datetime.now(IST).date()
+        if self.last_daily_summary_date == today:
+            return None
+        decision_journal = getattr(self, "decision_journal", None)
+        if decision_journal is not None and not decision_journal.flush_decisions(
+            timeout=20.0, compact_final_hour=True
+        ):
+            raise TimeoutError("Decision journal did not flush before daily reporting")
+        today_trades = [
+            trade
+            for trade in self.trade_journal.read_trades()
+            if trade.get("status") == "closed"
+            and str(trade.get("closed_at", "")).startswith(today.isoformat())
+        ]
+        pnls = [float(trade.get("pnl", 0.0)) for trade in today_trades]
+        summary_path = write_daily_summary(
+            data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
+        )
+        if not summary_path.is_file():
+            raise OSError(f"Daily summary was not written: {summary_path}")
+        logger.info("Daily finalization summary written: %s", summary_path)
+        review_path = write_daily_review(
+            data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
+        )
+        if not review_path.is_file():
+            raise OSError(f"Daily review was not written: {review_path}")
+        logger.info("Daily finalization review written: %s", review_path)
+        return {
+            "summary_date": today.isoformat(),
+            "closed_trades": len(today_trades),
+            "winning_trades": sum(1 for pnl in pnls if pnl > 0),
+            "losing_trades": sum(1 for pnl in pnls if pnl <= 0),
+            "total_pnl": sum(pnls),
+            "message": (
+                f"Paper trading daily summary ({today.isoformat()})\n"
+                f"Closed trades: {len(today_trades)}\n"
+                f"Wins/Losses: "
+                f"{sum(1 for pnl in pnls if pnl > 0)}/"
+                f"{sum(1 for pnl in pnls if pnl <= 0)}\n"
+                f"P&L: {sum(pnls):.2f}"
+            ),
+        }
 
     @staticmethod
     def _handle_sigterm(signum: int, frame: object) -> None:
@@ -8737,8 +8873,17 @@ class KiteTradingBot:
                         # Check every 30 seconds if it's time to force exit
                         now = datetime.now(IST)
                         if (now - last_close_check).total_seconds() >= 30:
-                            if self.intraday_manager.is_market_closed():
-                                if self._finalize_daily_session(now):
+                            if (
+                                self.intraday_manager.is_market_closed()
+                                and not getattr(
+                                    self, "_finalization_complete", False
+                                )
+                                and now_monotonic
+                                >= self._next_finalization_attempt_at
+                            ):
+                                if self._attempt_daily_finalization(
+                                    now, now_monotonic
+                                ):
                                     logger.info("Market session complete; shutting down bot.")
                                     break
                             if self.intraday_manager.should_exit_all_positions():
@@ -8755,19 +8900,44 @@ class KiteTradingBot:
             if manage_sigterm:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:
+                shutdown_started = time.monotonic()
+                shutdown_deadline = shutdown_started + 29.0
+                shutdown_now = datetime.now(IST)
+                self._attempt_shutdown_finalization(shutdown_now)
                 if self.telegram_listener:
                     self.telegram_listener.stop()
                 if self.news_monitor:
                     self.news_monitor.stop()
                 self.kite_stream.stop()
+                stop_journal = getattr(self, "stop_reentry_journal", None)
+                if stop_journal is not None:
+                    stop_journal.close(
+                        timeout=max(
+                            0.0,
+                            min(1.0, shutdown_deadline - time.monotonic()),
+                        )
+                    )
                 decision_journal = getattr(self, "decision_journal", None)
                 if decision_journal is not None and not decision_journal.close(
-                    timeout=20.0
+                    timeout=max(0.0, min(15.0, shutdown_deadline - time.monotonic()))
                 ):
                     logger.error("Decision journal shutdown flush did not complete")
                 writer = getattr(self, "option_capture_writer", None)
                 if writer is not None:
-                    writer.close()
+                    writer.close(
+                        timeout=max(
+                            0.0,
+                            min(5.0, shutdown_deadline - time.monotonic()),
+                        )
+                    )
+                notifier = getattr(self, "telegram_notifier", None)
+                if notifier is not None and hasattr(notifier, "close"):
+                    notifier.close(
+                        timeout=max(
+                            0.0,
+                            min(5.0, shutdown_deadline - time.monotonic()),
+                        )
+                    )
                 logger.info("Bot shutdown complete")
             finally:
                 if manage_sigterm:

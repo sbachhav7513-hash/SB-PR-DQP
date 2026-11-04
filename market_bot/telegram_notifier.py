@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 import logging
+import threading
+import time
+from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import requests
 
 
 logger = logging.getLogger(__name__)
+TELEGRAM_QUEUE_SIZE = 1000
+TELEGRAM_TIMEOUT_SECONDS = 5
+TELEGRAM_RETRY_BACKOFF_SECONDS = (1, 3)
 
 
 class TelegramNotifier:
@@ -19,6 +27,23 @@ class TelegramNotifier:
         self.token = token.strip() if token else None
         self.chat_id = chat_id.strip() if chat_id else None
         self.trade_chat_id = trade_chat_id.strip() if trade_chat_id else None
+        self._queue = deque()
+        self._queue_condition = threading.Condition()
+        self._deferred = threading.local()
+        self._closed = False
+        self._sent = 0
+        self._failed = 0
+        self._dropped = 0
+        self._processing = False
+        self._last_success_time: Optional[str] = None
+        self._sender_thread: Optional[threading.Thread] = None
+        if self.token:
+            self._sender_thread = threading.Thread(
+                target=self._run_sender,
+                name="telegram-message-sender",
+                daemon=True,
+            )
+            self._sender_thread.start()
 
     @staticmethod
     def _trade_message(text: str, trade_id: Optional[int], *, entry: bool = False) -> str:
@@ -58,43 +83,218 @@ class TelegramNotifier:
             for chat_id in (self.chat_id, self.trade_chat_id)
             if chat_id
         )
-        if not chat_ids:
-            return False
-        results = [self._send_message_to_chat(chat_id, text) for chat_id in chat_ids]
-        return all(results)
+        return self._enqueue_messages(
+            [
+                {
+                    "kind": "message",
+                    "chat_id": chat_id,
+                    "text": text,
+                    "priority": "normal",
+                }
+                for chat_id in chat_ids
+            ]
+        )
 
-    def send_message(self, text: str, trade_id: Optional[int] = None) -> bool:
+    def send_message(
+        self,
+        text: str,
+        trade_id: Optional[int] = None,
+        *,
+        priority: str = "normal",
+    ) -> bool:
         text = self._trade_message(text, trade_id)
-        return self._send_message_to_chat(self.chat_id, text)
-
-    def _send_message_to_chat(self, chat_id: Optional[str], text: str) -> bool:
-        if not self.token or not chat_id:
+        if not self.chat_id:
             return False
+        return self._enqueue_messages(
+            [
+                {
+                    "kind": "message",
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "priority": priority,
+                }
+            ]
+        )
 
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        data = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-        }
+    def enqueue_command_reply(
+        self,
+        chat_id: str,
+        text: str,
+        reply_markup: Optional[dict] = None,
+    ) -> bool:
+        return self._enqueue_messages(
+            [
+                {
+                    "kind": "message",
+                    "chat_id": str(chat_id),
+                    "text": text,
+                    "reply_markup": reply_markup,
+                    "priority": "normal",
+                }
+            ]
+        )
 
-        try:
-            response = requests.post(url, data=data, timeout=10)
-            response.raise_for_status()
-            result = response.json()
-            if not result.get("ok"):
-                logger.error("Telegram rejected alert: %s", result.get("description", "unknown error"))
-                return False
+    def enqueue_callback_ack(self, callback_id: str) -> bool:
+        return self._enqueue_messages(
+            [
+                {
+                    "kind": "callback_ack",
+                    "callback_id": callback_id,
+                    "priority": "normal",
+                }
+            ]
+        )
+
+    def _enqueue_messages(self, messages: list[dict]) -> bool:
+        if not self.token or not messages:
+            return False
+        depth = getattr(self._deferred, "depth", 0)
+        if depth:
+            self._deferred.messages.extend(messages)
             return True
-        except requests.RequestException as exc:
-            logger.error(
-                "Telegram alert request failed (%s)",
-                type(exc).__name__,
-            )
-            return False
-        except ValueError as exc:
-            logger.error("Telegram returned an invalid response: %s", exc)
-            return False
+        return self._enqueue_messages_now(messages)
+
+    def begin_defer(self) -> None:
+        depth = getattr(self._deferred, "depth", 0)
+        if depth == 0:
+            self._deferred.messages = []
+        self._deferred.depth = depth + 1
+
+    def end_defer(self) -> None:
+        depth = getattr(self._deferred, "depth", 0)
+        if depth <= 0:
+            raise RuntimeError("Telegram defer scope is not active")
+        self._deferred.depth = depth - 1
+        if depth == 1:
+            messages = self._deferred.messages
+            self._deferred.messages = []
+            if messages:
+                self._enqueue_messages_now(messages)
+
+    def _enqueue_messages_now(self, messages: list[dict]) -> bool:
+        accepted = True
+        with self._queue_condition:
+            if self._closed:
+                self._dropped += len(messages)
+                return False
+            for message in messages:
+                if len(self._queue) >= TELEGRAM_QUEUE_SIZE:
+                    heartbeat_index = next(
+                        (
+                            index
+                            for index, queued in enumerate(self._queue)
+                            if queued["priority"] == "heartbeat"
+                        ),
+                        None,
+                    )
+                    if heartbeat_index is not None:
+                        del self._queue[heartbeat_index]
+                        self._dropped += 1
+                        logger.warning(
+                            "Telegram queue full; dropped oldest heartbeat message"
+                        )
+                    else:
+                        self._dropped += 1
+                        accepted = False
+                        logger.warning(
+                            "Telegram queue full; dropped incoming %s message",
+                            message["priority"],
+                        )
+                        continue
+                self._queue.append(message)
+            self._queue_condition.notify()
+        return accepted
+
+    def telemetry(self) -> dict:
+        with self._queue_condition:
+            return {
+                "queue_depth": len(self._queue),
+                "sent": self._sent,
+                "failed": self._failed,
+                "dropped": self._dropped,
+                "last_success_time": self._last_success_time or "never",
+            }
+
+    def close(self, timeout: float = 0.0) -> None:
+        with self._queue_condition:
+            self._closed = True
+            self._queue_condition.notify_all()
+        if (
+            self._sender_thread is not None
+            and self._sender_thread is not threading.current_thread()
+        ):
+            self._sender_thread.join(timeout=max(0.0, timeout))
+
+    def wait_until_idle(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._queue_condition:
+            while self._queue or self._processing:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._queue_condition.wait(remaining)
+            return True
+
+    def _run_sender(self) -> None:
+        while True:
+            with self._queue_condition:
+                while not self._queue and not self._closed:
+                    self._queue_condition.wait()
+                if not self._queue and self._closed:
+                    return
+                message = self._queue.popleft()
+                self._processing = True
+            try:
+                self._deliver(message)
+            finally:
+                with self._queue_condition:
+                    self._processing = False
+                    self._queue_condition.notify_all()
+
+    def _deliver(self, message: dict) -> None:
+        for attempt in range(3):
+            try:
+                if message["kind"] == "callback_ack":
+                    url = (
+                        f"https://api.telegram.org/bot{self.token}/"
+                        "answerCallbackQuery"
+                    )
+                    data = {"callback_query_id": message["callback_id"]}
+                else:
+                    url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+                    data = {
+                        "chat_id": message["chat_id"],
+                        "text": message["text"],
+                    }
+                    if message.get("reply_markup") is not None:
+                        data["reply_markup"] = json.dumps(message["reply_markup"])
+                    else:
+                        data["parse_mode"] = "HTML"
+                response = requests.post(
+                    url, data=data, timeout=TELEGRAM_TIMEOUT_SECONDS
+                )
+                response.raise_for_status()
+                result = response.json()
+                if not result.get("ok"):
+                    raise RuntimeError(
+                        result.get("description", "Telegram rejected message")
+                    )
+            except Exception as exc:
+                if attempt < 2:
+                    time.sleep(TELEGRAM_RETRY_BACKOFF_SECONDS[attempt])
+                    continue
+                with self._queue_condition:
+                    self._failed += 1
+                logger.error(
+                    "Telegram delivery failed chat=%s attempts=3 error=%s",
+                    message.get("chat_id", "callback"),
+                    type(exc).__name__,
+                )
+                return
+            with self._queue_condition:
+                self._sent += 1
+                self._last_success_time = datetime.now(timezone.utc).isoformat()
+            return
 
     def build_heartbeat_message(
         self,
@@ -135,7 +335,8 @@ class TelegramNotifier:
         return self.send_message(
             self.build_heartbeat_message(
                 instruments, bar_interval_seconds, mode, execution_mode, state
-            )
+            ),
+            priority="heartbeat",
         )
 
     def send_daily_summary(
@@ -145,10 +346,12 @@ class TelegramNotifier:
         winning_trades: int,
         losing_trades: int,
         total_pnl: float,
+        message: Optional[str] = None,
     ) -> bool:
         return self.send_trade_alert(
             {
-                "message": (
+                "message": message
+                or (
                     f"Paper trading daily summary ({summary_date})\n"
                     f"Closed trades: {closed_trades}\n"
                     f"Wins/Losses: {winning_trades}/{losing_trades}\n"

@@ -178,7 +178,7 @@ def test_sigterm_runs_graceful_journal_shutdown(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         bot.run()
 
-    assert bot._closed == [20.0]
+    assert bot._closed == [15.0]
     assert "Received SIGTERM; shutting down bot gracefully" in caplog.text
     assert handlers[signal.SIGTERM] is original_handler
 

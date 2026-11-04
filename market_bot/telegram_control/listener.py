@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import json
 import queue
 import threading
 import time
@@ -43,6 +42,10 @@ class TelegramCommandListener:
         command_queue: queue.Queue[TelegramCommand],
         reply_queue: queue.Queue[tuple[str, str]],
         on_failure: Optional[Callable[[str], None]] = None,
+        enqueue_reply: Optional[
+            Callable[[str, str, Optional[dict]], bool]
+        ] = None,
+        enqueue_callback_ack: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._token = token
         self._allowed_ids = {str(value) for value in allowed_chat_ids}
@@ -50,6 +53,8 @@ class TelegramCommandListener:
         self._reply_queue = reply_queue
         self._callback_ack_queue: queue.Queue[str] = queue.Queue()
         self._on_failure = on_failure
+        self._enqueue_reply = enqueue_reply
+        self._enqueue_callback_ack = enqueue_callback_ack
         self._started_at = time.time()
         self.last_update_id: Optional[int] = None
         self._stop_event = threading.Event()
@@ -159,47 +164,37 @@ class TelegramCommandListener:
                 callback_id = self._callback_ack_queue.get_nowait()
             except queue.Empty:
                 break
-            try:
-                response = requests.post(
-                    f"https://api.telegram.org/bot{self._token}/answerCallbackQuery",
-                    data={"callback_query_id": callback_id},
-                    timeout=5,
+            if self._enqueue_callback_ack is not None:
+                self._enqueue_callback_ack(callback_id)
+            else:
+                logger.error(
+                    "Telegram callback acknowledgement has no configured sender"
                 )
-                response.raise_for_status()
-            except requests.RequestException:
-                logger.warning("Could not acknowledge a Telegram confirmation button")
         while True:
             try:
                 chat_id, text = self._reply_queue.get_nowait()
             except queue.Empty:
                 return
-            try:
-                data = {"chat_id": chat_id, "text": text}
-                if text.startswith("Confirm LIVE exit for trade #"):
-                    data["reply_markup"] = json.dumps(
-                        {
-                            "inline_keyboard": [
-                                [
-                                    {
-                                        "text": "Confirm",
-                                        "callback_data": "confirm_exit",
-                                    },
-                                    {
-                                        "text": "Cancel",
-                                        "callback_data": "cancel_exit",
-                                    },
-                                ]
-                            ]
-                        }
-                    )
-                response = requests.post(
-                    f"https://api.telegram.org/bot{self._token}/sendMessage",
-                    data=data,
-                    timeout=5,
-                )
-                response.raise_for_status()
-            except requests.RequestException:
-                logger.warning("Could not deliver a Telegram command response")
+            reply_markup = None
+            if text.startswith("Confirm LIVE exit for trade #"):
+                reply_markup = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Confirm",
+                                "callback_data": "confirm_exit",
+                            },
+                            {
+                                "text": "Cancel",
+                                "callback_data": "cancel_exit",
+                            },
+                        ]
+                    ]
+                }
+            if self._enqueue_reply is not None:
+                self._enqueue_reply(chat_id, text, reply_markup)
+            else:
+                logger.error("Telegram command reply has no configured sender")
 
     def _run(self) -> None:
         failures = 0

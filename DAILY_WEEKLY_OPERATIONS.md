@@ -283,6 +283,9 @@ systemctl show kite-trading-bot.service -p ExecStart -p Restart -p User -p Worki
 
 The bot exits normally after the 15:15 IST forced position exit, the 15:30 IST
 market-close check, daily summary, and Friday weekly analysis have completed.
+If daily finalization fails, the process stays alive and retries once per minute
+for up to ten retries; shutdown after 15:30 IST makes one additional best-effort
+attempt with a 15-second budget before closing its writers.
 The unit uses `Restart=on-failure`, so clean end-of-day exits remain inactive while
 crashes and unexpected network failures are retried:
 
@@ -292,8 +295,10 @@ journalctl -u kite-trading-bot.service -e
 ```
 
 Keep the VPS service active from before 09:15 IST until the post-close report
-finishes. Stopping or restarting it before then interrupts that run; the bot
-does not publish a completed daily summary on interruption. The service sends
+finishes. Stopping or restarting before 15:30 IST interrupts that run. Telegram
+outbound messages use a bounded background queue with five-second attempts and
+up to three tries; the 60-second persistence telemetry line includes queue depth,
+sent, failed, dropped, and last-success counters. The service sends
 an interruption alert (including IST market phase and accepted-tick, completed
 bar, and decision counts) when it receives the configured SIGINT stop signal.
 Use these commands to confirm that the VPS actually ran through the session and

@@ -74,19 +74,26 @@ def test_exit_confirmation_buttons_queue_only_authorized_callbacks():
 
 
 def test_live_exit_confirmation_reply_has_confirm_and_cancel_buttons(monkeypatch):
-    listener = _listener()
-    response = Mock()
-    response.raise_for_status = Mock()
-    post = Mock(return_value=response)
-    monkeypatch.setattr("market_bot.telegram_control.listener.requests.post", post)
+    enqueue_reply = Mock(return_value=True)
+    listener = TelegramCommandListener(
+        token="not-a-real-token",
+        allowed_chat_ids=("101",),
+        command_queue=queue.Queue(),
+        reply_queue=queue.Queue(),
+        enqueue_reply=enqueue_reply,
+    )
     listener._reply_queue.put(
         ("101", "Confirm LIVE exit for trade #1 within 30 seconds.")
     )
 
     listener._send_replies()
 
-    payload = post.call_args.kwargs["data"]
-    markup = json.loads(payload["reply_markup"])
+    payload = enqueue_reply.call_args.args
+    assert payload[:2] == (
+        "101",
+        "Confirm LIVE exit for trade #1 within 30 seconds.",
+    )
+    markup = payload[2]
     assert [button["text"] for button in markup["inline_keyboard"][0]] == [
         "Confirm",
         "Cancel",
