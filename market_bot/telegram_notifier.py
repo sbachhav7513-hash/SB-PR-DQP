@@ -6,6 +6,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from html import escape
 from typing import Any, Dict, Optional
 
 import requests
@@ -68,6 +69,7 @@ class TelegramNotifier:
         self, payload: Dict[str, Any], trade_id: Optional[int] = None
     ) -> bool:
         text = payload.get("message", "Trade alert")
+        is_entry = payload.get("status") == "open" and payload.get("entry") is not None
         resolved_trade_id = trade_id
         if resolved_trade_id is None:
             resolved_trade_id = payload.get("trade_id")
@@ -76,24 +78,32 @@ class TelegramNotifier:
         text = self._trade_message(
             text,
             resolved_trade_id,
-            entry=payload.get("status") == "open" and payload.get("entry") is not None,
+            entry=is_entry,
         )
         chat_ids = dict.fromkeys(
             chat_id
             for chat_id in (self.chat_id, self.trade_chat_id)
             if chat_id
         )
-        return self._enqueue_messages(
+        accepted = self._enqueue_messages(
             [
                 {
                     "kind": "message",
                     "chat_id": chat_id,
                     "text": text,
                     "priority": "normal",
+                    "entry_alert": is_entry,
+                    "trade_id": resolved_trade_id,
                 }
                 for chat_id in chat_ids
             ]
         )
+        if is_entry and not chat_ids:
+            logger.error(
+                "Telegram entry alert enqueue failed trade_id=%s reason=no_chat_id",
+                resolved_trade_id,
+            )
+        return accepted
 
     def send_message(
         self,
@@ -147,6 +157,14 @@ class TelegramNotifier:
 
     def _enqueue_messages(self, messages: list[dict]) -> bool:
         if not self.token or not messages:
+            for message in messages:
+                if message.get("entry_alert"):
+                    logger.error(
+                        "Telegram entry alert enqueue failed trade_id=%s chat=%s "
+                        "reason=telegram_not_configured",
+                        message.get("trade_id"),
+                        message.get("chat_id"),
+                    )
             return False
         depth = getattr(self._deferred, "depth", 0)
         if depth:
@@ -176,6 +194,16 @@ class TelegramNotifier:
         with self._queue_condition:
             if self._closed:
                 self._dropped += len(messages)
+                for message in messages:
+                    if message.get("entry_alert"):
+                        logger.error(
+                            "Telegram entry alert enqueue failed trade_id=%s chat=%s "
+                            "reason=sender_closed queue_depth=%d dropped=%d",
+                            message.get("trade_id"),
+                            message.get("chat_id"),
+                            len(self._queue),
+                            self._dropped,
+                        )
                 return False
             for message in messages:
                 if len(self._queue) >= TELEGRAM_QUEUE_SIZE:
@@ -200,8 +228,26 @@ class TelegramNotifier:
                             "Telegram queue full; dropped incoming %s message",
                             message["priority"],
                         )
+                        if message.get("entry_alert"):
+                            logger.error(
+                                "Telegram entry alert enqueue failed trade_id=%s "
+                                "chat=%s reason=queue_full queue_depth=%d dropped=%d",
+                                message.get("trade_id"),
+                                message.get("chat_id"),
+                                len(self._queue),
+                                self._dropped,
+                            )
                         continue
                 self._queue.append(message)
+                if message.get("entry_alert"):
+                    logger.info(
+                        "Telegram entry alert enqueued trade_id=%s chat=%s "
+                        "queue_depth=%d dropped=%d",
+                        message.get("trade_id"),
+                        message.get("chat_id"),
+                        len(self._queue),
+                        self._dropped,
+                    )
             self._queue_condition.notify()
         return accepted
 
@@ -269,32 +315,105 @@ class TelegramNotifier:
                     if message.get("reply_markup") is not None:
                         data["reply_markup"] = json.dumps(message["reply_markup"])
                     else:
+                        data["text"] = escape(data["text"])
                         data["parse_mode"] = "HTML"
                 response = requests.post(
                     url, data=data, timeout=TELEGRAM_TIMEOUT_SECONDS
                 )
-                response.raise_for_status()
-                result = response.json()
-                if not result.get("ok"):
-                    raise RuntimeError(
-                        result.get("description", "Telegram rejected message")
-                    )
-            except Exception as exc:
-                if attempt < 2:
+            except requests.RequestException as exc:
+                if attempt < len(TELEGRAM_RETRY_BACKOFF_SECONDS):
                     time.sleep(TELEGRAM_RETRY_BACKOFF_SECONDS[attempt])
                     continue
-                with self._queue_condition:
-                    self._failed += 1
-                logger.error(
-                    "Telegram delivery failed chat=%s attempts=3 error=%s",
-                    message.get("chat_id", "callback"),
-                    type(exc).__name__,
+                self._record_delivery_failure(
+                    message,
+                    attempts=attempt + 1,
+                    error=type(exc).__name__,
+                )
+                return
+            status_code = getattr(response, "status_code", None)
+            status = status_code if isinstance(status_code, int) else None
+            try:
+                result = response.json()
+            except (ValueError, requests.RequestException):
+                result = None
+            description = (
+                str(result.get("description"))
+                if isinstance(result, dict) and result.get("description")
+                else None
+            )
+            if status is not None and 400 <= status < 500:
+                self._record_delivery_failure(
+                    message,
+                    attempts=attempt + 1,
+                    error="HTTPError",
+                    status=status,
+                    description=description,
+                )
+                return
+            if status is not None and status >= 500:
+                if attempt < len(TELEGRAM_RETRY_BACKOFF_SECONDS):
+                    time.sleep(TELEGRAM_RETRY_BACKOFF_SECONDS[attempt])
+                    continue
+                self._record_delivery_failure(
+                    message,
+                    attempts=attempt + 1,
+                    error="HTTPError",
+                    status=status,
+                    description=description,
+                )
+                return
+            if not isinstance(result, dict) or not result.get("ok"):
+                self._record_delivery_failure(
+                    message,
+                    attempts=attempt + 1,
+                    error="TelegramError",
+                    status=status,
+                    description=description or "Telegram rejected message",
                 )
                 return
             with self._queue_condition:
                 self._sent += 1
                 self._last_success_time = datetime.now(timezone.utc).isoformat()
+            if message.get("entry_alert"):
+                logger.info(
+                    "Telegram entry alert send result trade_id=%s chat=%s "
+                    "sent=true status=%s",
+                    message.get("trade_id"),
+                    message.get("chat_id"),
+                    status,
+                )
             return
+
+    def _record_delivery_failure(
+        self,
+        message: dict,
+        *,
+        attempts: int,
+        error: str,
+        status: Optional[int] = None,
+        description: Optional[str] = None,
+    ) -> None:
+        with self._queue_condition:
+            self._failed += 1
+        logger.error(
+            "Telegram delivery failed chat=%s attempts=%d status=%s "
+            "description=%s error=%s",
+            message.get("chat_id", "callback"),
+            attempts,
+            status,
+            description,
+            error,
+        )
+        if message.get("entry_alert"):
+            logger.info(
+                "Telegram entry alert send result trade_id=%s chat=%s "
+                "sent=false status=%s description=%s attempts=%d",
+                message.get("trade_id"),
+                message.get("chat_id"),
+                status,
+                description,
+                attempts,
+            )
 
     def build_heartbeat_message(
         self,

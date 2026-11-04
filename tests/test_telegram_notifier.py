@@ -221,8 +221,108 @@ def test_regular_status_message_stays_in_existing_chat(monkeypatch):
 
 def _telegram_response():
     response = Mock()
+    response.status_code = 200
     response.json.return_value = {"ok": True}
     return response
+
+
+def test_open_trade_alert_escapes_html_and_logs_enqueue_and_delivery(
+    monkeypatch, caplog
+):
+    caplog.set_level("INFO", logger="market_bot.telegram_notifier")
+    post = Mock(return_value=_telegram_response())
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    payload = notifier.format_trade(
+        ticker="NIFTY_CE & <PE>",
+        action="BUY",
+        score=80,
+        entry=79.0,
+        stop_loss=70.0,
+        take_profit=95.0,
+        trade_id=17,
+    )
+    payload["status"] = "open"
+
+    try:
+        assert notifier.send_trade_alert(payload, trade_id=17)
+        assert notifier.wait_until_idle()
+
+        post.assert_called_once()
+        text = post.call_args.kwargs["data"]["text"]
+        assert post.call_args.kwargs["data"]["parse_mode"] == "HTML"
+        assert "NIFTY_CE &amp; &lt;PE&gt;" in text
+        assert "/exitat 17 &lt;price&gt;" in text
+        assert notifier.telemetry()["sent"] == 1
+        assert "Telegram entry alert enqueued trade_id=17" in caplog.text
+        assert (
+            "Telegram entry alert send result trade_id=17 chat=chat "
+            "sent=true status=200"
+        ) in caplog.text
+    finally:
+        notifier.close(timeout=1)
+
+
+def test_telegram_http_4xx_is_not_retried_and_logs_description(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="market_bot.telegram_notifier")
+    response = Mock()
+    response.status_code = 400
+    response.json.return_value = {
+        "ok": False,
+        "description": "Bad Request: can't parse entities",
+    }
+    post = Mock(return_value=response)
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    payload = notifier.format_trade(
+        ticker="NIFTY_CE",
+        action="BUY",
+        score=80,
+        entry=79.0,
+        stop_loss=70.0,
+        take_profit=95.0,
+        trade_id=19,
+    )
+    payload["status"] = "open"
+
+    try:
+        assert notifier.send_trade_alert(payload, trade_id=19)
+        assert notifier.wait_until_idle()
+
+        post.assert_called_once()
+        assert notifier.telemetry()["failed"] == 1
+        assert "status=400" in caplog.text
+        assert "description=Bad Request: can't parse entities" in caplog.text
+        assert (
+            "Telegram entry alert send result trade_id=19 chat=chat "
+            "sent=false status=400"
+        ) in caplog.text
+    finally:
+        notifier.close(timeout=1)
+
+
+def test_exit_trade_alert_escapes_dynamic_html_before_send(monkeypatch):
+    post = Mock(return_value=_telegram_response())
+    monkeypatch.setattr("market_bot.telegram_notifier.requests.post", post)
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+    payload = notifier.format_close(
+        ticker="NIFTY&<PE>",
+        action="SELL",
+        exit_price=95.0,
+        pnl=-25.0,
+        reason="BROKER<&>",
+    )
+
+    try:
+        assert notifier.send_trade_alert(payload, trade_id=20)
+        assert notifier.wait_until_idle()
+
+        post.assert_called_once()
+        text = post.call_args.kwargs["data"]["text"]
+        assert "NIFTY&amp;&lt;PE&gt;" in text
+        assert "BROKER&lt;&amp;&gt;" in text
+    finally:
+        notifier.close(timeout=1)
 
 
 def test_slow_send_does_not_delay_on_tick(monkeypatch):
