@@ -1,0 +1,72 @@
+{
+  "candle_gaps_per_contract": {
+    "NFO:TCS26NOV2500PE": 2
+  },
+  "contracts_captured": [
+    "NFO:BANKNIFTY26NOV55500CE",
+    "NFO:BANKNIFTY26NOV55500PE",
+    "NFO:ICICIBANK26NOV1420CE",
+    "NFO:ICICIBANK26NOV1420PE",
+    "NFO:LT26NOV3950CE",
+    "NFO:LT26NOV3950PE",
+    "NFO:NIFTY26N0923800CE",
+    "NFO:NIFTY26N0923800PE",
+    "NFO:RELIANCE26NOV1310CE",
+    "NFO:RELIANCE26NOV1310PE",
+    "NFO:SBIN26NOV970CE",
+    "NFO:SBIN26NOV970PE",
+    "NFO:TCS26NOV2500CE",
+    "NFO:TCS26NOV2500PE"
+  ],
+  "contracts_captured_count": 14,
+  "contracts_skipped": [],
+  "contracts_skipped_count": 0,
+  "date": "2026-11-04",
+  "dropped_rows": 0,
+  "match_rate": 1.0,
+  "signals": 128,
+  "signals_with_60_minutes_forward_candles": 125,
+  "signals_with_resolved_contract_id": 128,
+  "subscription_start_delays": [
+    {
+      "contract_id": "NFO:LT26NOV3950CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:LT26NOV3950PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:RELIANCE26NOV1310PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:RELIANCE26NOV1310CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26NOV1420CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26NOV1420PE",
+      "seconds": 4.0
+    }
+  ],
+  "tick_gaps_over_30_seconds_per_contract": {
+    "NFO:BANKNIFTY26NOV55500CE": 2,
+    "NFO:BANKNIFTY26NOV55500PE": 2,
+    "NFO:ICICIBANK26NOV1420CE": 17,
+    "NFO:ICICIBANK26NOV1420PE": 20,
+    "NFO:LT26NOV3950CE": 5,
+    "NFO:LT26NOV3950PE": 9,
+    "NFO:NIFTY26N0923800CE": 2,
+    "NFO:NIFTY26N0923800PE": 2,
+    "NFO:RELIANCE26NOV1310CE": 2,
+    "NFO:RELIANCE26NOV1310PE": 6,
+    "NFO:SBIN26NOV970CE": 5,
+    "NFO:SBIN26NOV970PE": 3,
+    "NFO:TCS26NOV2500CE": 38,
+    "NFO:TCS26NOV2500PE": 109
+  }
+}
