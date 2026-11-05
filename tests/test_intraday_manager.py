@@ -2551,6 +2551,7 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         "late_window_enabled": False,
         "allow_trend_continuation": True,
         "min_entry_score": 55,
+        "nifty_vol_floor_v2": True,
     }
     bot.symbol_map = {100: "NIFTY_CE"}
     option_bars = [
@@ -2612,6 +2613,10 @@ def test_option_entry_uses_one_strategy_in_both_modes(
     assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "min_score"
     ] == 55
+    expected_volatility_floor = 0.04 if paper_trading_enabled else 0.05
+    assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+        "min_volatility_pct"
+    ] == expected_volatility_floor
     assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
         "record_entry"
     ] is False
@@ -2775,15 +2780,21 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         "rising_option_premium": True,
     }
     bot._mark_support_reversal_attempt.assert_called_once()
-    bot._handle_buy_signal.assert_called_once_with(
+    bot._handle_buy_signal.assert_called_once()
+    assert bot._handle_buy_signal.call_args.args == (
         "NIFTY_CE",
         option_bars[-1].close,
         75,
-        strategy_variant="paper_underlying_support_reversal",
-        minimum_signal_score=55,
-        entry_fill_override=None,
-        paper_change_attributions=[],
     )
+    kwargs = dict(bot._handle_buy_signal.call_args.kwargs)
+    entry_telemetry = kwargs.pop("entry_telemetry")
+    assert kwargs == {
+        "strategy_variant": "paper_underlying_support_reversal",
+        "minimum_signal_score": 55,
+        "entry_fill_override": None,
+        "paper_change_attributions": [],
+    }
+    assert entry_telemetry["momentum_body_ratio_threshold"] == 0.2
 
 
 def test_option_candle_momentum_uses_requested_directional_body_ratio():
@@ -2850,6 +2861,78 @@ def test_option_premium_rising_momentum_v2_keeps_body_thresholds():
         minimum_body_ratio=0.21,
         rising_option_premium=True,
     )
+
+
+def test_rising_pe_momentum_v2_is_attributed_when_it_changes_the_gate():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {"NIFTY": 1},
+        "options_underlyings": ["NIFTY"],
+        "benchmark_symbols": [],
+        "late_window_enabled": False,
+        "allow_trend_continuation": True,
+        "min_entry_score": 55,
+        "option_min_candle_body_ratio": 0.6,
+        "option_candle_momentum": True,
+        "option_premium_rising_momentum_v2": True,
+    }
+    bot.symbol_map = {100: "NIFTY_PE"}
+    option_bars = [
+        Bar(datetime(2026, 9, 24, 10, index), 100, 101, 99, 100, 10)
+        for index in range(30)
+    ]
+    option_bars[-1] = Bar(
+        datetime(2026, 9, 24, 10, 29), 100, 110, 98, 108, 10
+    )
+    underlying_bars = [
+        Bar(datetime(2026, 9, 24, 10, index), 25000, 25010, 24990, 25000, 100)
+        for index in range(30)
+    ]
+    underlying_bars[-1] = Bar(
+        datetime(2026, 9, 24, 10, 29), 25000, 25020, 24990, 25020, 100
+    )
+    bot.bar_builder = Mock()
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
+    )
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.active_positions = {}
+    bot.intraday_manager.should_exit_all_positions.return_value = False
+    bot.use_market_context = False
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.min_entry_score = 55
+    bot.benchmark_symbol = "NIFTY"
+    bot.news_monitor = None
+    bot.premarkarket_candidates = []
+    bot.option_quote_cache = {"NIFTY_PE": {"last_price": 100}}
+    bot.latest_prices = {}
+    bot.kite_stream = SimpleNamespace(contract_expiries={})
+    bot._preferred_option_symbol = Mock(return_value="NIFTY_PE")
+    bot._index_persistence_pass = Mock(return_value=False)
+    bot._option_quality_gate = Mock(return_value=(True, "OK"))
+    bot._record_decision = Mock()
+    bot._handle_buy_signal = Mock(return_value="trade_opened")
+    bot.accuracy_filters = Mock()
+    bot.accuracy_filters.min_score_floor = 55
+    bot.accuracy_filters.validate_entry_with_reason.return_value = (True, "OK")
+
+    with patch(
+        "market_bot.kite_main.market_session_state",
+        return_value="REGULAR_SESSION",
+    ), patch(
+        "market_bot.kite_main.score_market",
+        return_value=SimpleNamespace(
+            signal="SELL", score=80, reasons=[], strategy_variant=None
+        ),
+    ):
+        bot.on_bar_complete("100", option_bars[-1])
+
+    bot._handle_buy_signal.assert_called_once()
+    assert bot._handle_buy_signal.call_args.kwargs[
+        "paper_change_attributions"
+    ] == ["option_premium_rising_momentum_v2"]
 
 
 def test_option_candle_threshold_is_shared_across_modes():

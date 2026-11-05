@@ -96,6 +96,36 @@ def normalize_decision_outcome(value: Any) -> str:
     return "operational"
 
 
+def normalize_entry_confirmation_detail(record: Dict[str, Any]) -> str:
+    event = str(record.get("confirmation_event") or "")
+    if event in {"signal_generated", "signal_ignored_pending"}:
+        return "pending"
+    if event == "confirmed_trade":
+        return "trade_opened"
+    if event in {"rejected_by_confirmation", "confirmation_error"}:
+        return "confirmation_failed"
+    if event == "filter_failed_after_confirmation":
+        reason = " ".join(
+            str(record.get(key) or "")
+            for key in ("cancellation_reason", "cancellation_sub_reason")
+        ).lower()
+        if any(marker in reason for marker in ("stale_quote", "stale quote", "quote stale")):
+            return "stale_quote"
+        if any(
+            marker in reason
+            for marker in (
+                "risk_cap",
+                "one_lot_exceeds",
+                "loss_cap",
+                "daily loss",
+                "risk budget",
+            )
+        ):
+            return "risk_cap"
+        return "other_filter"
+    return "other_filter"
+
+
 class PaperTradingRecorder:
     """Store paper-trading events in date-partitioned compressed Parquet files."""
 
@@ -210,6 +240,17 @@ class PaperTradingRecorder:
         "reentry_exit_price",
         "reentry_pnl",
         "reentry_outcome",
+        "signal_id",
+        "atr_pct",
+        "effective_volatility_threshold_pct",
+        "momentum_candle",
+        "momentum_body_ratio",
+        "momentum_body_ratio_threshold",
+        "direction_rule",
+        "active_paper_change_attributions",
+        "confirmation_momentum_candle",
+        "confirmation_momentum_body_ratio",
+        "confirmation_momentum_body_ratio_threshold",
     ]
     DECISION_COLUMNS = [
         "timestamp", "config_hash", "git_sha", "git_dirty",
@@ -232,9 +273,14 @@ class PaperTradingRecorder:
         "paper_change_attributions", "body_ratio", "body_ratio_threshold",
         "paper_change_gate_evaluations", "would_pass_baseline",
         "body_ratio_source",
+        "atr_pct", "effective_volatility_threshold_pct", "momentum_candle",
+        "momentum_body_ratio", "momentum_body_ratio_threshold",
+        "direction_rule", "active_paper_change_attributions",
         "confirmation_candle_time", "confirmation_close",
         "confirmation_result", "confirmation_delay_seconds",
         "confirmation_body_ratio", "confirmation_body_ratio_threshold",
+        "confirmation_momentum_candle", "confirmation_momentum_body_ratio",
+        "confirmation_momentum_body_ratio_threshold",
         "confirmation_bid", "confirmation_ask", "confirmation_ltp",
         "confirmation_quote_age_seconds", "order_premium", "order_bid",
         "order_ask", "order_ltp", "order_quote_age_seconds",
@@ -288,8 +334,8 @@ class PaperTradingRecorder:
         entry = dict(payload)
         if self.config_hash is not None:
             entry.setdefault("config_hash", self.config_hash)
-        entry.setdefault("git_sha", self.git_sha)
-        entry.setdefault("git_dirty", self.git_dirty)
+        entry["git_sha"] = self.git_sha
+        entry["git_dirty"] = self.git_dirty
         return entry
 
     @staticmethod
@@ -1259,14 +1305,18 @@ class DecisionJournal:
         entry.setdefault("contract_id", "")
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
-        entry.setdefault("git_sha", self.git_sha)
-        entry.setdefault("git_dirty", self.git_dirty)
+        entry["git_sha"] = self.git_sha
+        entry["git_dirty"] = self.git_dirty
         history = entry.get("history")
         if isinstance(history, list) and len(history) > self.MAX_HISTORY_BARS:
             entry["history"] = history[-self.MAX_HISTORY_BARS:]
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        detail = str(entry.get("outcome", "UNKNOWN"))
-        entry.setdefault("outcome_detail", detail)
+        if entry.get("event") == "entry_confirmation":
+            detail = normalize_entry_confirmation_detail(entry)
+            entry["outcome_detail"] = detail
+        else:
+            detail = str(entry.get("outcome", "UNKNOWN"))
+            entry.setdefault("outcome_detail", detail)
         entry["outcome"] = normalize_decision_outcome(detail)
         if entry["outcome"] in {
             "accuracy_filter", "option_filter", "risk_blocked", "execution_failed",
@@ -1365,8 +1415,8 @@ class PaperShadowExitJournal:
     def _append(self, record: Dict[str, Any]) -> None:
         if self.config_hash is not None:
             record.setdefault("config_hash", self.config_hash)
-        record.setdefault("git_sha", self.git_sha)
-        record.setdefault("git_dirty", self.git_dirty)
+        record["git_sha"] = self.git_sha
+        record["git_dirty"] = self.git_dirty
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, default=str) + "\n")
         self.latest[str(record["trade_id"])] = dict(record)
@@ -1375,8 +1425,8 @@ class PaperShadowExitJournal:
         entry = dict(record)
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
-        entry.setdefault("git_sha", self.git_sha)
-        entry.setdefault("git_dirty", self.git_dirty)
+        entry["git_sha"] = self.git_sha
+        entry["git_dirty"] = self.git_dirty
         entry["status"] = "open"
         entry["event"] = "opened"
         self._append(entry)
@@ -1457,14 +1507,19 @@ class TradeJournal:
     def _stamp_trade_identity(self, trade: Dict[str, Any]) -> None:
         if self.config_hash is not None:
             trade.setdefault("config_hash", self.config_hash)
-        trade.setdefault("git_sha", self.git_sha)
-        trade.setdefault("git_dirty", self.git_dirty)
+        trade["git_sha"] = self.git_sha
+        trade["git_dirty"] = self.git_dirty
 
     def log_trade(self, payload: Dict[str, Any]) -> int:
         entry = dict(payload)
         entry.setdefault("contract_id", "")
         self._stamp_trade_identity(entry)
-        entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if not entry.get("timestamp"):
+            entry["timestamp"] = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+        if not entry.get("entry_time"):
+            entry["entry_time"] = entry["timestamp"]
         entry.setdefault("status", "open")
         entry.setdefault("pnl", 0.0)
         entry.setdefault("exit_source", "BOT")
@@ -1622,6 +1677,7 @@ class TradeJournal:
                     trade["pnl"] = stop_loss - entry_price
                     trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "STOP_LOSS"
+                    trade["exit_reason"] = "STOP_LOSS"
                     self._write_trades(trades)
                     if self.paper_recorder:
                         self.paper_recorder.record_trade(trade)
@@ -1632,6 +1688,7 @@ class TradeJournal:
                     trade["pnl"] = take_profit - entry_price
                     trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "TAKE_PROFIT"
+                    trade["exit_reason"] = "TAKE_PROFIT"
                     self._write_trades(trades)
                     if self.paper_recorder:
                         self.paper_recorder.record_trade(trade)
@@ -1644,6 +1701,7 @@ class TradeJournal:
                     trade["pnl"] = entry_price - stop_loss
                     trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "STOP_LOSS"
+                    trade["exit_reason"] = "STOP_LOSS"
                     self._write_trades(trades)
                     if self.paper_recorder:
                         self.paper_recorder.record_trade(trade)
@@ -1654,6 +1712,7 @@ class TradeJournal:
                     trade["pnl"] = entry_price - take_profit
                     trade["closed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     trade["reason"] = "TAKE_PROFIT"
+                    trade["exit_reason"] = "TAKE_PROFIT"
                     self._write_trades(trades)
                     if self.paper_recorder:
                         self.paper_recorder.record_trade(trade)
@@ -1714,9 +1773,7 @@ class TradeJournal:
             trade["exit_source"] = exit_source or (
                 "MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT"
             )
-            trade["exit_reason"] = exit_reason or (
-                reason if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else None
-            )
+            trade["exit_reason"] = exit_reason or reason
             trade["manual_exit_price"] = None
             self._write_trades(trades)
             if self.paper_recorder:

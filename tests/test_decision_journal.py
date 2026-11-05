@@ -1,7 +1,11 @@
 import json
 from datetime import datetime, timedelta
 
-from market_bot.trade_journal import DecisionJournal, TradeJournal
+from market_bot.trade_journal import (
+    DecisionJournal,
+    PaperTradingRecorder,
+    TradeJournal,
+)
 
 
 def test_decision_journal_appends_json_without_changing_payload(tmp_path):
@@ -32,6 +36,84 @@ def test_trade_journal_records_contract_id(tmp_path):
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert record["contract_id"] == "NFO:NIFTY26OCT25000CE"
+
+
+def test_trade_journal_persists_entry_telemetry_time_and_bot_exit_reason(tmp_path):
+    path = tmp_path / "trades.jsonl"
+    paper_data_dir = tmp_path / "paper"
+    journal = TradeJournal(str(path), str(paper_data_dir))
+    entry_time = "2026-10-30T10:00:00+05:30"
+
+    journal.log_trade(
+        {
+            "timestamp": entry_time,
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+            "signal_id": "NIFTY_CE|CE|2026-10-30T10:00:00+05:30",
+            "atr_pct": 0.043,
+            "effective_volatility_threshold_pct": 0.04,
+            "momentum_candle": {
+                "time": entry_time,
+                "open": 100.0,
+                "high": 105.0,
+                "low": 99.0,
+                "close": 104.0,
+            },
+            "momentum_body_ratio": 0.65,
+            "momentum_body_ratio_threshold": 0.6,
+            "direction_rule": "option_premium_rising_momentum_v2",
+            "active_paper_change_attributions": [
+                "option_premium_rising_momentum_v2"
+            ],
+        }
+    )
+    journal.close_trade("NIFTY_CE", 90.0, "BUY", "STOP_LOSS")
+
+    record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["entry_time"] == entry_time
+    assert record["signal_id"] == "NIFTY_CE|CE|2026-10-30T10:00:00+05:30"
+    assert record["atr_pct"] == 0.043
+    assert record["direction_rule"] == "option_premium_rising_momentum_v2"
+    assert record["exit_reason"] == "STOP_LOSS"
+
+    parquet_path = next(paper_data_dir.rglob("trades.parquet"))
+    parquet_record = PaperTradingRecorder._read_parquet(parquet_path)[0]
+    assert parquet_record["signal_id"] == record["signal_id"]
+    assert parquet_record["atr_pct"] == "0.043"
+    assert parquet_record["effective_volatility_threshold_pct"] == "0.04"
+    assert json.loads(parquet_record["momentum_candle"])["open"] == 100.0
+    assert parquet_record["momentum_body_ratio"] == "0.65"
+    assert (
+        parquet_record["momentum_body_ratio_threshold"] == "0.6"
+    )
+    assert parquet_record["direction_rule"] == record["direction_rule"]
+    assert json.loads(
+        parquet_record["active_paper_change_attributions"]
+    ) == ["option_premium_rising_momentum_v2"]
+    assert parquet_record["entry_time"] == entry_time
+    assert parquet_record["exit_reason"] == "STOP_LOSS"
+
+
+def test_trade_journal_update_pnl_records_bot_exit_reason(tmp_path):
+    path = tmp_path / "trades.jsonl"
+    journal = TradeJournal(str(path))
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 120.0,
+        }
+    )
+
+    journal.update_trade_pnl("NIFTY_CE", 89.0, "BUY")
+
+    record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["status"] == "closed"
+    assert record["reason"] == "STOP_LOSS"
+    assert record["exit_reason"] == "STOP_LOSS"
 
 
 def test_decision_journal_bounds_large_history_payloads(tmp_path):
@@ -66,6 +148,49 @@ def test_decision_journal_normalizes_outcome_and_records_ist_session(tmp_path):
     assert record["market_session"] == "regular_session"
     assert record["market_hours"] is True
     assert record["session_timezone"] == "Asia/Kolkata"
+
+
+def test_entry_confirmation_outcomes_are_normalized(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    journal = DecisionJournal(str(path))
+    outcomes = [
+        ("signal_generated", {}, "pending"),
+        ("rejected_by_confirmation", {}, "confirmation_failed"),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "stale_quote"},
+            "stale_quote",
+        ),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "risk_cap"},
+            "risk_cap",
+        ),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "premium"},
+            "other_filter",
+        ),
+        ("confirmed_trade", {}, "trade_opened"),
+    ]
+
+    for event, details, _ in outcomes:
+        journal.log_decision(
+            {
+                "event": "entry_confirmation",
+                "confirmation_event": event,
+                "outcome": "UNKNOWN",
+                **details,
+            }
+        )
+
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["outcome_detail"] for record in records] == [
+        expected for _, _, expected in outcomes
+    ]
+    assert all(record["outcome_detail"] != "UNKNOWN" for record in records)
 
 
 def test_decision_journal_normalizes_shared_risk_and_cutoff_outcomes(tmp_path):
