@@ -131,8 +131,8 @@ def test_finalization_logs_steps_in_order(tmp_path, monkeypatch, caplog):
         "Daily finalization stream stopped",
         "Daily finalization journals flushed",
         f"Daily finalization summary written: {summary_path}",
-        f"Daily finalization review written: {review_path}",
         "Daily finalization Telegram queued",
+        f"Daily finalization review written: {review_path}",
     ]
 
     with caplog.at_level(logging.INFO):
@@ -141,6 +141,16 @@ def test_finalization_logs_steps_in_order(tmp_path, monkeypatch, caplog):
     lines = [record.getMessage() for record in caplog.records]
     indexes = [next(i for i, line in enumerate(lines) if line == step) for step in expected]
     assert indexes == sorted(indexes)
+    reporting_steps = [
+        next(i for i, line in enumerate(lines) if f"Reporting step={step} " in line)
+        for step in (
+            "daily_finalization_exits",
+            "daily_finalization_stream_stop",
+            "daily_finalization_decision_journal",
+            "daily_summary_telegram_queue",
+        )
+    ]
+    assert reporting_steps == sorted(reporting_steps)
     assert bot.decision_journal.flush_decisions.call_args_list[0].kwargs == {
         "timeout": 20.0,
         "compact_final_hour": True,

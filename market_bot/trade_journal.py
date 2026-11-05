@@ -20,6 +20,7 @@ import pandas as pd
 from fastparquet import ParquetFile, write as write_parquet
 
 from .change_tracking import get_git_identity
+from .reporting_metrics import ReportingStep
 
 
 logger = logging.getLogger(__name__)
@@ -732,7 +733,9 @@ def _deduplicate_decision_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def read_decisions(
-    day_path: str | Path, columns: Optional[List[str]] = None
+    day_path: str | Path,
+    columns: Optional[List[str]] = None,
+    reporting_step: Optional[ReportingStep] = None,
 ) -> pd.DataFrame:
     """Read day decisions; single-source projections retain source row multiplicity."""
     directory = Path(day_path)
@@ -750,37 +753,100 @@ def read_decisions(
     legacy = directory / "decisions.parquet"
     if legacy.is_file():
         sources.append(legacy)
+    sources.extend(sorted(directory.glob("decisions_part*.parquet")))
     parts_dir = directory / "decisions"
     if parts_dir.is_dir():
         sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
     if not sources:
         return pd.DataFrame()
 
-    if columns and len(sources) == 1:
-        source = sources[0]
-        available_columns = ParquetFile(source).columns
-        selected_columns = [
-            column for column in columns if column in available_columns
-        ]
-        if selected_columns:
-            result = pd.read_parquet(
-                source, engine="fastparquet", columns=selected_columns
-            ).reindex(columns=columns)
-            if "timestamp" in result.columns and not result.empty:
-                order = pd.to_datetime(
-                    result["timestamp"], utc=True, errors="coerce"
-                )
-                result = (
-                    result.assign(_decision_sort_timestamp=order)
-                    .sort_values(
-                        "_decision_sort_timestamp",
-                        kind="mergesort",
-                        na_position="last",
+    if columns:
+        frames = []
+        source_columns = set()
+        for source in sources:
+            try:
+                import gc
+                import pyarrow as pyarrow
+                import pyarrow.parquet as pyarrow_parquet
+            except ImportError:
+                pyarrow = None
+                pyarrow_parquet = None
+            if pyarrow_parquet is not None:
+                parquet = pyarrow_parquet.ParquetFile(source)
+                available_columns = parquet.schema.names
+                row_count = parquet.metadata.num_rows
+                if reporting_step is not None:
+                    reporting_step.record_parquet_metadata(
+                        parquet.metadata.num_row_groups,
+                        len(available_columns),
                     )
-                    .drop(columns="_decision_sort_timestamp")
-                    .reset_index(drop=True)
+            else:
+                parquet = ParquetFile(source)
+                available_columns = parquet.columns
+                row_count = parquet.count()
+                if reporting_step is not None:
+                    reporting_step.record_parquet_metadata(
+                        len(parquet.row_groups),
+                        len(available_columns),
+                    )
+            selected_columns = [
+                column for column in columns if column in available_columns
+            ]
+            source_columns.update(available_columns)
+            if selected_columns:
+                if pyarrow_parquet is not None:
+                    table = pyarrow.Table.from_batches(
+                        parquet.iter_batches(
+                            columns=selected_columns, batch_size=2048
+                        )
+                    )
+                    frame = table.to_pandas().reindex(columns=columns)
+                    del table
+                else:
+                    frame = pd.read_parquet(
+                        source,
+                        engine="fastparquet",
+                        columns=selected_columns,
+                    ).reindex(columns=columns)
+            else:
+                frame = pd.DataFrame(
+                    index=range(row_count), columns=columns
                 )
-            return result
+            del parquet
+            frames.append(frame)
+            if pyarrow is not None:
+                gc.collect()
+                pyarrow.default_memory_pool().release_unused()
+        result = frames[0] if len(frames) == 1 else pd.concat(
+            frames, ignore_index=True, sort=False
+        ).convert_dtypes()
+        has_legacy_parts = any(
+            source.name.startswith("decisions_part") for source in sources
+        )
+        has_legacy_overlap = has_legacy_parts or (
+            legacy.is_file()
+            and any(source.parent != directory for source in sources)
+        )
+        if has_legacy_overlap and source_columns.issubset(columns):
+            result = _deduplicate_decision_frame(result)
+        if "timestamp" in result.columns and not result.empty:
+            order = pd.to_datetime(
+                result["timestamp"],
+                format="mixed",
+                utc=True,
+                errors="coerce",
+            )
+            result = (
+                result.assign(_decision_sort_timestamp=order)
+                .sort_values(
+                    "_decision_sort_timestamp",
+                    kind="mergesort",
+                    na_position="last",
+                )
+                .drop(columns="_decision_sort_timestamp")
+                .reset_index(drop=True)
+            )
+        return result
 
     frames = [
         pd.read_parquet(source, engine="fastparquet")
@@ -799,7 +865,12 @@ def read_decisions(
         result = pd.concat(aligned, ignore_index=True, sort=False).convert_dtypes()
     result = _deduplicate_decision_frame(result)
     if "timestamp" in result.columns and not result.empty:
-        order = pd.to_datetime(result["timestamp"], utc=True, errors="coerce")
+        order = pd.to_datetime(
+            result["timestamp"],
+            format="mixed",
+            utc=True,
+            errors="coerce",
+        )
         result = (
             result.assign(_decision_sort_timestamp=order)
             .sort_values("_decision_sort_timestamp", kind="mergesort", na_position="last")

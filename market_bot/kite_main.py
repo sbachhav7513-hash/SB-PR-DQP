@@ -8,8 +8,11 @@ import logging
 import math
 import os
 import queue
+import shutil
 import signal
 import sys
+import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -39,6 +42,10 @@ from .intraday_manager import (
 from .kite_provider import KiteConfig, KiteHistoricalProvider, KiteMarketStream, Tick
 from .market_news import NewsMonitor, apply_news_filter
 from .option_capture import OptionCaptureWriter
+from .reporting_metrics import (
+    ReportingStep,
+    process_working_set_bytes,
+)
 from .risk_manager import (
     MAX_TRADE_RISK_PCT,
     build_risk_plan,
@@ -65,10 +72,10 @@ from .trade_journal import (
     TradeJournal,
 )
 from .weekly_report import (
+    _date_records,
+    _weekly_review_destination,
     write_daily_review,
     write_daily_summary,
-    write_weekly_report,
-    write_weekly_review,
 )
 
 
@@ -92,6 +99,10 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+WEEKLY_REPORT_TIME_BUDGET_SECONDS = 120.0
+WEEKLY_REPORT_MEMORY_BUDGET_BYTES = 600 * 1024 * 1024
+
+
 IST = ZoneInfo("Asia/Kolkata")
 HEARTBEAT_INTERVAL_SECONDS = 30 * 60
 OPTION_MIN_CANDLE_BODY_RATIO = 0.60
@@ -1883,6 +1894,9 @@ class KiteTradingBot:
             else Path(self.config.get("weekly_report_dir", "."))
         )
         self.last_weekly_report_date = None
+        self._weekly_report_attempt_date = None
+        self._weekly_report_lock = threading.Lock()
+        self._weekly_report_thread = None
         self.last_daily_summary_date = None
         self._finalization_attempts = 0
         self._next_finalization_attempt_at = 0.0
@@ -8596,6 +8610,13 @@ class KiteTradingBot:
                 price = self.latest_prices.get(pos_symbol, pos_details["entry_price"])
                 self._close_position(pos_symbol, price, "MARKET_CLOSE_FORCED_EXIT")
 
+    @staticmethod
+    def _measure_finalization_step(name, action, files=(), rows=0):
+        with ReportingStep(logger, name, files) as step:
+            result = action()
+            step.rows = rows
+            return result
+
     def _finalize_daily_session(self, now: datetime) -> bool:
         """Complete post-close reporting only after the broker confirms flatness."""
         logger.info("Daily finalization started")
@@ -8613,7 +8634,9 @@ class KiteTradingBot:
             if tick_lock is not None:
                 tick_lock.acquire()
             try:
-                self._handle_market_close_exit()
+                self._measure_finalization_step(
+                    "daily_finalization_exits", self._handle_market_close_exit
+                )
                 logger.info("Daily finalization exits done")
                 if self.intraday_manager.get_all_open_positions():
                     self.telegram_notifier.send_message(
@@ -8675,7 +8698,9 @@ class KiteTradingBot:
 
             stream = getattr(self, "kite_stream", None)
             if stream is not None:
-                stream.stop()
+                self._measure_finalization_step(
+                    "daily_finalization_stream_stop", stream.stop
+                )
             logger.info("Daily finalization stream stopped")
 
             if tick_lock is not None:
@@ -8683,28 +8708,33 @@ class KiteTradingBot:
             try:
                 stop_journal = getattr(self, "stop_reentry_journal", None)
                 if stop_journal is not None:
-                    stop_journal.end_session(now)
-                    stop_journal.flush(timeout=1.0)
+                    self._measure_finalization_step(
+                        "daily_finalization_stop_journal",
+                        lambda: (
+                            stop_journal.end_session(now),
+                            stop_journal.flush(timeout=1.0),
+                        ),
+                    )
                 decision_journal = getattr(self, "decision_journal", None)
-                if decision_journal is not None and not decision_journal.flush_decisions(
-                    timeout=20.0, compact_final_hour=True
+                if decision_journal is not None and not self._measure_finalization_step(
+                    "daily_finalization_decision_journal",
+                    lambda: decision_journal.flush_decisions(
+                        timeout=20.0, compact_final_hour=True
+                    ),
                 ):
                     raise TimeoutError(
                         "Decision journal did not flush before end-of-day reporting"
                     )
                 logger.info("Daily finalization journals flushed")
                 self._stop_event_check_state = {}
-                summary = self._write_daily_summary_if_due(now.date())
+                self._measure_finalization_step(
+                    "daily_finalization_reports",
+                    lambda: self._write_daily_summary_if_due(now.date()),
+                )
             finally:
                 if tick_lock is not None:
                     tick_lock.release()
 
-            if summary is not None:
-                queued = self.telegram_notifier.send_daily_summary(**summary)
-                if not queued:
-                    raise RuntimeError("Daily summary Telegram message was not queued")
-                self.last_daily_summary_date = now.date()
-            logger.info("Daily finalization Telegram queued")
             self._run_weekly_report_if_due(now)
             return True
         except Exception:
@@ -8773,12 +8803,25 @@ class KiteTradingBot:
             timeout=20.0, compact_final_hour=True
         ):
             raise TimeoutError("Decision journal did not flush before daily reporting")
-        today_trades = [
-            trade
-            for trade in self.trade_journal.read_trades()
-            if trade.get("status") == "closed"
-            and str(trade.get("closed_at", "")).startswith(today.isoformat())
-        ]
+        trade_log_path = getattr(self.trade_journal, "path", None)
+        if trade_log_path is None:
+            today_trades = [
+                trade
+                for trade in self.trade_journal.read_trades()
+                if trade.get("status") == "closed"
+                and str(trade.get("closed_at", "")).startswith(today.isoformat())
+            ]
+        else:
+            today_trades = [
+                trade
+                for trade in _date_records(
+                    Path(trade_log_path),
+                    Path(self.paper_trading_dir),
+                    "trades.parquet",
+                    today,
+                )
+                if trade.get("status") == "closed"
+            ]
         pnls = [float(trade.get("pnl", 0.0)) for trade in today_trades]
         summary_path = write_daily_summary(
             data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
@@ -8786,13 +8829,7 @@ class KiteTradingBot:
         if not summary_path.is_file():
             raise OSError(f"Daily summary was not written: {summary_path}")
         logger.info("Daily finalization summary written: %s", summary_path)
-        review_path = write_daily_review(
-            data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
-        )
-        if not review_path.is_file():
-            raise OSError(f"Daily review was not written: {review_path}")
-        logger.info("Daily finalization review written: %s", review_path)
-        return {
+        summary = {
             "summary_date": today.isoformat(),
             "closed_trades": len(today_trades),
             "winning_trades": sum(1 for pnl in pnls if pnl > 0),
@@ -8807,6 +8844,23 @@ class KiteTradingBot:
                 f"P&L: {sum(pnls):.2f}"
             ),
         }
+        if self.last_daily_summary_date != today:
+            with ReportingStep(
+                logger, "daily_summary_telegram_queue", []
+            ) as step:
+                queued = self.telegram_notifier.send_daily_summary(**summary)
+                step.rows = 1 if queued else 0
+            if not queued:
+                raise RuntimeError("Daily summary Telegram message was not queued")
+            self.last_daily_summary_date = today
+            logger.info("Daily finalization Telegram queued")
+        review_path = write_daily_review(
+            data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
+        )
+        if not review_path.is_file():
+            raise OSError(f"Daily review was not written: {review_path}")
+        logger.info("Daily finalization review written: %s", review_path)
+        return summary
 
     @staticmethod
     def _handle_sigterm(signum: int, frame: object) -> None:
@@ -8961,32 +9015,252 @@ class KiteTradingBot:
                     signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
     def _run_weekly_report_if_due(self, now: datetime) -> None:
-        """Publish one protected weekly report after Friday's close check."""
-        if now.weekday() != 4 or self.last_weekly_report_date == now.date():
+        """Start the budgeted Friday report without blocking daily finalization."""
+        if (
+            now.weekday() != 4
+            or self.last_weekly_report_date == now.date()
+            or getattr(self, "_weekly_report_attempt_date", None) == now.date()
+        ):
             return
+        lock = getattr(self, "_weekly_report_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._weekly_report_lock = lock
+        if not lock.acquire(blocking=False):
+            return
+        self._weekly_report_attempt_date = now.date()
+        days = self.config.get("weekly_report_days", 7)
+        args = (
+            ".",
+            self.paper_trading_dir,
+            str(self.weekly_report_dir),
+            days,
+        )
+        worker = threading.Thread(
+            target=self._run_weekly_report_job,
+            args=args,
+            name="weekly-report-budgeted",
+            daemon=True,
+        )
+        self._weekly_report_thread = worker
         try:
-            report_path = write_weekly_report(
-                data_dir=".",
-                days=self.config.get("weekly_report_days", 7),
-                output_dir=str(self.weekly_report_dir),
-                paper_data_dir=self.paper_trading_dir,
-            )
-            review_path = write_weekly_review(
-                data_dir=".",
-                paper_data_dir=self.paper_trading_dir,
-                days=self.config.get("weekly_report_days", 7),
-            )
-            if report_path.exists():
-                self.last_weekly_report_date = now.date()
-                logger.info(
-                    "Automatic weekly report written to %s; review written to %s",
-                    report_path,
-                    review_path,
-                )
-            else:
-                logger.error("Weekly report was not published; it will be retried")
+            worker.start()
         except Exception:
-            logger.exception("Weekly analytics failed; trading remains active")
+            lock.release()
+            logger.exception("Could not start the protected weekly report")
+            return
+        logger.info(
+            "Automatic weekly report started asynchronously with %.0fs/%.0fMB budget",
+            WEEKLY_REPORT_TIME_BUDGET_SECONDS,
+            WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024),
+        )
+
+    def _run_weekly_report_job(
+        self,
+        data_dir: str,
+        paper_data_dir: str,
+        output_dir: str,
+        days: int,
+    ) -> None:
+        lock = self._weekly_report_lock
+        started = time.monotonic()
+        peak_rss_bytes = 0
+        budget_error = None
+        process = None
+        result_path = None
+        staging_path = None
+        review_staging_path = None
+        try:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            staging_name = tempfile.mkdtemp(
+                prefix=".weekly_report_stage_", dir=output_dir
+            )
+            staging_path = Path(staging_name)
+            review_final_path = _weekly_review_destination(paper_data_dir)
+            review_final_path.parent.mkdir(parents=True, exist_ok=True)
+            review_descriptor, review_staging_name = tempfile.mkstemp(
+                prefix=".weekly_review_stage_",
+                suffix=".md",
+                dir=review_final_path.parent,
+            )
+            os.close(review_descriptor)
+            review_staging_path = Path(review_staging_name)
+            descriptor, result_name = tempfile.mkstemp(
+                prefix="weekly_report_status_", suffix=".json"
+            )
+            os.close(descriptor)
+            result_path = Path(result_name)
+            environment = os.environ.copy()
+            package_root = str(Path(__file__).resolve().parents[1])
+            existing_pythonpath = environment.get("PYTHONPATH")
+            environment["PYTHONPATH"] = os.pathsep.join(
+                path
+                for path in (package_root, existing_pythonpath)
+                if path
+            )
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "market_bot.weekly_report_worker",
+                    "--data-dir",
+                    data_dir,
+                    "--paper-data-dir",
+                    paper_data_dir,
+                    "--output-dir",
+                    output_dir,
+                    "--staging-dir",
+                    str(staging_path),
+                    "--review-staging-path",
+                    str(review_staging_path),
+                    "--review-final-path",
+                    str(review_final_path),
+                    "--days",
+                    str(days),
+                    "--result-file",
+                    str(result_path),
+                    "--memory-budget-bytes",
+                    str(WEEKLY_REPORT_MEMORY_BUDGET_BYTES),
+                    "--time-budget-seconds",
+                    str(WEEKLY_REPORT_TIME_BUDGET_SECONDS),
+                ],
+                cwd=os.getcwd(),
+                env=environment,
+            )
+            while process.poll() is None:
+                try:
+                    peak_rss_bytes = max(
+                        peak_rss_bytes,
+                        process_working_set_bytes(process.pid),
+                    )
+                except (OSError, ValueError) as exc:
+                    if process.poll() is not None:
+                        break
+                    budget_error = f"RSS monitoring failed: {exc}"
+                    break
+                try:
+                    process.wait(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.poll() is not None:
+                    break
+                elapsed = time.monotonic() - started
+                if peak_rss_bytes > WEEKLY_REPORT_MEMORY_BUDGET_BYTES:
+                    budget_error = (
+                        f"peak RSS {peak_rss_bytes / (1024 * 1024):.1f} MB "
+                        f"exceeded {WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024):.0f} MB"
+                    )
+                    break
+                if elapsed > WEEKLY_REPORT_TIME_BUDGET_SECONDS:
+                    budget_error = (
+                        f"elapsed {elapsed:.1f}s exceeded "
+                        f"{WEEKLY_REPORT_TIME_BUDGET_SECONDS:.0f}s"
+                    )
+                    break
+            if budget_error:
+                process.terminate()
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5.0)
+                logger.error(
+                    "Weekly report skipped: budget exceeded (%s); "
+                    "daily finalization and Telegram summary are unaffected",
+                    budget_error,
+                )
+                return
+
+            if process.returncode != 0:
+                logger.error(
+                    "Weekly report worker failed with exit code %s",
+                    process.returncode,
+                )
+                return
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                logger.exception("Weekly report worker returned no completion status")
+                return
+            status = result.get("status")
+            report_path = result.get("report_path", result.get("error", ""))
+            review_path = result.get("review_path", "")
+            child_peak_rss_bytes = int(result.get("peak_rss_bytes", 0))
+            peak_rss_bytes = max(peak_rss_bytes, child_peak_rss_bytes)
+            if peak_rss_bytes > WEEKLY_REPORT_MEMORY_BUDGET_BYTES:
+                logger.error(
+                    "Weekly report skipped: peak RSS %.1f MB exceeded %.0f MB; "
+                    "daily finalization and Telegram summary are unaffected",
+                    peak_rss_bytes / (1024 * 1024),
+                    WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024),
+                )
+                return
+            if status == "budget":
+                logger.error(
+                    "Weekly report skipped: budget exceeded (%s); "
+                    "daily finalization and Telegram summary are unaffected",
+                    report_path,
+                )
+                return
+            if status != "ok":
+                logger.error("Weekly analytics failed: %s", report_path)
+                return
+            self.last_weekly_report_date = self._weekly_report_attempt_date
+            logger.info(
+                "Automatic weekly report written to %s; review written to %s; "
+                "elapsed=%.1fs peak_rss_mb=%.1f",
+                report_path,
+                review_path,
+                time.monotonic() - started,
+                peak_rss_bytes / (1024 * 1024),
+            )
+        except Exception:
+            logger.exception(
+                "Weekly analytics worker failed; daily finalization remains active"
+            )
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5.0)
+            if result_path is not None:
+                for temporary_file in (
+                    result_path,
+                    result_path.with_suffix(result_path.suffix + ".tmp"),
+                ):
+                    try:
+                        temporary_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.exception(
+                            "Could not remove weekly report status file %s",
+                            temporary_file,
+                        )
+            if staging_path is not None:
+                try:
+                    shutil.rmtree(staging_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.exception(
+                        "Could not remove weekly report staging directory %s",
+                        staging_path,
+                    )
+            if review_staging_path is not None:
+                try:
+                    review_staging_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.exception(
+                        "Could not remove weekly review staging file %s",
+                        review_staging_path,
+                    )
+            lock.release()
 
 
 def main() -> None:
