@@ -28,6 +28,7 @@ IST = ZoneInfo("Asia/Kolkata")
 DECISION_QUEUE_SIZE = 50_000
 DECISION_BATCH_SIZE = 200
 DECISION_FLUSH_INTERVAL_SECONDS = 60.0
+REJECTED_SIGNAL_UPDATE_QUEUE_SIZE = 10_000
 DECISION_WRITERS: weakref.WeakSet = weakref.WeakSet()
 DECISION_WRITERS_LOCK = threading.Lock()
 
@@ -882,6 +883,69 @@ def read_decisions(
     return result
 
 
+def rejected_signal_updates_path(path: str | Path) -> Path:
+    rejected_path = Path(path)
+    return rejected_path.with_name(
+        f"{rejected_path.stem}.updates{rejected_path.suffix}"
+    )
+
+
+def read_rejected_signals(path: str | Path) -> List[Dict[str, Any]]:
+    """Read legacy base rows and merge append-only updates by signal id."""
+    rejected_path = Path(path)
+    rows: Dict[str, Dict[str, Any]] = {}
+    if rejected_path.exists():
+        try:
+            with rejected_path.open("r", encoding="utf-8") as source:
+                for line_number, line in enumerate(source, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping invalid rejected-signal line %s",
+                            line_number,
+                        )
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    signal_id = str(row.get("signal_id", ""))
+                    if signal_id:
+                        rows[signal_id] = row
+        except OSError:
+            logger.exception("Could not read rejected-signal journal %s", rejected_path)
+            return []
+
+    updates_path = rejected_signal_updates_path(rejected_path)
+    if updates_path.exists():
+        try:
+            with updates_path.open("r", encoding="utf-8") as source:
+                for line_number, line in enumerate(source, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        update = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping invalid rejected-signal update %s at line %s",
+                            updates_path,
+                            line_number,
+                        )
+                        continue
+                    if not isinstance(update, dict):
+                        continue
+                    signal_id = str(update.get("signal_id", ""))
+                    patch = update.get("patch")
+                    if signal_id in rows and isinstance(patch, dict):
+                        rows[signal_id].update(patch)
+        except OSError:
+            logger.exception(
+                "Could not read rejected-signal updates %s", updates_path
+            )
+    return list(rows.values())
+
+
 class RejectedSignalJournal:
     """Track rejected signals and annotate their forward option-candle outcomes."""
 
@@ -890,8 +954,22 @@ class RejectedSignalJournal:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.updates_path = rejected_signal_updates_path(path)
         self.pending: Dict[str, Dict[str, Any]] = {}
+        self.pending_by_contract: Dict[str, set[str]] = {}
         self.seen_ids = set()
+        self._queue: queue.Queue = queue.Queue(
+            maxsize=REJECTED_SIGNAL_UPDATE_QUEUE_SIZE
+        )
+        self._writer: Optional[threading.Thread] = None
+        self._writer_lock = threading.Lock()
+        self._closed = False
+        self._retry_records: List[Dict[str, Any]] = []
+        self._stats_lock = threading.Lock()
+        self._last_flush_rows = 0
+        self._last_flush_ms = 0.0
+        self._write_failures = 0
+        self._dropped_updates = 0
         self._load_pending()
 
     @staticmethod
@@ -977,31 +1055,198 @@ class RejectedSignalJournal:
         return None
 
     def _load_pending(self) -> None:
-        if not self.path.exists():
+        for row in read_rejected_signals(self.path):
+            signal_id = str(row.get("signal_id", ""))
+            if not signal_id:
+                continue
+            self.seen_ids.add(signal_id)
+            if any(
+                row.get(f"forward_{minutes}m_status") == "pending"
+                for minutes in self.HORIZONS_MINUTES
+            ):
+                self.pending[signal_id] = row
+                self.pending_by_contract.setdefault(
+                    str(row.get("contract_id", "")), set()
+                ).add(signal_id)
+
+    def telemetry(self) -> Dict[str, Any]:
+        with self._stats_lock:
+            stats = {
+                "queue_depth": self._queue.qsize(),
+                "last_flush_rows": self._last_flush_rows,
+                "last_flush_ms": round(self._last_flush_ms, 3),
+                "write_failures": self._write_failures,
+                "dropped_updates": self._dropped_updates,
+                "pending_rows": len(self.pending),
+            }
+        return stats
+
+    @staticmethod
+    def _repair_jsonl_tail(destination) -> None:
+        destination.seek(0, os.SEEK_END)
+        end = destination.tell()
+        if not end:
             return
+        destination.seek(end - 1)
+        if destination.read(1) == b"\n":
+            destination.seek(0, os.SEEK_END)
+            return
+
+        position = end - 1
+        while position >= 0:
+            destination.seek(position)
+            if destination.read(1) == b"\n":
+                position += 1
+                break
+            position -= 1
+        line_start = position if position >= 0 else 0
+        destination.seek(line_start)
+        tail = destination.read(end - line_start)
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                for line_number, line in enumerate(handle, 1):
-                    if not line.strip():
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Skipping invalid rejected-signal line %s", line_number
-                        )
-                        continue
-                    signal_id = str(row.get("signal_id", ""))
-                    if not signal_id:
-                        continue
-                    self.seen_ids.add(signal_id)
-                    if any(
-                        row.get(f"forward_{minutes}m_status") == "pending"
-                        for minutes in self.HORIZONS_MINUTES
+            json.loads(tail)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            destination.truncate(line_start)
+        else:
+            destination.seek(0, os.SEEK_END)
+            destination.write(b"\n")
+        destination.seek(0, os.SEEK_END)
+
+    def _append_base_row(self, row: Dict[str, Any]) -> None:
+        payload = (json.dumps(row, default=str) + "\n").encode("utf-8")
+        if self.path.exists():
+            destination = self.path.open("r+b")
+        else:
+            destination = self.path.open("w+b")
+        with destination:
+            self._repair_jsonl_tail(destination)
+            if destination.write(payload) != len(payload):
+                raise OSError("Short write to rejected-signal journal")
+            destination.flush()
+
+    def _append_update_records(
+        self, records: List[Dict[str, Any]]
+    ) -> bool:
+        if not records:
+            return True
+        started = time_module.perf_counter()
+        try:
+            payload = "".join(
+                json.dumps(record, default=str) + "\n" for record in records
+            ).encode("utf-8")
+            self.updates_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.updates_path.exists():
+                destination = self.updates_path.open("r+b")
+            else:
+                destination = self.updates_path.open("w+b")
+            with destination:
+                self._repair_jsonl_tail(destination)
+                if destination.write(payload) != len(payload):
+                    raise OSError("Short write to rejected-signal updates")
+                destination.flush()
+        except (OSError, TypeError, ValueError):
+            with self._stats_lock:
+                self._write_failures += 1
+            logger.exception(
+                "Could not append rejected-signal updates to %s",
+                self.updates_path,
+            )
+            return False
+        finally:
+            with self._stats_lock:
+                self._last_flush_rows = len(records)
+                self._last_flush_ms = (
+                    time_module.perf_counter() - started
+                ) * 1000.0
+        return True
+
+    def _run_writer(self) -> None:
+        while True:
+            kind, payload = self._queue.get()
+            try:
+                if kind == "updates":
+                    records = self._retry_records + payload
+                    if self._append_update_records(records):
+                        self._retry_records = []
+                    else:
+                        self._retry_records = records
+                elif kind in {"flush", "close"}:
+                    if self._retry_records and self._append_update_records(
+                        self._retry_records
                     ):
-                        self.pending[signal_id] = row
-        except OSError:
-            logger.exception("Could not read rejected-signal journal %s", self.path)
+                        self._retry_records = []
+                    success = not self._retry_records
+                    payload.append(success)
+                    payload[0].set()
+                    if kind == "close":
+                        return
+            except Exception:
+                with self._stats_lock:
+                    self._write_failures += 1
+                logger.exception("Rejected-signal writer failed")
+            finally:
+                self._queue.task_done()
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        completed: List[Any] = [threading.Event()]
+        with self._writer_lock:
+            writer = self._writer
+            if self._closed:
+                return writer is None or not writer.is_alive()
+            if writer is None:
+                return not self._retry_records
+            if not writer.is_alive():
+                logger.error("Rejected-signal writer stopped before flush")
+                return False
+            try:
+                self._queue.put(("flush", completed), timeout=max(timeout, 0.0))
+            except queue.Full:
+                logger.error("Could not queue rejected-signal flush before timeout")
+                return False
+        if not completed[0].wait(timeout):
+            logger.error("Rejected-signal flush timed out")
+            return False
+        return bool(completed[1]) if len(completed) > 1 else False
+
+    def close(self, timeout: float = 5.0) -> bool:
+        with self._writer_lock:
+            if self._closed:
+                writer = self._writer
+                if writer is None or not writer.is_alive():
+                    return True
+                already_closing = True
+            else:
+                self._closed = True
+                writer = self._writer
+                already_closing = False
+        if writer is None:
+            return True
+        if already_closing:
+            writer.join(timeout=max(timeout, 0.0))
+            return not writer.is_alive()
+        completed: List[Any] = [threading.Event()]
+        try:
+            self._queue.put(("close", completed), timeout=max(timeout, 0.0))
+        except queue.Full:
+            logger.error("Could not queue rejected-signal shutdown before timeout")
+            with self._writer_lock:
+                self._closed = False
+            return False
+        finished = completed[0].wait(timeout)
+        writer.join(timeout=max(timeout, 0.0))
+        return finished and bool(completed[1] if len(completed) > 1 else False)
+
+    def read(self, timeout: float = 5.0) -> List[Dict[str, Any]]:
+        with self._writer_lock:
+            closed = self._closed
+            writer = self._writer
+        if closed:
+            if writer is not None:
+                writer.join(timeout=max(timeout, 0.0))
+                if writer.is_alive():
+                    raise OSError("Rejected-signal writer did not shut down")
+        elif not self.flush(timeout):
+            raise OSError("Rejected-signal updates did not flush")
+        return read_rejected_signals(self.path)
 
     def record_rejection(self, entry: Dict[str, Any]) -> None:
         gate = self._gate_for_entry(entry)
@@ -1027,6 +1272,9 @@ class RejectedSignalJournal:
         signal_id = str(entry.get("signal_id") or uuid4().hex)
         if signal_id in self.seen_ids:
             logger.warning("Ignoring duplicate rejected-signal id %s", signal_id)
+            return
+        if self._closed:
+            logger.error("Rejected-signal journal is closed; rejection was not recorded")
             return
 
         if entry.get("event") == "entry_confirmation":
@@ -1142,8 +1390,7 @@ class RejectedSignalJournal:
             )
 
         try:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, default=str) + "\n")
+            self._append_base_row(row)
         except (OSError, TypeError, ValueError):
             logger.exception("Could not write rejected-signal journal %s", self.path)
             return
@@ -1154,6 +1401,9 @@ class RejectedSignalJournal:
             for minutes in self.HORIZONS_MINUTES
         ):
             self.pending[signal_id] = row
+            self.pending_by_contract.setdefault(
+                str(row.get("contract_id", "")), set()
+            ).add(signal_id)
 
     def observe_forward_candles(
         self,
@@ -1188,8 +1438,10 @@ class RejectedSignalJournal:
             normalized_candles.append((candle_time, high, low))
 
         updates: Dict[str, Dict[str, Any]] = {}
-        for signal_id, current in self.pending.items():
-            if str(current.get("contract_id", "")) != str(contract_id):
+        signal_ids = tuple(self.pending_by_contract.get(str(contract_id), ()))
+        for signal_id in signal_ids:
+            current = self.pending.get(signal_id)
+            if current is None:
                 continue
             reference_time = self._parse_datetime(
                 current.get("forward_reference_time_ist")
@@ -1243,39 +1495,53 @@ class RejectedSignalJournal:
                 for minutes in self.HORIZONS_MINUTES
             ):
                 self.pending.pop(signal_id, None)
+                contract_signals = self.pending_by_contract.get(
+                    str(row.get("contract_id", ""))
+                )
+                if contract_signals is not None:
+                    contract_signals.discard(signal_id)
+                    if not contract_signals:
+                        self.pending_by_contract.pop(
+                            str(row.get("contract_id", "")), None
+                        )
             else:
                 self.pending[signal_id] = row
 
     def _write_updates(self, updates: Dict[str, Dict[str, Any]]) -> bool:
-        temporary_path = self.path.with_name(
-            f".{self.path.name}.{uuid4().hex}.tmp"
-        )
-        try:
-            with self.path.open("r", encoding="utf-8") as source:
-                lines = source.readlines()
-            with temporary_path.open("w", encoding="utf-8") as target:
-                for line in lines:
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        target.write(line)
-                        continue
-                    updated = updates.get(str(row.get("signal_id", "")), row)
-                    target.write(json.dumps(updated, default=str) + "\n")
-            os.replace(temporary_path, self.path)
+        records = []
+        for signal_id, row in updates.items():
+            current = self.pending.get(signal_id, {})
+            patch = {
+                key: value
+                for key, value in row.items()
+                if key != "signal_id" and current.get(key) != value
+            }
+            if patch:
+                records.append({"signal_id": signal_id, "patch": patch})
+        if not records:
             return True
-        except (OSError, TypeError, ValueError):
-            logger.exception("Could not update rejected-signal outcomes in %s", self.path)
-            return False
-        finally:
-            if temporary_path.exists():
-                try:
-                    temporary_path.unlink()
-                except OSError:
-                    logger.exception(
-                        "Could not remove temporary rejected-signal file %s",
-                        temporary_path,
-                    )
+        with self._writer_lock:
+            if self._closed:
+                logger.error("Rejected-signal writer is closed; update was not queued")
+                return False
+            if self._writer is None:
+                self._writer = threading.Thread(
+                    target=self._run_writer,
+                    name="rejected-signal-writer",
+                    daemon=True,
+                )
+                self._writer.start()
+            try:
+                self._queue.put_nowait(("updates", records))
+                return True
+            except queue.Full:
+                with self._stats_lock:
+                    self._dropped_updates += len(records)
+                logger.error(
+                    "Rejected-signal update queue full; dropped updates=%d",
+                    len(records),
+                )
+                return False
 
 
 class DecisionJournal:
@@ -1314,16 +1580,26 @@ class DecisionJournal:
     def flush_decisions(
         self, timeout: float = 20.0, *, compact_final_hour: bool = False
     ) -> bool:
+        started = time_module.monotonic()
+        rejected_flushed = self.rejected_signal_journal.flush(timeout)
         if self.paper_recorder is None:
-            return True
-        return self.paper_recorder.flush_decisions(
-            timeout, compact_final_hour=compact_final_hour
+            return rejected_flushed
+        remaining = max(0.0, timeout - (time_module.monotonic() - started))
+        decisions_flushed = self.paper_recorder.flush_decisions(
+            remaining, compact_final_hour=compact_final_hour
         )
+        return rejected_flushed and decisions_flushed
 
     def close(self, timeout: float = 20.0) -> bool:
-        if self.paper_recorder is None:
-            return True
-        return self.paper_recorder.close_decisions(timeout)
+        started = time_module.monotonic()
+        rejected_closed = self.rejected_signal_journal.close(timeout)
+        remaining = max(0.0, timeout - (time_module.monotonic() - started))
+        decisions_closed = (
+            self.paper_recorder.close_decisions(remaining)
+            if self.paper_recorder is not None
+            else True
+        )
+        return decisions_closed and rejected_closed
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)

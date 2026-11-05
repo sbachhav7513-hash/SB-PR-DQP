@@ -5553,8 +5553,20 @@ class KiteTradingBot:
             maximum = ordered[-1] * 1000
         else:
             p95 = maximum = 0.0
-        rejected = getattr(
-            getattr(journal, "rejected_signal_journal", None), "seen_ids", set()
+        rejected_journal = getattr(journal, "rejected_signal_journal", None)
+        rejected = getattr(rejected_journal, "seen_ids", set())
+        rejected_stats = (
+            rejected_journal.telemetry()
+            if rejected_journal is not None
+            and hasattr(rejected_journal, "telemetry")
+            else {
+                "queue_depth": 0,
+                "last_flush_rows": 0,
+                "last_flush_ms": 0.0,
+                "write_failures": 0,
+                "dropped_updates": 0,
+                "pending_rows": 0,
+            }
         )
         shadow = getattr(self, "paper_shadow_exit_journal", None)
         option_writer = getattr(self, "option_capture_writer", None)
@@ -5580,7 +5592,10 @@ class KiteTradingBot:
             "last_flush_ms=%.3f total_drops=%d compaction=%s "
             "writer_cpu_ms_total=%.3f "
             "tick_callback_p95_ms=%.3f tick_callback_max_ms=%.3f "
-            "rejected_seen_ids=%d shadow_latest=%d option_capture_sizes=%s "
+            "rejected_seen_ids=%d rejected_queue_depth=%d "
+            "rejected_last_flush_rows=%d rejected_last_flush_ms=%.3f "
+            "rejected_pending_rows=%d rejected_dropped_updates=%d "
+            "rejected_write_failures=%d shadow_latest=%d option_capture_sizes=%s "
             "telegram_queue_depth=%d telegram_sent=%d telegram_failed=%d "
             "telegram_dropped=%d telegram_last_success=%s",
             decision["queue_depth"],
@@ -5592,6 +5607,12 @@ class KiteTradingBot:
             p95,
             maximum,
             len(rejected),
+            rejected_stats["queue_depth"],
+            rejected_stats["last_flush_rows"],
+            rejected_stats["last_flush_ms"],
+            rejected_stats["pending_rows"],
+            rejected_stats["dropped_updates"],
+            rejected_stats["write_failures"],
             len(getattr(shadow, "latest", {})),
             json.dumps(option_sizes, sort_keys=True),
             telegram_stats["queue_depth"],
