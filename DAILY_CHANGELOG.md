@@ -25,6 +25,18 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-11-05
+
+#### DLY-2026-11-05-01
+
+- Reason: Replace stale saved pytest output with evidence from a fresh full-suite run after the prior status was incorrectly reported from an older log.
+- Related prior entries checked: Reviewed the latest 2026-10-30 entries; no prior entry records refreshing the test-output artifact.
+- Files:
+  - `pytest_out.txt` (modified): Store the full pytest output with run timestamp, command, and exit code.
+  - `DAILY_CHANGELOG.md` (modified): Record this evidence refresh and its validation.
+- Validation and result: `python -m pytest -q` completed with exit code 0; `466 passed, 1 skipped in 40.53s`.
+- Outcome / follow-up / rollback: Saved test evidence now corresponds to the 2026-11-05 run; the skipped test remains noted in the output.
+
 ### 2026-10-30
 
 #### DLY-2026-10-30-01
