@@ -4,7 +4,10 @@ from datetime import datetime, timedelta
 from market_bot.trade_journal import (
     DecisionJournal,
     PaperTradingRecorder,
+    RejectedSignalJournal,
     TradeJournal,
+    read_rejected_signals,
+    rejected_signal_updates_path,
 )
 
 
@@ -274,9 +277,7 @@ def test_rejected_signal_journal_records_gate_measurements_in_ist(tmp_path):
         }
     )
 
-    record = json.loads(
-        (tmp_path / "rejected_signals.jsonl").read_text(encoding="utf-8")
-    )
+    record = read_rejected_signals(tmp_path / "rejected_signals.jsonl")[0]
     assert record["ist_time"] == "2026-10-30T09:30:00+05:30"
     assert record["contract_id"] == "NFO:NIFTY26N0322950CE"
     assert record["config_hash"] == "cfg"
@@ -327,9 +328,10 @@ def test_rejected_signal_forward_outcomes_update_the_original_row(tmp_path):
         start + timedelta(minutes=60),
     )
 
+    assert journal.flush_decisions()
     lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
-    record = json.loads(lines[0])
+    record = read_rejected_signals(path)[0]
     assert record["forward_15m_mfe_pct"] == 10.0
     assert record["forward_15m_mae_pct"] == -5.0
     assert record["forward_30m_mfe_pct"] == 20.0
@@ -338,6 +340,7 @@ def test_rejected_signal_forward_outcomes_update_the_original_row(tmp_path):
     assert record["forward_60m_mae_pct"] == -20.0
     assert record["forward_60m_candles"] == 60
     assert record["forward_60m_status"] == "complete"
+    assert journal.close()
 
 
 def test_confirmation_rejection_keeps_signal_and_rejection_times_distinct(tmp_path):
@@ -359,9 +362,7 @@ def test_confirmation_rejection_keeps_signal_and_rejection_times_distinct(tmp_pa
         }
     )
 
-    record = json.loads(
-        (tmp_path / "rejected_signals.jsonl").read_text(encoding="utf-8")
-    )
+    record = read_rejected_signals(tmp_path / "rejected_signals.jsonl")[0]
     assert record["ist_time"] == "2026-10-30T10:00:00+05:30"
     assert record["signal_time_ist"] == "2026-10-30T10:00:00+05:30"
     assert record["rejected_at_ist"] == "2026-10-30T10:02:05+05:30"
@@ -387,9 +388,7 @@ def test_support_reversal_body_ratio_rejection_is_logged(tmp_path):
         }
     )
 
-    record = json.loads(
-        (tmp_path / "rejected_signals.jsonl").read_text(encoding="utf-8")
-    )
+    record = read_rejected_signals(tmp_path / "rejected_signals.jsonl")[0]
     assert record["gate"] == "weak candle momentum"
     assert record["reason"] == "PAPER_SUPPORT_REVERSAL_INVALID_BODY_RATIO"
     assert record["body_ratio"] == 0.18
@@ -411,9 +410,130 @@ def test_sideways_hold_is_logged_for_future_option_outcome_measurement(tmp_path)
         }
     )
 
-    record = json.loads(
-        (tmp_path / "rejected_signals.jsonl").read_text(encoding="utf-8")
-    )
+    record = read_rejected_signals(tmp_path / "rejected_signals.jsonl")[0]
     assert record["gate"] == "sideways regime"
     assert record["signal"] == "HOLD"
     assert record["reason"].startswith("Sideways regime:")
+
+
+def test_rejected_signal_reader_merges_updates_without_rewriting_legacy_file(
+    tmp_path,
+):
+    path = tmp_path / "rejected_signals.jsonl"
+    original = {
+        "signal_id": "signal-1",
+        "contract_id": "NFO:TEST",
+        "forward_15m_status": "pending",
+        "forward_30m_status": "pending",
+        "forward_60m_status": "pending",
+        "forward_15m_mfe_pct": None,
+    }
+    original_text = json.dumps(original) + "\n"
+    path.write_text(original_text, encoding="utf-8")
+    journal = RejectedSignalJournal(path)
+    updated = dict(original)
+    updated.update(
+        {
+            "forward_15m_status": "complete",
+            "forward_15m_mfe_pct": 12.5,
+        }
+    )
+
+    assert journal._write_updates({"signal-1": updated})
+    journal.pending["signal-1"] = updated
+
+    assert journal.flush()
+    assert path.read_text(encoding="utf-8") == original_text
+    assert read_rejected_signals(path) == [updated]
+    update_lines = rejected_signal_updates_path(path).read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(update_lines) == 1
+    assert json.loads(update_lines[0]) == {
+        "signal_id": "signal-1",
+        "patch": {
+            "forward_15m_status": "complete",
+            "forward_15m_mfe_pct": 12.5,
+        },
+    }
+    assert journal.close()
+
+
+def test_rejected_signal_partial_update_tail_is_ignored_and_repaired(tmp_path):
+    path = tmp_path / "rejected_signals.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "signal_id": "signal-1",
+                "contract_id": "NFO:TEST",
+                "forward_15m_status": "pending",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    journal = RejectedSignalJournal(path)
+    updates_path = rejected_signal_updates_path(path)
+    updates_path.write_text('{"signal_id":"signal-1","patch":', encoding="utf-8")
+
+    assert read_rejected_signals(path)[0]["forward_15m_status"] == "pending"
+    assert journal._append_update_records(
+        [
+            {
+                "signal_id": "signal-1",
+                "patch": {"forward_15m_status": "complete"},
+            }
+        ]
+    )
+
+    assert updates_path.read_text(encoding="utf-8").endswith("\n")
+    assert read_rejected_signals(path)[0]["forward_15m_status"] == "complete"
+    assert journal.close()
+
+
+def test_rejected_signal_shutdown_flushes_queued_updates(tmp_path):
+    path = tmp_path / "rejected_signals.jsonl"
+    original = {
+        "signal_id": "signal-1",
+        "contract_id": "NFO:TEST",
+        "forward_15m_status": "pending",
+    }
+    path.write_text(json.dumps(original) + "\n", encoding="utf-8")
+    journal = RejectedSignalJournal(path)
+    updated = {**original, "forward_15m_status": "complete"}
+
+    assert journal._write_updates({"signal-1": updated})
+    journal.pending["signal-1"] = updated
+    assert journal.close()
+
+    assert read_rejected_signals(path) == [updated]
+
+
+def test_rejected_signal_append_repairs_partial_base_row(tmp_path):
+    path = tmp_path / "rejected_signals.jsonl"
+    first = {
+        "signal_id": "signal-1",
+        "contract_id": "NFO:TEST",
+        "forward_15m_status": "unmatched",
+    }
+    path.write_text(
+        json.dumps(first) + "\n" + '{"signal_id":"partial"',
+        encoding="utf-8",
+    )
+    journal = RejectedSignalJournal(path)
+    journal.record_rejection(
+        {
+            "signal_id": "signal-2",
+            "timestamp": "2026-10-30T09:30:00+05:30",
+            "ticker": "NIFTY_CE",
+            "contract_id": "NFO:TEST",
+            "signal": "BUY",
+            "outcome": "option_filter",
+            "outcome_detail": "OPTION_FILTER_WEAK_CANDLE_MOMENTUM",
+            "gate_measurements": {"option_bar_close": 100.0},
+        }
+    )
+
+    rows = read_rejected_signals(path)
+    assert [row["signal_id"] for row in rows] == ["signal-1", "signal-2"]
+    assert journal.close()

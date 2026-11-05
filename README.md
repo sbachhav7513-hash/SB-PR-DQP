@@ -381,7 +381,17 @@ fills, it reports that no output was needed.
 Rejected option signals are also recorded in `rejected_signals.jsonl` beside
 the decision log. Rows include the IST signal/rejection times, contract and
 config hash, measured gate values and quote, and forward 15/30/60-minute
-premium MFE/MAE; unavailable candle outcomes are marked unmatched.
+premium MFE/MAE; unavailable candle outcomes are marked unmatched. Forward
+outcomes are stored as append-only records in `rejected_signals.updates.jsonl`
+and merged by `signal_id` when read. Existing `rejected_signals.jsonl` files
+remain valid base files; consumers that need final forward outcomes should use
+the shared reader:
+
+```python
+from market_bot.trade_journal import read_rejected_signals
+
+rows = read_rejected_signals("rejected_signals.jsonl")
+```
 
 ---
 

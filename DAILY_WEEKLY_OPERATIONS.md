@@ -24,6 +24,58 @@ The Parquet files use Snappy compression. `trades.parquet` contains the ticker, 
 
 Paper journal P&L is the recorded simulated result and does not deduct brokerage, taxes, or slippage. Use realistic non-zero costs in historical replay before considering a strategy change. The 10-trade threshold is only a minimum screen, not evidence of a durable edge; patterns in the reports are descriptive, not causal, and the feedback layer never changes trading or live-order settings.
 
+### Reporting resource logs and legacy decision migration
+
+Each reporting step adds an INFO log with the source files, rows, row groups,
+projected and source column counts, file bytes, elapsed seconds, and peak RSS.
+Daily reports read the target day only; the review's paper-shadow calculation
+reuses the already-loaded decision rows. The Friday worker runs in a separate
+process with a 120-second / 600-MB peak-RSS budget. If it exceeds either limit,
+it logs an error and leaves daily finalization and the queued Telegram summary
+untouched.
+
+On a copied 2026-11-04 day, daily summary generation took 0.729 seconds and
+review generation took 0.787 seconds (1.517 seconds combined); the maximum
+per-step RSS was 104.4 MB. The report read 9,136 decision rows from the eight
+hourly files in `day_04/decisions/`, projecting 32 of 107 source columns.
+`trades.parquet` contained four rows. Stop-out diagnostics attempted
+`stop_events.jsonl` and `reentry_checks.jsonl`, but neither file was present
+in the supplied data tree.
+
+On a copy of week 45, the prior report benchmark was 46.326 seconds / 1,160.65
+MB and counted 27,115 decisions. The isolated worker now completed in 4.5
+seconds / 587.5 MB, below the 120-second / 600-MB limits. It read 31,053
+decisions, projecting 19 of 107 source columns. The count increase is
+intentional: the old `decisions_part1_until_1257IST.parquet` is included, and
+two distinct Nov. 3 records that match on the selected report fields are no
+longer collapsed. The archived Nov. 4 summary/review also differs from output
+generated from the current source rows: the archive records two stop events
+although their JSONL inputs are absent, and it records zero opened entries
+while the current decision rows contain four. The optimized output matches
+the full-history calculation over the current inputs; no stale-output fallback
+is used.
+
+Legacy Nov. 2 / Nov. 3 files can be migrated only offline and on a copy. The
+tool checks source/output row counts and reader parity, removes exact duplicate
+rows, writes hourly files under each copied `day_DD/decisions/`, then archives
+the originals outside the copied data root. Example from PowerShell:
+
+```powershell
+$copyRoot = Join-Path $PWD "paper_trading_data_migration_copy"
+New-Item -ItemType Directory -Force -Path "$copyRoot\2026-11" | Out-Null
+Copy-Item -Recurse .\paper_trading_data\2026-11\week_45 "$copyRoot\2026-11\week_45"
+
+python .\migrate_legacy_decisions.py `
+  --day-dir "$copyRoot\2026-11\week_45\day_02" `
+  --day-dir "$copyRoot\2026-11\week_45\day_03" `
+  --data-root "$copyRoot" `
+  --archive-dir (Join-Path $PWD "legacy_decisions_archive") `
+  --confirm-copy
+```
+
+Inspect the parity and archive results before applying the same procedure to
+any other copy. Never point the migration command at the live data tree.
+
 ### Exporting Kite History for Offline Replay
 
 The read-only exporter writes minute candles and a coverage manifest to `data_uploads/kite_history`; it never places orders. It reads `KITE_API_KEY` and `KITE_ACCESS_TOKEN` from the process environment or the local, ignored `.env` file. Refresh the daily access token with `python run_kite_bot.py --authorize-only` if required, then run for the desired date range:

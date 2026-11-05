@@ -129,6 +129,9 @@ class OptionCaptureWriter:
             "next_minute": {},
             "current_bars": {},
             "completed": defaultdict(lambda: deque(maxlen=420)),
+            "completed_by_minute": defaultdict(dict),
+            "registered_flush_minute": {},
+            "flush_dirty": defaultdict(set),
             "last_ticks": {},
             "last_quotes": {},
             "last_quote_write": {},
@@ -417,23 +420,31 @@ class OptionCaptureWriter:
         current = self._thread_state["current_bars"].pop(token, None)
         if current is None:
             return
-        self._thread_state["completed"][token].append(
-            {
-                "candle_start_time": current["minute"],
-                "open": current["open"],
-                "high": current["high"],
-                "low": current["low"],
-                "close": current["close"],
-                "volume": current["volume"],
-                "oi": current["oi"],
-                "tick_count": current["tick_count"],
-                "last_tick_time": current["last_tick_time"],
-                "bid": current["bid"],
-                "ask": current["ask"],
-                "low_tick": current["tick_count"] < LOW_TICK_THRESHOLD,
-                "gap": False,
-            }
-        )
+        candle = {
+            "candle_start_time": current["minute"],
+            "open": current["open"],
+            "high": current["high"],
+            "low": current["low"],
+            "close": current["close"],
+            "volume": current["volume"],
+            "oi": current["oi"],
+            "tick_count": current["tick_count"],
+            "last_tick_time": current["last_tick_time"],
+            "bid": current["bid"],
+            "ask": current["ask"],
+            "low_tick": current["tick_count"] < LOW_TICK_THRESHOLD,
+            "gap": False,
+        }
+        completed = self._thread_state["completed"][token]
+        completed_by_minute = self._thread_state["completed_by_minute"][token]
+        if completed.maxlen is not None and len(completed) == completed.maxlen:
+            evicted = completed[0]["candle_start_time"]
+            completed_by_minute.pop(evicted, None)
+        completed.append(candle)
+        completed_by_minute[candle["candle_start_time"]] = candle
+        day_key = candle["candle_start_time"].date().isoformat()
+        if token in self._thread_state["registered"].get(day_key, {}):
+            self._thread_state["flush_dirty"][day_key].add(token)
 
     def _handle_registration(self, payload: Dict[str, Any]) -> None:
         signal_id = payload["signal_id"]
@@ -462,6 +473,7 @@ class OptionCaptureWriter:
             self._thread_state["next_minute"].setdefault(
                 (day_key, token), _minute_start(signal_time)
             )
+            self._thread_state["flush_dirty"][day_key].add(token)
             if role == "contract":
                 signals[signal_id]["contract_id"] = contract_id
             self._persist_registered_history(day_key, token, signal_time)
@@ -477,6 +489,9 @@ class OptionCaptureWriter:
             if next_minute is None or candle_time < next_minute:
                 continue
             self._append_candle(day_key, token, candle)
+            self._thread_state["completed_by_minute"][token].pop(
+                candle_time, None
+            )
             self._thread_state["next_minute"][(day_key, token)] = (
                 candle_time + timedelta(minutes=1)
             )
@@ -499,20 +514,33 @@ class OptionCaptureWriter:
         local_now = _as_ist(now)
         completed_before = _minute_start(local_now)
         day_key = local_now.date().isoformat()
-        for token in list(self._thread_state["registered"].get(day_key, {})):
+        registered = self._thread_state["registered"].get(day_key, {})
+        previous_flush = self._thread_state["registered_flush_minute"].get(
+            day_key
+        )
+        minute_advanced = (
+            previous_flush is None or completed_before > previous_flush
+        )
+        if minute_advanced:
+            tokens = tuple(registered)
+            self._thread_state["registered_flush_minute"][day_key] = (
+                completed_before
+            )
+        else:
+            dirty = self._thread_state["flush_dirty"][day_key]
+            tokens = tuple(token for token in dirty if token in registered)
+        dirty = self._thread_state["flush_dirty"][day_key]
+        for token in tokens:
+            dirty.discard(token)
             current = self._thread_state["current_bars"].get(token)
             if current and current["minute"] < completed_before:
                 self._complete_current_bar(token)
             next_minute = self._thread_state["next_minute"].get((day_key, token))
             if next_minute is None:
                 continue
-            cached = {
-                item["candle_start_time"]: item
-                for item in self._thread_state["completed"][token]
-                if item["candle_start_time"].date().isoformat() == day_key
-            }
+            cached = self._thread_state["completed_by_minute"][token]
             while next_minute < completed_before:
-                candle = cached.get(next_minute)
+                candle = cached.pop(next_minute, None)
                 if candle is None:
                     candle = {
                         "candle_start_time": next_minute,

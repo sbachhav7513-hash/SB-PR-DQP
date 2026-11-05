@@ -12,6 +12,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from .option_capture import load_option_capture
+from .reporting_metrics import ReportingStep
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -1070,39 +1071,56 @@ def summarize_stop_events(
     check_path = root_path / "reentry_checks.jsonl"
     events: dict[str, dict] = {}
     checks: dict[str, list[dict]] = {}
-    for path, target in ((stop_path, events), (check_path, checks)):
-        if not path.exists():
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning("Skipping malformed telemetry row in %s", path)
-                        continue
-                    timestamp = _as_ist(
-                        row.get("stop_time") or row.get("timestamp")
-                    )
-                    if timestamp is None or timestamp.date() != target_date:
-                        continue
-                    event_id = str(row.get("stop_event_id") or "")
-                    if not event_id:
-                        continue
-                    if target is events:
-                        event = events.setdefault(event_id, {})
-                        if row.get("record_type") == "stop_event":
-                            event.update(row)
-                        elif row.get("record_type") == "reentry_opened":
-                            event["reentry_trade_id"] = row.get("reentry_trade_id")
-                        elif row.get("record_type") == "after_stop_price_path":
-                            event.setdefault("price_paths", {})[
-                                int(row.get("checkpoint_minutes") or 0)
-                            ] = row
-                    else:
-                        checks.setdefault(event_id, []).append(row)
-        except OSError:
-            logger.exception("Could not read stop/re-entry journal %s", path)
+    paths = [path for path in (stop_path, check_path) if path.is_file()]
+    with ReportingStep(
+        logger,
+        "stop_out_diagnostics",
+        paths,
+        [
+            "stop_time", "timestamp", "stop_event_id", "record_type",
+            "checkpoint_minutes", "first_failed_condition",
+        ],
+    ) as step:
+        rows_read = 0
+        for path, target in ((stop_path, events), (check_path, checks)):
+            if not path.exists():
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        rows_read += 1
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skipping malformed telemetry row in %s", path
+                            )
+                            continue
+                        timestamp = _as_ist(
+                            row.get("stop_time") or row.get("timestamp")
+                        )
+                        if timestamp is None or timestamp.date() != target_date:
+                            continue
+                        event_id = str(row.get("stop_event_id") or "")
+                        if not event_id:
+                            continue
+                        if target is events:
+                            event = events.setdefault(event_id, {})
+                            if row.get("record_type") == "stop_event":
+                                event.update(row)
+                            elif row.get("record_type") == "reentry_opened":
+                                event["reentry_trade_id"] = row.get(
+                                    "reentry_trade_id"
+                                )
+                            elif row.get("record_type") == "after_stop_price_path":
+                                event.setdefault("price_paths", {})[
+                                    int(row.get("checkpoint_minutes") or 0)
+                                ] = row
+                        else:
+                            checks.setdefault(event_id, []).append(row)
+            except OSError:
+                logger.exception("Could not read stop/re-entry journal %s", path)
+        step.rows = rows_read
 
     recovered_30 = recovered_60 = candles_missing_events = reentered = 0
     first_failures = {bucket: 0 for bucket in FAILURE_BUCKETS}

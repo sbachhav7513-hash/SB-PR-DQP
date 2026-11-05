@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
+
+import pandas as pd
+from fastparquet import ParquetFile
 
 from .trade_journal import (
     PaperTradingRecorder,
@@ -14,6 +17,7 @@ from .trade_journal import (
     read_decisions,
 )
 from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
+from .reporting_metrics import ReportingStep
 
 
 logger = logging.getLogger(__name__)
@@ -26,42 +30,59 @@ def _load_jsonl(path: Path, days: int) -> List[Dict[str, Any]]:
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    records: List[Dict[str, Any]] = []
-    valid_records: List[tuple[datetime, Dict[str, Any]]] = []
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, 1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    timestamp_raw = str(record.get("timestamp", "")).replace("Z", "+00:00")
-                    if not timestamp_raw:
+
+    def read_from(
+        cutoff_time: datetime, inclusive: bool
+    ) -> tuple[List[Dict[str, Any]], datetime | None]:
+        records: List[Dict[str, Any]] = []
+        latest_timestamp = None
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    if not line.strip():
                         continue
-                    timestamp = datetime.fromisoformat(timestamp_raw)
-                    if timestamp.tzinfo is None:
-                        timestamp = timestamp.replace(tzinfo=timezone.utc)
-                    valid_records.append((timestamp.astimezone(timezone.utc), record))
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    logger.warning("Skipping invalid record in %s at line %s", path, line_number)
-    except OSError:
-        logger.exception("Could not read %s", path)
+                    try:
+                        record = json.loads(line)
+                        timestamp_raw = str(record.get("timestamp", "")).replace(
+                            "Z", "+00:00"
+                        )
+                        if not timestamp_raw:
+                            continue
+                        timestamp = datetime.fromisoformat(timestamp_raw)
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                        timestamp = timestamp.astimezone(timezone.utc)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        logger.warning(
+                            "Skipping invalid record in %s at line %s",
+                            path,
+                            line_number,
+                        )
+                        continue
+                    latest_timestamp = max(
+                        latest_timestamp or timestamp, timestamp
+                    )
+                    if (
+                        timestamp >= cutoff_time
+                        if inclusive
+                        else timestamp > cutoff_time
+                    ):
+                        records.append(record)
+        except OSError:
+            logger.exception("Could not read %s", path)
+        return records, latest_timestamp
 
-    if not valid_records:
-        return []
-
-    latest_timestamp = max(timestamp for timestamp, _ in valid_records)
-    fallback_cutoff = latest_timestamp - timedelta(days=days)
-    for timestamp, record in valid_records:
-        if timestamp > cutoff:
-            records.append(record)
-    if records:
+    with ReportingStep(logger, f"weekly_jsonl_{path.name}", [path]) as step:
+        records, latest_timestamp = read_from(cutoff, inclusive=False)
+        if not records and latest_timestamp is not None:
+            records, _ = read_from(
+                latest_timestamp - timedelta(days=days), inclusive=True
+            )
+        step.rows = len(records)
+        step.columns = sorted(
+            {column for record in records for column in record}
+        )
         return records
-
-    for timestamp, record in valid_records:
-        if timestamp >= fallback_cutoff:
-            records.append(record)
-    return records
 
 
 def _number(value: Any) -> float:
@@ -197,42 +218,145 @@ def _recent_parquet_records(
     days: int,
     columns: List[str],
 ) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-    if filename == "decisions.parquet":
-        for day_dir in sorted(root.glob("*/*/day_*")):
-            if not day_dir.is_dir():
-                continue
+    candidate_records: List[Dict[str, Any]] = []
+    day_dirs = _recent_day_directories(root, days)
+    for day_dir in day_dirs:
+        if filename == "decisions.parquet":
+            sources = _decision_source_files(day_dir)
             try:
-                frame = read_decisions(day_dir, columns=columns)
-                records.extend(
-                    frame.astype(object)
-                    .where(frame.notna(), None)
-                    .to_dict(orient="records")
-                )
+                with ReportingStep(
+                    logger,
+                    f"weekly_decisions_{day_dir.name}",
+                    sources,
+                    columns,
+                ) as step:
+                    frame = read_decisions(
+                        day_dir, columns=columns, reporting_step=step
+                    )
+                    step.rows = len(frame)
+                    day_records = (
+                        frame.astype(object)
+                        .where(frame.notna(), None)
+                        .to_dict(orient="records")
+                    )
+                    candidate_records.extend(day_records)
+                    del frame, day_records
             except Exception:
                 logger.exception("Could not read paper decision journal %s", day_dir)
-        return _recent_records(records, days)
+            continue
 
-    for path in sorted(root.glob(f"*/*/day_*/{filename}")):
+        path = day_dir / filename
+        if not path.is_file():
+            continue
         try:
-            rows = PaperTradingRecorder._read_parquet(path, columns=columns)
+            with ReportingStep(
+                logger,
+                f"weekly_{filename.removesuffix('.parquet')}_{day_dir.name}",
+                [path],
+                columns,
+            ) as step:
+                frame, selected_columns = _read_projected_parquet(path, columns)
+                step.columns = selected_columns
+                step.rows = len(frame)
+                day_records = frame.to_dict(orient="records")
+                for row in day_records:
+                    for field in ("reasons", "news_headlines"):
+                        value = row.get(field)
+                        if isinstance(value, str):
+                            try:
+                                row[field] = json.loads(value)
+                            except json.JSONDecodeError:
+                                row[field] = [value] if value else []
+                candidate_records.extend(day_records)
+            del frame, day_records
         except Exception:
-            try:
-                rows = PaperTradingRecorder._read_parquet(path)
-            except Exception:
-                logger.exception("Could not read paper journal %s", path)
-                continue
-        for row in rows:
-            for field in ("reasons", "news_headlines"):
-                value = row.get(field)
-                if isinstance(value, str):
-                    try:
-                        row[field] = json.loads(value)
-                    except json.JSONDecodeError:
-                        row[field] = [value] if value else []
-            records.append(row)
+            logger.exception("Could not read paper journal %s", path)
 
-    return _recent_records(records, days)
+    return _recent_records(candidate_records, days)
+
+
+def _read_projected_parquet(
+    path: Path, columns: List[str]
+) -> tuple[pd.DataFrame, List[str]]:
+    try:
+        import gc
+        import pyarrow as pyarrow
+        import pyarrow.parquet as pyarrow_parquet
+    except ImportError:
+        pyarrow = None
+        pyarrow_parquet = None
+    if pyarrow_parquet is not None:
+        parquet = pyarrow_parquet.ParquetFile(path)
+        available_columns = parquet.schema.names
+        row_count = parquet.metadata.num_rows
+    else:
+        parquet = ParquetFile(path)
+        available_columns = parquet.columns
+        row_count = parquet.count()
+    selected_columns = [
+        column for column in columns if column in available_columns
+    ]
+    if selected_columns:
+        if pyarrow_parquet is not None:
+            batch_frames = [
+                batch.to_pandas()
+                for batch in parquet.iter_batches(
+                    columns=selected_columns, batch_size=8192
+                )
+            ]
+            frame = (
+                pd.concat(batch_frames, ignore_index=True)
+                if batch_frames
+                else pd.DataFrame(columns=selected_columns)
+            ).reindex(columns=columns)
+            del batch_frames
+        else:
+            frame = pd.read_parquet(
+                path, engine="fastparquet", columns=selected_columns
+            ).reindex(columns=columns)
+    else:
+        frame = pd.DataFrame(index=range(row_count), columns=columns)
+    del parquet
+    if pyarrow is not None:
+        gc.collect()
+        pyarrow.default_memory_pool().release_unused()
+    return frame, selected_columns
+
+
+def _decision_source_files(day_dir: Path) -> List[Path]:
+    sources = []
+    legacy = day_dir / "decisions.parquet"
+    if legacy.is_file():
+        sources.append(legacy)
+    sources.extend(sorted(day_dir.glob("decisions_part*.parquet")))
+    parts_dir = day_dir / "decisions"
+    if parts_dir.is_dir():
+        sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
+    return sources
+
+
+def _recent_day_directories(root: Path, days: int) -> List[Path]:
+    candidates = sorted(
+        (path for path in root.glob("*/*/day_*") if path.is_dir()),
+        key=lambda path: path.as_posix(),
+    )
+    if not candidates:
+        return []
+
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    recent = []
+    for path in candidates:
+        try:
+            month = path.parents[1].name
+            day_number = int(path.name.removeprefix("day_"))
+            day = date.fromisoformat(f"{month}-{day_number:02d}")
+        except (ValueError, IndexError):
+            continue
+        if day >= cutoff_date:
+            recent.append((day, path))
+    if recent:
+        return [path for _, path in recent]
+    return candidates[-max(days, 1):]
 
 
 def _recent_records(
@@ -610,7 +734,11 @@ def build_weekly_report(
         1 for item in decisions
         if any("news risk" in reason.lower() for reason in item.get("reasons", []))
     )
-    learning_feedback = _learning_feedback(trades)
+    with ReportingStep(
+        logger, "weekly_learning_feedback", [], ["pnl_rupees", "pnl", "reason"]
+    ) as step:
+        step.rows = len(trades)
+        learning_feedback = _learning_feedback(trades)
     rejected_entries = sum(
         outcome_counts[name]
         for name in ("accuracy_filter", "option_filter", "risk_blocked", "execution_failed")
@@ -731,8 +859,9 @@ def write_weekly_report(
     days: int = 7,
     output_dir: str = ".",
     paper_data_dir: str | None = None,
+    report: Dict[str, Any] | None = None,
 ) -> Path:
-    report = build_weekly_report(data_dir, days, paper_data_dir)
+    report = report or build_weekly_report(data_dir, days, paper_data_dir)
     report["best_setup_windows"] = summarize_best_setup_windows(
         data_dir, days, paper_data_dir
     )
@@ -759,43 +888,135 @@ def _date_records(
     parquet_name: str,
     target_date,
 ) -> List[Dict[str, Any]]:
-    records = _recent_parquet_records(
-        paper_data_dir,
-        parquet_name,
-        days=3660,
-        columns=(
-            [
-                "trade_id", "timestamp", "status", "pnl", "pnl_rupees", "reason",
-                "exit_reason_category", "ticker", "action", "score",
-                "strategy_variant", "is_ema_reentry", "original_trade_id",
-                "ema_reentry_eligible", "ema_reentry_outcome",
-                "reentry_pnl", "reentry_outcome",
-                "entry_mode", "route", "signal_time", "signal_close",
-                "confirmation_candle_time", "confirmation_close",
-                "confirmation_result", "confirmation_delay_seconds",
-                "signal_premium", "order_premium", "after_cost_pnl", "net_pnl",
-            ]
-            if parquet_name == "trades.parquet"
-            else [
-                "timestamp", "signal", "outcome", "score", "reasons",
-                "outcome_detail", "rejection_reason", "trend_shadow_signal",
-                "trend_shadow_rejection_reason", "strategy_variant", "event",
-                "ema_reentry_event", "confirmation_event", "signal_id",
-                "entry_mode", "route", "signal_time", "signal_close",
-                "confirmation_candle_time", "confirmation_close",
-                "confirmation_result", "confirmation_delay_seconds",
-                "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
-                "order_premium", "order_bid", "order_ask", "order_ltp",
-                "cancellation_reason", "cancellation_sub_reason",
-            ]
-        ),
+    columns = _daily_record_columns(parquet_name)
+    day_dir = (
+        paper_data_dir
+        / target_date.strftime("%Y-%m")
+        / f"week_{target_date.isocalendar().week:02d}"
+        / f"day_{target_date.day:02d}"
     )
+    if parquet_name == "decisions.parquet":
+        sources = _decision_source_files(day_dir)
+        with ReportingStep(
+            logger, "daily_decisions", sources, columns
+        ) as step:
+            frame = read_decisions(day_dir, columns=columns)
+            step.files = _decision_source_files(day_dir)
+            step.rows = len(frame)
+            records = (
+                frame.astype(object)
+                .where(frame.notna(), None)
+                .to_dict(orient="records")
+            )
+            records = [
+                record
+                for record in records
+                if _record_matches_date(record, target_date)
+            ]
+            del frame
+    else:
+        parquet_path = day_dir / parquet_name
+        if parquet_path.is_file():
+            with ReportingStep(
+                logger, "daily_trades", [parquet_path], columns
+            ) as step:
+                frame, selected_columns = _read_projected_parquet(
+                    parquet_path, columns
+                )
+                step.columns = selected_columns
+                step.rows = len(frame)
+                records = frame.to_dict(orient="records")
+                records = [
+                    record
+                    for record in records
+                    if _record_matches_date(record, target_date)
+                ]
+                del frame
+        else:
+            records = []
+
     if not records:
-        records = _load_jsonl(path, days=3660)
+        records = _load_jsonl_for_date(path, target_date)
+    return records
+
+
+def _record_matches_date(record: Dict[str, Any], target_date) -> bool:
+    timestamp_raw = record.get("timestamp")
+    if not timestamp_raw:
+        return False
+    try:
+        timestamp = datetime.fromisoformat(
+            str(timestamp_raw).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(IST).date() == target_date
+
+
+def _daily_record_columns(parquet_name: str) -> List[str]:
+    if parquet_name == "trades.parquet":
+        return [
+            "trade_id", "timestamp", "status", "pnl", "pnl_rupees", "reason",
+            "exit_reason_category", "ticker", "action", "score",
+            "strategy_variant", "is_ema_reentry", "original_trade_id",
+            "ema_reentry_eligible", "ema_reentry_outcome",
+            "reentry_pnl", "reentry_outcome",
+            "entry_mode", "route", "signal_time", "signal_close",
+            "confirmation_candle_time", "confirmation_close",
+            "confirmation_result", "confirmation_delay_seconds",
+            "signal_premium", "order_premium", "after_cost_pnl", "net_pnl",
+        ]
     return [
-        record for record in records
-        if PaperTradingRecorder._event_datetime(record.get("timestamp")).date() == target_date
+        "timestamp", "signal", "outcome", "score", "reasons",
+        "outcome_detail", "rejection_reason", "trend_shadow_signal",
+        "trend_shadow_rejection_reason", "strategy_variant", "event",
+        "ema_reentry_event", "confirmation_event", "signal_id",
+        "entry_mode", "route", "signal_time", "signal_close",
+        "confirmation_candle_time", "confirmation_close",
+        "confirmation_result", "confirmation_delay_seconds",
+        "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
+        "order_premium", "order_bid", "order_ask", "order_ltp",
+        "cancellation_reason", "cancellation_sub_reason",
     ]
+
+
+def _load_jsonl_for_date(path: Path, target_date) -> List[Dict[str, Any]]:
+    if not path.is_file():
+        return []
+    records = []
+    line_count = 0
+    with ReportingStep(logger, "daily_jsonl_fallback", [path]) as step:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    line_count += 1
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        timestamp_raw = str(record.get("timestamp", ""))
+                        if not timestamp_raw:
+                            continue
+                        timestamp = datetime.fromisoformat(
+                            timestamp_raw.replace("Z", "+00:00")
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        logger.warning(
+                            "Skipping invalid record in %s at line %s",
+                            path,
+                            line_number,
+                        )
+                        continue
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    if timestamp.astimezone(IST).date() == target_date:
+                        records.append(record)
+        except OSError:
+            logger.exception("Could not read %s", path)
+        step.rows = len(records)
+    return records
 
 
 def _entry_confirmation_metrics(
@@ -1047,10 +1268,6 @@ def write_daily_review(
     shadow_rejections: Dict[str, int] = defaultdict(int)
     shadow_candidates = 0
     option_leg_skips = 0
-    has_shadow_telemetry = any(
-        "trend_shadow_signal" in item or "trend_shadow_rejection_reason" in item
-        for item in decisions
-    )
 
     for decision in decisions:
         signal = str(decision.get("signal") or "UNKNOWN")
@@ -1075,12 +1292,31 @@ def write_daily_review(
                     if reason:
                         hold_reasons[str(reason)] += 1
 
-        shadow_signal = decision.get("trend_shadow_signal")
-        if shadow_signal in {"BUY", "SELL"}:
-            shadow_candidates += 1
-        shadow_rejection = decision.get("trend_shadow_rejection_reason")
-        if shadow_rejection:
-            shadow_rejections[str(shadow_rejection)] += 1
+    day_dir = (
+        Path(paper_data_dir)
+        / target_date.strftime("%Y-%m")
+        / f"week_{target_date.isocalendar().week:02d}"
+        / f"day_{target_date.day:02d}"
+    )
+    with ReportingStep(
+        logger,
+        "daily_review_paper_shadow",
+        _decision_source_files(day_dir),
+        ["trend_shadow_signal", "trend_shadow_rejection_reason"],
+    ) as step:
+        step.rows = len(decisions)
+        has_shadow_telemetry = any(
+            "trend_shadow_signal" in item
+            or "trend_shadow_rejection_reason" in item
+            for item in decisions
+        )
+        for decision in decisions:
+            shadow_signal = decision.get("trend_shadow_signal")
+            if shadow_signal in {"BUY", "SELL"}:
+                shadow_candidates += 1
+            shadow_rejection = decision.get("trend_shadow_rejection_reason")
+            if shadow_rejection:
+                shadow_rejections[str(shadow_rejection)] += 1
 
     def format_counts(counts: Dict[str, int]) -> List[str]:
         return (
@@ -1297,15 +1533,21 @@ def write_daily_review(
 
 
 def write_weekly_review(
-    data_dir: str = ".", paper_data_dir: str = "paper_trading_data", days: int = 7
+    data_dir: str = ".",
+    paper_data_dir: str = "paper_trading_data",
+    days: int = 7,
+    report: Dict[str, Any] | None = None,
+    output_path: str | Path | None = None,
 ) -> Path:
     """Write a human-readable review with evidence-based improvement prompts."""
-    report = build_weekly_report(data_dir, days, paper_data_dir)
+    report = report or build_weekly_report(data_dir, days, paper_data_dir)
     ema_reentry_summary = report["ema_reentry_summary"]
     now = datetime.now()
-    recorder = PaperTradingRecorder(paper_data_dir)
-    day_path = recorder._day_path(now.isoformat(), "daily_summary.parquet")
-    destination = day_path.parent.parent / f"weekly_review_{now:%Y_%m_%d}.md"
+    destination = (
+        Path(output_path)
+        if output_path is not None
+        else _weekly_review_destination(paper_data_dir, now)
+    )
     issues: List[str] = []
     improvements: List[str] = []
     if report["closed_trades"] == 0:
@@ -1504,5 +1746,15 @@ def write_weekly_review(
         "- No parameter or live-order setting is changed automatically by learning feedback.",
         "",
     ]
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("\n".join(lines), encoding="utf-8")
     return destination
+
+
+def _weekly_review_destination(
+    paper_data_dir: str | Path, now: datetime | None = None
+) -> Path:
+    now = now or datetime.now()
+    recorder = PaperTradingRecorder(paper_data_dir)
+    day_path = recorder._day_path(now.isoformat(), "daily_summary.parquet")
+    return day_path.parent.parent / f"weekly_review_{now:%Y_%m_%d}.md"
