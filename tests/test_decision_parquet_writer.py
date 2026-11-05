@@ -131,6 +131,8 @@ def test_tick_callback_duration_is_measured_and_reported(caplog):
         bot._log_persistence_telemetry()
     assert "tick_callback_p95_ms=" in caplog.text
     assert "writer_cpu_ms_total=" in caplog.text
+    assert "rejected_queue_depth=" in caplog.text
+    assert "option_capture_last_flush_rows=" in caplog.text
     assert "option_capture_sizes=" in caplog.text
 
 

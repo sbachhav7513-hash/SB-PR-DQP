@@ -8,6 +8,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from collections import defaultdict, deque
 from datetime import date, datetime, time as datetime_time, timedelta
 from pathlib import Path
@@ -120,6 +121,8 @@ class OptionCaptureWriter:
         self._closed = False
         self._stats_lock = threading.Lock()
         self._dropped_rows = 0
+        self._last_flush_rows = 0
+        self._last_flush_ms = 0.0
         self._pending_warning: Optional[tuple[int, str]] = None
         self._signal_attempts: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
         self._thread_state: Dict[str, Any] = {
@@ -170,6 +173,15 @@ class OptionCaptureWriter:
         sizes["signal_attempts_days"] = len(attempts)
         sizes["signal_attempts_items"] = sum(len(day) for day in attempts)
         return sizes
+
+    def telemetry(self) -> Dict[str, Any]:
+        with self._stats_lock:
+            return {
+                "queue_depth": self._queue.qsize(),
+                "last_flush_rows": self._last_flush_rows,
+                "last_flush_ms": round(self._last_flush_ms, 3),
+                "dropped_rows": self._dropped_rows,
+            }
 
     def start(self) -> None:
         if not self.enabled or self._worker is not None:
@@ -438,8 +450,7 @@ class OptionCaptureWriter:
         completed = self._thread_state["completed"][token]
         completed_by_minute = self._thread_state["completed_by_minute"][token]
         if completed.maxlen is not None and len(completed) == completed.maxlen:
-            evicted = completed[0]["candle_start_time"]
-            completed_by_minute.pop(evicted, None)
+            completed_by_minute.pop(completed[0]["candle_start_time"], None)
         completed.append(candle)
         completed_by_minute[candle["candle_start_time"]] = candle
         day_key = candle["candle_start_time"].date().isoformat()
@@ -511,21 +522,26 @@ class OptionCaptureWriter:
             return
 
     def _flush_registered(self, now: datetime) -> None:
+        started = time.perf_counter()
+        rows = 0
+        try:
+            rows = self._flush_registered_items(now)
+        finally:
+            with self._stats_lock:
+                self._last_flush_rows = rows
+                self._last_flush_ms = (time.perf_counter() - started) * 1000.0
+
+    def _flush_registered_items(self, now: datetime) -> int:
         local_now = _as_ist(now)
         completed_before = _minute_start(local_now)
         day_key = local_now.date().isoformat()
+        rows = 0
         registered = self._thread_state["registered"].get(day_key, {})
-        previous_flush = self._thread_state["registered_flush_minute"].get(
-            day_key
-        )
-        minute_advanced = (
-            previous_flush is None or completed_before > previous_flush
-        )
+        previous_flush = self._thread_state["registered_flush_minute"].get(day_key)
+        minute_advanced = previous_flush is None or completed_before > previous_flush
         if minute_advanced:
             tokens = tuple(registered)
-            self._thread_state["registered_flush_minute"][day_key] = (
-                completed_before
-            )
+            self._thread_state["registered_flush_minute"][day_key] = completed_before
         else:
             dirty = self._thread_state["flush_dirty"][day_key]
             tokens = tuple(token for token in dirty if token in registered)
@@ -557,11 +573,15 @@ class OptionCaptureWriter:
                         "low_tick": False,
                         "gap": True,
                     }
-                self._append_candle(day_key, token, candle)
+                if self._append_candle(day_key, token, candle):
+                    rows += 1
                 next_minute += timedelta(minutes=1)
                 self._thread_state["next_minute"][(day_key, token)] = next_minute
+        return rows
 
-    def _append_candle(self, day_key: str, token: int, candle: Dict[str, Any]) -> None:
+    def _append_candle(
+        self, day_key: str, token: int, candle: Dict[str, Any]
+    ) -> bool:
         metadata = self.contracts_by_token[token]
         contract_id = str(metadata["contract_id"])
         path = self._data_path(day_key, contract_id, "candles")
@@ -569,11 +589,11 @@ class OptionCaptureWriter:
         key = (day_key, token, candle_time.isoformat())
         seen = self._thread_state["seen_candles"][day_key]
         if key in seen:
-            return
+            return False
         if not seen and path.exists():
             self._load_seen_candles(path, day_key, token)
             if key in seen:
-                return
+                return False
         row = {
             "contract_id": contract_id,
             "underlying": metadata.get("underlying", ""),
@@ -598,7 +618,7 @@ class OptionCaptureWriter:
             "gap": bool(candle.get("gap", False)),
         }
         if not self._append_row(path, CANDLE_FIELDS, row, day_key):
-            return
+            return False
         seen.add(key)
         self._thread_state["contracts_captured"][day_key].add(contract_id)
         for signals in self._thread_state["signals"].get(day_key, {}).values():
@@ -608,6 +628,7 @@ class OptionCaptureWriter:
                     previous = signals.get("forward_candle_time")
                     if previous is None or candle_time > previous:
                         signals["forward_candle_time"] = candle_time
+        return True
 
     def _sample_quotes(self, now: datetime) -> None:
         local_now = _as_ist(now)
