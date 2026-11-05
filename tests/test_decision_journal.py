@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from market_bot.trade_journal import (
     DecisionJournal,
+    PaperTradingRecorder,
     RejectedSignalJournal,
     TradeJournal,
     read_rejected_signals,
@@ -38,7 +39,164 @@ def test_trade_journal_records_contract_id(tmp_path):
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert record["contract_id"] == "NFO:NIFTY26OCT25000CE"
+    assert record["timestamp"]
+    assert record["entry_time"] == record["timestamp"]
 
+
+def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path):
+    timestamp = "2026-10-30T09:30:00+05:30"
+    paper_dir = tmp_path / "paper"
+    recorder = PaperTradingRecorder(
+        str(paper_dir),
+        config_hash="cfg",
+        git_sha="startup-sha",
+        git_dirty=False,
+    )
+    journal = TradeJournal(
+        str(tmp_path / "trades.jsonl"),
+        str(paper_dir),
+        config_hash="cfg",
+        git_sha="startup-sha",
+        git_dirty=False,
+    )
+    candle = {"time": timestamp, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0}
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "timestamp": timestamp,
+            "trade_id": "trade-1",
+            "signal_id": "NIFTY_CE|CE|2026-10-30T09:29:00+05:30",
+            "atr_pct": 0.043,
+            "effective_volatility_threshold_pct": 0.04,
+            "momentum_candle": candle,
+            "momentum_body_ratio": 0.5,
+            "momentum_body_ratio_threshold": 0.2,
+            "direction_rule": "option_premium_rising",
+            "active_paper_change_attributions": ["option_candle_momentum"],
+            "git_sha": "payload-sha",
+            "git_dirty": True,
+        }
+    )
+
+    record = json.loads((tmp_path / "trades.jsonl").read_text(encoding="utf-8"))
+    assert record["entry_time"] == timestamp
+    assert record["git_sha"] == "startup-sha"
+    assert record["git_dirty"] is False
+    [parquet_record] = recorder._read_parquet(
+        next(paper_dir.glob("**/trades.parquet"))
+    )
+    assert parquet_record["signal_id"] == record["signal_id"]
+    assert parquet_record["atr_pct"] == "0.043"
+    assert json.loads(parquet_record["momentum_candle"]) == candle
+    assert parquet_record["direction_rule"] == "option_premium_rising"
+    assert json.loads(parquet_record["active_paper_change_attributions"]) == [
+        "option_candle_momentum"
+    ]
+
+
+def test_bot_trade_exits_always_record_exit_reason(tmp_path):
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 105.0,
+        }
+    )
+
+    journal.update_trade_pnl("NIFTY_CE", 95.0, "BUY")
+    [trade] = journal.read_trades()
+    assert trade["exit_reason"] == "STOP_LOSS"
+
+    journal.log_trade(
+        {
+            "ticker": "BANKNIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+        }
+    )
+    journal.close_trade("BANKNIFTY_CE", 101.0, "BUY", "SIGNAL_WEAKEN")
+    trade = next(
+        item for item in journal.read_trades() if item["ticker"] == "BANKNIFTY_CE"
+    )
+    assert trade["exit_reason"] == "SIGNAL_WEAKEN"
+
+
+def test_entry_confirmation_outcomes_are_normalized(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    paper_dir = tmp_path / "paper"
+    journal = DecisionJournal(str(path), str(paper_dir))
+    cases = [
+        ("signal_generated", {}, "pending"),
+        ("signal_ignored_pending", {}, "pending"),
+        ("rejected_by_confirmation", {}, "confirmation_failed"),
+        ("expired_signal", {}, "confirmation_failed"),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "stale_quote"},
+            "stale_quote",
+        ),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "risk_cap"},
+            "risk_cap",
+        ),
+        (
+            "filter_failed_after_confirmation",
+            {"cancellation_sub_reason": "premium"},
+            "other_filter",
+        ),
+        ("confirmed_trade", {}, "trade_opened"),
+    ]
+    for event, details, _ in cases:
+        journal.log_decision(
+            {
+                "event": "entry_confirmation",
+                "confirmation_event": event,
+                "outcome": "UNKNOWN",
+                "signal_id": "NIFTY_CE|CE|2026-10-30T09:29:00+05:30",
+                "atr_pct": 0.043,
+                "effective_volatility_threshold_pct": 0.04,
+                "momentum_candle": {
+                    "time": "2026-10-30T09:29:00+05:30",
+                    "open": 10.0,
+                    "high": 12.0,
+                    "low": 9.0,
+                    "close": 11.0,
+                },
+                "momentum_body_ratio": 1 / 3,
+                "momentum_body_ratio_threshold": 0.2,
+                "direction_rule": "option_premium_rising",
+                "active_paper_change_attributions": ["option_candle_momentum"],
+                **details,
+            }
+        )
+
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["outcome_detail"] for record in records] == [
+        expected for _, _, expected in cases
+    ]
+    assert journal.flush_decisions()
+    parquet_rows = [
+        row
+        for partition in paper_dir.glob("**/decisions_*.parquet")
+        for row in PaperTradingRecorder._read_parquet(partition)
+    ]
+    assert [row["outcome_detail"] for row in parquet_rows] == [
+        expected for _, _, expected in cases
+    ]
+    assert parquet_rows[0]["signal_id"] == "NIFTY_CE|CE|2026-10-30T09:29:00+05:30"
+    assert parquet_rows[0]["atr_pct"] == "0.043"
+    assert json.loads(parquet_rows[0]["momentum_candle"])["open"] == 10.0
+    assert parquet_rows[0]["direction_rule"] == "option_premium_rising"
+    assert json.loads(parquet_rows[0]["active_paper_change_attributions"]) == [
+        "option_candle_momentum"
+    ]
 
 def test_decision_journal_bounds_large_history_payloads(tmp_path):
     path = tmp_path / "decisions.jsonl"
