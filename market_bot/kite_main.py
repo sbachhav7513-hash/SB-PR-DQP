@@ -3216,6 +3216,102 @@ class KiteTradingBot:
         leg = "CE" if symbol.endswith("_CE") else "PE"
         return f"{symbol}|{leg}|{signal_time.isoformat()}"
 
+    def _entry_signal_telemetry(
+        self,
+        symbol: str,
+        signal: str,
+        signal_bars: list[Bar],
+        history: list[dict],
+        option_bar: Optional[Bar],
+        strategy_variant: Optional[str],
+    ) -> dict:
+        is_option = symbol.endswith(("_CE", "_PE"))
+        use_option_candle = (
+            is_option and self._paper_change_enabled("option_candle_momentum")
+        )
+        momentum_bar = option_bar if use_option_candle else (
+            signal_bars[-1] if signal_bars else None
+        )
+        route = str(strategy_variant or "")
+        body_threshold = (
+            float(self.config.get("support_reversal_min_candle_body_ratio", 0.20))
+            if "support_reversal" in route
+            else self._option_candle_min_body_ratio()
+        )
+        momentum_candle = None
+        momentum_body_ratio = None
+        if momentum_bar is not None:
+            momentum_candle = momentum_bar.to_dict()
+            candle_range = float(momentum_bar.high) - float(momentum_bar.low)
+            if candle_range > 0 and math.isfinite(candle_range):
+                momentum_body_ratio = (
+                    abs(float(momentum_bar.close) - float(momentum_bar.open))
+                    / candle_range
+                )
+            if isinstance(momentum_candle.get("time"), datetime):
+                momentum_candle["time"] = momentum_candle["time"].isoformat()
+
+        atr_pct = None
+        if len(history) >= 14:
+            try:
+                close = float(history[-1]["close"])
+                atr = AccuracyFilters.calculate_atr(history, period=14)
+                candidate = atr / close * 100 if close > 0 else None
+                if candidate is not None and math.isfinite(candidate):
+                    atr_pct = candidate
+            except (
+                IndexError,
+                KeyError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                ZeroDivisionError,
+            ):
+                logger.exception("Could not calculate entry ATR telemetry for %s", symbol)
+
+        rising_v2 = (
+            use_option_candle
+            and signal == "SELL"
+            and self._paper_change_enabled(
+                "option_premium_rising_momentum_v2"
+            )
+        )
+        direction_rule = (
+            "underlying_signal_candle"
+            if not use_option_candle
+            else "option_premium_rising_momentum_v2"
+            if rising_v2
+            else "option_premium_falling"
+            if signal == "SELL"
+            else "option_premium_rising"
+        )
+        signal_id = None
+        if is_option and momentum_bar is not None:
+            signal_ids = getattr(self, "_option_capture_signal_ids", None)
+            if signal_ids is None:
+                signal_ids = {}
+                self._option_capture_signal_ids = signal_ids
+            signal_id = signal_ids.get(symbol)
+            if signal_id is None:
+                signal_time = self._journal_datetime(momentum_bar.timestamp)
+                if signal_time is not None:
+                    signal_id = self._option_signal_id(symbol, signal_time)
+                    signal_ids[symbol] = signal_id
+        return {
+            "signal_id": signal_id,
+            "atr_pct": atr_pct,
+            "effective_volatility_threshold_pct": self._minimum_volatility_pct(
+                symbol
+            ),
+            "momentum_candle": momentum_candle,
+            "momentum_body_ratio": momentum_body_ratio,
+            "momentum_body_ratio_threshold": body_threshold,
+            "direction_rule": direction_rule,
+            "paper_change_attributions": list(
+                getattr(self, "_signal_change_attributions", {}).get(symbol, [])
+            ),
+        }
+
     def _register_option_signal_capture(
         self,
         symbol: str,
@@ -3326,6 +3422,38 @@ class KiteTradingBot:
             ),
             "paper_change_gate_evaluations": pending.get(
                 "paper_change_gate_evaluations", {}
+            ),
+            "active_paper_change_attributions": pending.get(
+                "paper_change_attributions", []
+            ),
+            "atr_pct": pending.get(
+                "atr_pct", gate_measurements.get("volatility_pct")
+            ),
+            "effective_volatility_threshold_pct": pending.get(
+                "effective_volatility_threshold_pct",
+                gate_measurements.get("volatility_min_pct"),
+            ),
+            "momentum_candle": pending.get(
+                "momentum_candle", gate_measurements.get("momentum_candle")
+            ),
+            "momentum_body_ratio": pending.get(
+                "momentum_body_ratio", gate_measurements.get("momentum_body_ratio")
+            ),
+            "momentum_body_ratio_threshold": pending.get(
+                "momentum_body_ratio_threshold",
+                gate_measurements.get("momentum_body_ratio_threshold"),
+            ),
+            "direction_rule": pending.get(
+                "direction_rule", gate_measurements.get("direction_rule")
+            ),
+            "confirmation_momentum_candle": pending.get(
+                "confirmation_momentum_candle"
+            ),
+            "confirmation_momentum_body_ratio": pending.get(
+                "confirmation_body_ratio"
+            ),
+            "confirmation_momentum_body_ratio_threshold": pending.get(
+                "confirmation_body_ratio_threshold"
             ),
             "would_pass_baseline": {
                 key: bool(
@@ -3493,7 +3621,6 @@ class KiteTradingBot:
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         quote_metrics = self._option_quote_metrics(quote, now=now)
         contract_id = self._contract_id(symbol)
-        signal_id = f"{symbol}|{leg}|{signal_time.isoformat()}"
         support_route = strategy_variant == "paper_underlying_support_reversal"
         builder = getattr(self, "bar_builder", None)
         option_token = self.config.get("instrument_tokens", {}).get(symbol)
@@ -3502,6 +3629,14 @@ class KiteTradingBot:
             if builder is not None and option_token is not None
             else []
         )
+        signal_ids = getattr(self, "_option_capture_signal_ids", None)
+        if signal_ids is None:
+            signal_ids = {}
+            self._option_capture_signal_ids = signal_ids
+        signal_id = signal_ids.get(symbol) or self._option_signal_id(
+            symbol, signal_time
+        )
+        signal_ids.setdefault(symbol, signal_id)
         gate_measurements = self._decision_gate_measurements(
             symbol,
             signal_bars,
@@ -3512,6 +3647,14 @@ class KiteTradingBot:
         )
         signal_bar_payload = signal_bar.to_dict()
         signal_bar_payload["time"] = signal_time
+        entry_telemetry = self._entry_signal_telemetry(
+            symbol,
+            signal,
+            signal_bars,
+            history,
+            option_bars[-1] if option_bars else None,
+            strategy_variant,
+        )
         contract_metadata = self._option_contract_metadata(symbol, signal)
         pending = {
             "signal_id": signal_id,
@@ -3544,6 +3687,22 @@ class KiteTradingBot:
             "paper_change_attributions": list(paper_change_attributions or []),
             "paper_change_gate_evaluations": (
                 paper_change_gate_evaluations or {}
+            ),
+            "atr_pct": gate_measurements.get("volatility_pct"),
+            "effective_volatility_threshold_pct": gate_measurements.get(
+                "volatility_min_pct"
+            ),
+            "momentum_candle": gate_measurements.get("momentum_candle")
+            or entry_telemetry["momentum_candle"],
+            "momentum_body_ratio": gate_measurements.get(
+                "momentum_body_ratio", entry_telemetry["momentum_body_ratio"]
+            ),
+            "momentum_body_ratio_threshold": gate_measurements.get(
+                "momentum_body_ratio_threshold",
+                entry_telemetry["momentum_body_ratio_threshold"],
+            ),
+            "direction_rule": gate_measurements.get(
+                "direction_rule", entry_telemetry["direction_rule"]
             ),
             "support_resistance_level": (
                 support_candidate.level if support_route and support_candidate else None
@@ -3758,6 +3917,39 @@ class KiteTradingBot:
         )
         pending["confirmation_body_ratio"] = ratio
         pending["confirmation_body_ratio_threshold"] = minimum_body_ratio
+        pending["confirmation_momentum_candle"] = {
+            key: momentum_candle.get(key)
+            for key in ("time", "open", "high", "low", "close")
+            if isinstance(momentum_candle, dict) and key in momentum_candle
+        }
+        if (
+            momentum_passed
+            and pending["signal"] == "SELL"
+            and option_candle is not None
+            and self._paper_change_enabled("option_candle_momentum")
+            and self._paper_change_enabled(
+                "option_premium_rising_momentum_v2"
+            )
+            and self._has_option_candle_momentum(
+                pending["signal"],
+                momentum_candle,
+                minimum_body_ratio=minimum_body_ratio,
+                rising_option_premium=True,
+            )
+            and not self._has_option_candle_momentum(
+                pending["signal"],
+                momentum_candle,
+                minimum_body_ratio=minimum_body_ratio,
+            )
+        ):
+            pending["paper_change_attributions"] = list(
+                dict.fromkeys(
+                    [
+                        *pending.get("paper_change_attributions", []),
+                        "option_premium_rising_momentum_v2",
+                    ]
+                )
+            )
         persistence_passed = False
         if (
             not momentum_passed
@@ -3963,6 +4155,7 @@ class KiteTradingBot:
                 (now - (pending["signal_time"] + timedelta(minutes=1))).total_seconds(),
             )
             metadata = {
+                "signal_id": pending["signal_id"],
                 "entry_mode": "confirmed",
                 "route": pending["route"],
                 "contract_id": pending["contract_id"],
@@ -4003,6 +4196,28 @@ class KiteTradingBot:
                 ),
                 "paper_change_attributions": list(
                     pending.get("paper_change_attributions", [])
+                ),
+                "active_paper_change_attributions": list(
+                    pending.get("paper_change_attributions", [])
+                ),
+                "atr_pct": pending.get("atr_pct"),
+                "effective_volatility_threshold_pct": pending.get(
+                    "effective_volatility_threshold_pct"
+                ),
+                "momentum_candle": pending.get("momentum_candle"),
+                "momentum_body_ratio": pending.get("momentum_body_ratio"),
+                "momentum_body_ratio_threshold": pending.get(
+                    "momentum_body_ratio_threshold"
+                ),
+                "direction_rule": pending.get("direction_rule"),
+                "confirmation_momentum_candle": pending.get(
+                    "confirmation_momentum_candle"
+                ),
+                "confirmation_momentum_body_ratio": pending.get(
+                    "confirmation_body_ratio"
+                ),
+                "confirmation_momentum_body_ratio_threshold": pending.get(
+                    "confirmation_body_ratio_threshold"
                 ),
             }
             gate_contexts = getattr(
@@ -4700,8 +4915,27 @@ class KiteTradingBot:
             )
             momentum_override = persistence_passed and not momentum_passed
             if option_momentum_enabled and momentum_passed and not legacy_momentum_passed:
+                rising_v2_decided = (
+                    market_score.signal == "SELL"
+                    and self._paper_change_enabled(
+                        "option_premium_rising_momentum_v2"
+                    )
+                    and self._has_option_candle_momentum(
+                        market_score.signal,
+                        momentum_candle,
+                        minimum_body_ratio=minimum_body_ratio,
+                        rising_option_premium=True,
+                    )
+                    and not self._has_option_candle_momentum(
+                        market_score.signal,
+                        momentum_candle,
+                        minimum_body_ratio=minimum_body_ratio,
+                    )
+                )
                 self._signal_change_attributions[symbol].append(
-                    "option_candle_momentum"
+                    "option_premium_rising_momentum_v2"
+                    if rising_v2_decided
+                    else "option_candle_momentum"
                 )
             if momentum_override:
                 self._signal_change_attributions[symbol].append(
@@ -4799,6 +5033,7 @@ class KiteTradingBot:
                     minute=now.minute,
                     record_entry=False,
                     min_score=position_minimum_score,
+                    min_volatility_pct=self._minimum_volatility_pct(symbol),
                 )
             if not allowed:
                 logger.info(
@@ -4882,6 +5117,14 @@ class KiteTradingBot:
                     ),
                 )
             else:
+                entry_telemetry = self._entry_signal_telemetry(
+                    symbol,
+                    market_score.signal,
+                    signal_bars,
+                    history,
+                    bar,
+                    market_score.strategy_variant,
+                )
                 if ema_reentry_context is not None:
                     outcome = self._handle_buy_signal(
                         symbol,
@@ -4893,6 +5136,7 @@ class KiteTradingBot:
                         paper_change_attributions=list(
                             self._signal_change_attributions.get(symbol, [])
                         ),
+                        entry_telemetry=entry_telemetry,
                     )
                 else:
                     gate_context = getattr(
@@ -4910,6 +5154,7 @@ class KiteTradingBot:
                         paper_change_attributions=list(
                             self._signal_change_attributions.get(symbol, [])
                         ),
+                        entry_telemetry=entry_telemetry,
                     )
         elif trade_action == "SELL":
             outcome = self._handle_sell_signal(
@@ -7072,6 +7317,33 @@ class KiteTradingBot:
             "body_ratio_source": body_ratio_source,
             "signal_bar_time": signal_bar_time,
             "option_bar_body_ratio": option_body_ratio,
+            "momentum_candle": (
+                {
+                    "time": momentum_bar.timestamp.isoformat(),
+                    "open": float(momentum_bar.open),
+                    "high": float(momentum_bar.high),
+                    "low": float(momentum_bar.low),
+                    "close": float(momentum_bar.close),
+                }
+                if momentum_bar is not None
+                else None
+            ),
+            "momentum_body_ratio": body_ratio,
+            "momentum_body_ratio_threshold": body_threshold,
+            "direction_rule": (
+                "underlying_signal_candle"
+                if not use_option_candle
+                else "option_premium_rising_momentum_v2"
+                if (
+                    signal == "SELL"
+                    and self._paper_change_enabled(
+                        "option_premium_rising_momentum_v2"
+                    )
+                )
+                else "option_premium_falling"
+                if signal == "SELL"
+                else "option_premium_rising"
+            ),
             "option_bar_close": (
                 float(option_bar.close) if option_bar is not None else None
             ),
@@ -7313,13 +7585,17 @@ class KiteTradingBot:
         signal_id = None
         if option_decision and signal in {"BUY", "SELL"}:
             signal_time = self._journal_datetime(bar.timestamp) or datetime.now(IST)
-            signal_ids = getattr(self, "_option_capture_signal_ids", {})
+            signal_ids = getattr(self, "_option_capture_signal_ids", None)
+            if signal_ids is None:
+                signal_ids = {}
+                self._option_capture_signal_ids = signal_ids
             signal_id = signal_ids.pop(symbol, None)
             if signal_id is None:
                 signal_id = self._option_signal_id(symbol, signal_time)
                 self._register_option_signal_capture(
                     symbol, signal_time, signal=signal
                 )
+                signal_ids.pop(symbol, None)
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
             reasons = [outcome]
@@ -7404,6 +7680,21 @@ class KiteTradingBot:
                     "body_ratio_threshold"
                 ),
                 "body_ratio_source": gate_measurements.get("body_ratio_source"),
+                "atr_pct": gate_measurements.get("volatility_pct"),
+                "effective_volatility_threshold_pct": gate_measurements.get(
+                    "volatility_min_pct"
+                ),
+                "momentum_candle": gate_measurements.get("momentum_candle"),
+                "momentum_body_ratio": gate_measurements.get(
+                    "momentum_body_ratio"
+                ),
+                "momentum_body_ratio_threshold": gate_measurements.get(
+                    "momentum_body_ratio_threshold"
+                ),
+                "direction_rule": gate_measurements.get("direction_rule"),
+                "active_paper_change_attributions": gate_measurements.get(
+                    "paper_change_attributions", []
+                ),
                 "paper_change_flags": gate_measurements.get(
                     "paper_change_flags", self._active_paper_change_flags()
                 ),
@@ -7539,6 +7830,7 @@ class KiteTradingBot:
         force_ask_fill: bool = False,
         entry_fill_override: Optional[float] = None,
         paper_change_attributions: Optional[list[str]] = None,
+        entry_telemetry: Optional[dict] = None,
     ) -> str:
         """Handle a BUY signal."""
         paper_change_attributions = list(paper_change_attributions or [])
@@ -8232,6 +8524,14 @@ class KiteTradingBot:
             )
             if confirmed_entry_metadata is not None:
                 alert.update(confirmed_entry_metadata)
+            if entry_telemetry is not None:
+                alert.update(entry_telemetry)
+            alert["paper_change_attributions"] = list(
+                paper_change_attributions
+            )
+            alert["active_paper_change_attributions"] = list(
+                paper_change_attributions
+            )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
             alert["trade_id"] = telegram_trade_id

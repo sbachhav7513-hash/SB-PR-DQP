@@ -187,6 +187,34 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert "confirmation: 1" in content
 
 
+def test_daily_review_counts_breakeven_separately_from_losses(tmp_path):
+    timestamp = "2026-09-30T10:00:00+05:30"
+    trades = [
+        {
+            "timestamp": timestamp,
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "status": "closed",
+            "pnl": pnl,
+        }
+        for pnl in (25.0, -10.0, 0.0)
+    ]
+    (tmp_path / "trades.jsonl").write_text(
+        "\n".join(json.dumps(trade) for trade in trades) + "\n",
+        encoding="utf-8",
+    )
+
+    review = write_daily_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        target_date=date(2026, 9, 30),
+    )
+
+    assert "Wins / losses / breakeven: 1 / 1 / 1" in review.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_trade_opened_outcome_detail_counts_as_an_entry_in_all_reports(tmp_path):
     from analyze_weekly import analyze_decisions, load_filter_stats
 

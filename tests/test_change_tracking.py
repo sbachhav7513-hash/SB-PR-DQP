@@ -51,7 +51,7 @@ def test_startup_logs_identity_and_warns_for_unknown_config_hash(tmp_path, caplo
 
 
 def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
-    identity = {"config_hash": "config", "git_sha": "commit", "git_dirty": True}
+    identity = {"config_hash": "config", "git_sha": "commit", "git_dirty": False}
     trades_path = tmp_path / "trades.jsonl"
     decisions_path = tmp_path / "decisions.jsonl"
     paper_data_dir = tmp_path / "paper"
@@ -70,8 +70,22 @@ def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
         git_dirty=identity["git_dirty"],
     )
 
-    trade_journal.log_trade({"ticker": "NIFTY", "action": "BUY"})
-    decision_journal.log_decision({"ticker": "NIFTY", "signal": "BUY"})
+    trade_journal.log_trade(
+        {
+            "ticker": "NIFTY",
+            "action": "BUY",
+            "git_sha": "per-record-sha",
+            "git_dirty": True,
+        }
+    )
+    decision_journal.log_decision(
+        {
+            "ticker": "NIFTY",
+            "signal": "BUY",
+            "git_sha": "per-record-sha",
+            "git_dirty": True,
+        }
+    )
     assert decision_journal.flush_decisions()
 
     trade = json.loads(trades_path.read_text(encoding="utf-8"))
@@ -79,7 +93,7 @@ def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
     for record in (trade, decision):
         assert record["config_hash"] == "config"
         assert record["git_sha"] == "commit"
-        assert record["git_dirty"] is True
+        assert record["git_dirty"] is False
     parquet_trade = next(paper_data_dir.glob("**/trades.parquet"))
     parquet_decisions_dir = next(paper_data_dir.glob("**/day_*/decisions"))
     trade_record = pd.read_parquet(parquet_trade).iloc[0]
@@ -87,7 +101,7 @@ def test_trade_and_decision_journals_stamp_git_identity(tmp_path):
     for record in (trade_record, decision_record):
         assert record["config_hash"] == "config"
         assert record["git_sha"] == "commit"
-        assert record["git_dirty"] == "True"
+        assert record["git_dirty"] == "False"
 
 
 def test_hash_report_counts_date_pairs_and_finds_unlogged_commits(

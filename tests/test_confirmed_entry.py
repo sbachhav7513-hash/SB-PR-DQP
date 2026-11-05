@@ -216,6 +216,9 @@ def test_29_oct_nifty_ce_replay_examples(tmp_path):
         [_pending("NIFTY_CE", second_signal, 22_789.55, score=82)],
         second_signal + timedelta(minutes=2, seconds=3),
     )
+    bot.paper_trading_enabled = True
+    bot.config["nifty_vol_floor_v2"] = True
+    bot.config["option_candle_momentum"] = False
     bot._process_confirmed_entries(
         "NIFTY",
         Bar(
@@ -232,6 +235,12 @@ def test_29_oct_nifty_ce_replay_examples(tmp_path):
     metadata = bot._handle_buy_signal.call_args.kwargs["confirmed_entry_metadata"]
     assert metadata["confirmation_close"] == 22_793.40
     assert metadata["confirmation_delay_seconds"] == pytest.approx(63.0)
+    assert metadata["signal_id"] == (
+        f"NIFTY_CE|CE|{second_signal.isoformat()}"
+    )
+    assert bot.accuracy_filters.validate_entry_with_reason.call_args.kwargs[
+        "min_volatility_pct"
+    ] == 0.04
 
 
 def test_stale_quote_after_confirmation_cancels_with_specific_reason(tmp_path):
@@ -343,6 +352,98 @@ def test_cancelled_signal_does_not_consume_cooldown_and_later_signal_is_queued(
         now=start + timedelta(minutes=3),
     ) == "entry_pending_confirmation"
     assert ("NIFTY_CE", "CE") in bot._pending_entries
+
+
+def test_entry_telemetry_and_signal_id_are_shared_across_decision_records(
+    tmp_path,
+):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    captured_id = f"NIFTY_CE|CE|{start.isoformat()}"
+    signal_bar = Bar(start, 100, 102, 99, 101, 1000)
+    telemetry = {
+        "volatility_pct": 0.043,
+        "volatility_min_pct": 0.04,
+        "momentum_candle": {
+            "time": start.isoformat(),
+            "open": 100.0,
+            "high": 105.0,
+            "low": 99.0,
+            "close": 104.0,
+        },
+        "momentum_body_ratio": 4 / 6,
+        "momentum_body_ratio_threshold": 0.6,
+        "direction_rule": "option_premium_rising_momentum_v2",
+        "paper_change_attributions": [
+            "option_premium_rising_momentum_v2"
+        ],
+        "paper_change_flags": ["option_premium_rising_momentum_v2"],
+        "paper_change_gate_evaluations": {},
+        "would_pass_baseline": {},
+    }
+    bot = _bot(tmp_path, [], start)
+    bot._pending_entries = {}
+    bot._entry_score_floor = Mock(return_value=70)
+    bot._capture_eligible_option_candles = Mock()
+    bot._decision_gate_measurements = Mock(return_value=telemetry)
+    bot._option_contract_metadata = lambda *_: {}
+    bot._option_capture_signal_ids = {"NIFTY_CE": captured_id}
+
+    outcome = bot._queue_confirmed_entry(
+        symbol="NIFTY_CE",
+        score=80,
+        signal="BUY",
+        strategy_variant=None,
+        signal_bars=[signal_bar],
+        history=[{"close": 100}, {"close": 101}],
+        reasons=["test signal"],
+        support_candidate=None,
+        now=start,
+        paper_change_attributions=["option_premium_rising_momentum_v2"],
+    )
+    assert outcome == "entry_pending_confirmation"
+    pending = bot._pending_entries[("NIFTY_CE", "CE")]
+    assert pending["signal_id"] == captured_id
+
+    bot._options_enabled = lambda: True
+    bot._contract_id = lambda _: "NFO:NIFTY_CE"
+    bot._record_stop_reentry_checks = Mock()
+    bot._record_decision(
+        "NIFTY_CE",
+        Bar(start, 100, 102, 99, 101, 1000),
+        [],
+        SimpleNamespace(score=80, reasons=["test signal"]),
+        "BUY",
+        "entry_pending_confirmation",
+    )
+    bot._log_entry_confirmation_event(
+        pending, "confirmed_trade", start + timedelta(minutes=2)
+    )
+
+    records = _events(tmp_path / "decisions.jsonl")
+    bar_decision = next(item for item in records if item["event"] == "bar_decision")
+    confirmation = next(
+        item
+        for item in records
+        if item.get("confirmation_event") == "signal_generated"
+    )
+    trade_opened = next(
+        item
+        for item in records
+        if item.get("confirmation_event") == "confirmed_trade"
+    )
+    assert bar_decision["signal_id"] == confirmation["signal_id"] == captured_id
+    assert trade_opened["signal_id"] == captured_id
+    for record in (confirmation, trade_opened):
+        assert record["atr_pct"] == 0.043
+        assert record["effective_volatility_threshold_pct"] == 0.04
+        assert record["momentum_candle"]["open"] == 100.0
+        assert record["momentum_body_ratio_threshold"] == 0.6
+        assert record["direction_rule"] == "option_premium_rising_momentum_v2"
+        assert record["active_paper_change_attributions"] == [
+            "option_premium_rising_momentum_v2"
+        ]
+    assert confirmation["outcome_detail"] == "pending"
+    assert trade_opened["outcome_detail"] == "trade_opened"
 
 
 def test_second_same_leg_signal_is_logged_and_ignored_while_pending(tmp_path):

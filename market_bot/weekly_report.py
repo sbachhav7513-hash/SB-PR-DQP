@@ -1257,6 +1257,8 @@ def write_daily_review(
 
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     wins = sum(1 for pnl in pnls if pnl > 0)
+    losses = sum(1 for pnl in pnls if pnl < 0)
+    breakeven = sum(1 for pnl in pnls if pnl == 0)
     ema_reentry = _ema_reentry_summary(trades, decisions)
     entry_confirmation = _entry_confirmation_metrics(trades, decisions)
     signal_counts: Dict[str, int] = defaultdict(int)
@@ -1337,7 +1339,7 @@ def write_daily_review(
         "",
         "## Results",
         f"- Closed trades: {len(trades)}",
-        f"- Wins / losses: {wins} / {len(trades) - wins}",
+        f"- Wins / losses / breakeven: {wins} / {losses} / {breakeven}",
         f"- Recorded P&L before unmodeled trading costs: {sum(pnls):.2f}",
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
