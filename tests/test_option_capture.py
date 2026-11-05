@@ -91,6 +91,27 @@ def test_rejected_signal_captures_both_legs_through_market_close_without_fill(tm
     assert report["signals_with_resolved_contract_id"] == 1
     assert report["signals_with_60_minutes_forward_candles"] == 1
     assert report["contracts_captured_count"] == 2
+    assert report == {
+        "candle_gaps_per_contract": {
+            call["contract_id"]: 373,
+            put["contract_id"]: 375,
+        },
+        "contracts_captured": [call["contract_id"], put["contract_id"]],
+        "contracts_captured_count": 2,
+        "contracts_skipped": [],
+        "contracts_skipped_count": 0,
+        "date": "2026-10-28",
+        "dropped_rows": 0,
+        "match_rate": 1.0,
+        "signals": 1,
+        "signals_with_60_minutes_forward_candles": 1,
+        "signals_with_resolved_contract_id": 1,
+        "subscription_start_delays": [
+            {"contract_id": call["contract_id"], "seconds": 1.0},
+            {"contract_id": put["contract_id"], "seconds": 1.0},
+        ],
+        "tick_gaps_over_30_seconds_per_contract": {call["contract_id"]: 1},
+    }
     assert (tmp_path / "2026-10-28" / "capture_report.txt").exists()
     assert list((tmp_path / "2026-10-28").glob("*.candles.csv.gz"))
 
@@ -115,6 +136,52 @@ def test_capture_queue_full_drops_without_waiting(tmp_path):
     assert not accepted
     assert elapsed < 0.1
     assert writer.dropped_rows == 1
+    writer.close()
+
+
+def test_registered_flush_consumes_only_new_indexed_candles(tmp_path):
+    start = datetime(2026, 10, 28, 9, 15, tzinfo=IST)
+    now = start + timedelta(minutes=1)
+    contract = _contract(101, "CE")
+    writer = OptionCaptureWriter(
+        tmp_path,
+        config_hash="cfg",
+        git_sha="sha",
+        contracts_by_token={101: contract},
+        auto_start=False,
+    )
+    day_key = start.date().isoformat()
+    candle = {
+        "candle_start_time": start,
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 1,
+        "oi": None,
+        "tick_count": 2,
+        "last_tick_time": start + timedelta(seconds=30),
+        "bid": 100.0,
+        "ask": 100.5,
+        "low_tick": False,
+        "gap": False,
+    }
+    writer._thread_state["registered"][day_key][101] = contract
+    writer._thread_state["next_minute"][(day_key, 101)] = start
+    writer._thread_state["registered_flush_minute"][day_key] = now
+    writer._thread_state["completed"][101].append(candle)
+    writer._thread_state["completed_by_minute"][101][start] = candle
+    writer._thread_state["flush_dirty"][day_key].add(101)
+    written = []
+    writer._append_candle = lambda _day, _token, item: written.append(
+        item["candle_start_time"]
+    )
+
+    writer._flush_registered(now)
+    writer._flush_registered(now)
+
+    assert written == [start]
+    assert writer._thread_state["completed_by_minute"][101] == {}
     writer.close()
 
 
