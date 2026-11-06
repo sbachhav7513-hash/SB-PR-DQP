@@ -2,7 +2,38 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 import run_kite_bot
+
+
+def test_authorize_shows_login_url_when_callback_port_is_occupied(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "kite_config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    login_url = "https://kite.example/login?api_key=test"
+
+    kite = Mock()
+    kite.login_url.return_value = login_url
+    monkeypatch.setenv("KITE_API_KEY", "test")
+    monkeypatch.setattr(run_kite_bot, "KiteConnect", Mock(return_value=kite))
+    monkeypatch.setattr(
+        run_kite_bot.getpass, "getpass", Mock(return_value="secret")
+    )
+    monkeypatch.setattr(
+        run_kite_bot, "HTTPServer", Mock(side_effect=OSError("Address in use"))
+    )
+
+    with pytest.raises(RuntimeError, match="Cannot listen on 127.0.0.1:8000"):
+        run_kite_bot.authorize(config_path)
+
+    output = capsys.readouterr().out
+    assert login_url in output
+    assert (
+        "authorization cannot complete until the callback port 8000 is free"
+        in output
+    )
 
 
 def test_authorize_only_refreshes_token_without_starting_bot(monkeypatch):

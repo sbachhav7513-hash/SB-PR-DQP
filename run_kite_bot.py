@@ -59,6 +59,7 @@ def authorize(config_path: Path, open_browser: bool = False) -> None:
     kite = KiteConnect(api_key=api_key)
     api_secret = getpass.getpass("Kite API secret: ")
     result = {"access_token": None, "error": None}
+    login_url = kite.login_url()
 
     class CallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -98,12 +99,16 @@ def authorize(config_path: Path, open_browser: bool = False) -> None:
     try:
         server = HTTPServer((REDIRECT_HOST, REDIRECT_PORT), CallbackHandler)
     except OSError as exc:
+        print(
+            "Kite login URL (authorization cannot complete until the callback "
+            f"port {REDIRECT_PORT} is free):"
+        )
+        print(login_url)
         raise RuntimeError(
             f"Cannot listen on {REDIRECT_HOST}:{REDIRECT_PORT}. "
-            "Close another authorization process and try again."
+            "Stop the process using the callback port and try again."
         ) from exc
 
-    login_url = kite.login_url()
     if open_browser:
         print("Complete Kite authorization in the browser window that opens.")
         webbrowser.open(login_url)

@@ -285,6 +285,10 @@ and journaled if the process restarts before confirmation.
 python run_kite_bot.py
 ```
 
+If the authorization callback port (`127.0.0.1:8000`) is already in use, the
+login URL is printed with a warning, but authorization cannot complete until
+the process using that port is stopped. Retry after freeing the port.
+
 This version:
 - Connects to Zerodha Kite WebSocket for live tick data
 - Aggregates ticks into configurable bar intervals
