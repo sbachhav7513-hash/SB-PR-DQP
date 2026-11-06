@@ -1896,7 +1896,6 @@ class KiteTradingBot:
         self.last_weekly_report_date = None
         self._weekly_report_attempt_date = None
         self._weekly_report_lock = threading.Lock()
-        self._weekly_report_thread = None
         self.last_daily_summary_date = None
         self._finalization_attempts = 0
         self._next_finalization_attempt_at = 0.0
@@ -9335,7 +9334,7 @@ class KiteTradingBot:
                     signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
     def _run_weekly_report_if_due(self, now: datetime) -> None:
-        """Start the budgeted Friday report without blocking daily finalization."""
+        """Run the bounded Friday report after daily finalization completes."""
         if (
             now.weekday() != 4
             or self.last_weekly_report_date == now.date()
@@ -9350,29 +9349,16 @@ class KiteTradingBot:
             return
         self._weekly_report_attempt_date = now.date()
         days = self.config.get("weekly_report_days", 7)
-        args = (
+        logger.info(
+            "Automatic weekly report started; waiting up to %.0fs with a %.0fMB budget",
+            WEEKLY_REPORT_TIME_BUDGET_SECONDS,
+            WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024),
+        )
+        self._run_weekly_report_job(
             ".",
             self.paper_trading_dir,
             str(self.weekly_report_dir),
             days,
-        )
-        worker = threading.Thread(
-            target=self._run_weekly_report_job,
-            args=args,
-            name="weekly-report-budgeted",
-            daemon=True,
-        )
-        self._weekly_report_thread = worker
-        try:
-            worker.start()
-        except Exception:
-            lock.release()
-            logger.exception("Could not start the protected weekly report")
-            return
-        logger.info(
-            "Automatic weekly report started asynchronously with %.0fs/%.0fMB budget",
-            WEEKLY_REPORT_TIME_BUDGET_SECONDS,
-            WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024),
         )
 
     def _run_weekly_report_job(
@@ -9388,6 +9374,7 @@ class KiteTradingBot:
         budget_error = None
         process = None
         result_path = None
+        step_path = None
         staging_path = None
         review_staging_path = None
         try:
@@ -9410,6 +9397,11 @@ class KiteTradingBot:
             )
             os.close(descriptor)
             result_path = Path(result_name)
+            step_descriptor, step_name = tempfile.mkstemp(
+                prefix="weekly_report_step_", suffix=".txt"
+            )
+            os.close(step_descriptor)
+            step_path = Path(step_name)
             environment = os.environ.copy()
             package_root = str(Path(__file__).resolve().parents[1])
             existing_pythonpath = environment.get("PYTHONPATH")
@@ -9418,11 +9410,24 @@ class KiteTradingBot:
                 for path in (package_root, existing_pythonpath)
                 if path
             )
+            worker_code = (
+                "import os; "
+                "exec('import resource\\n"
+                "limit=int(os.environ[\"WEEKLY_REPORT_MEMORY_BUDGET_BYTES\"])\\n"
+                "resource.setrlimit(resource.RLIMIT_AS, (limit, limit))') "
+                "if os.name == 'posix' else None; "
+                "from market_bot.weekly_report_worker import main; "
+                "raise SystemExit(main())"
+            )
+            environment["WEEKLY_REPORT_MEMORY_BUDGET_BYTES"] = str(
+                WEEKLY_REPORT_MEMORY_BUDGET_BYTES
+            )
+            environment["WEEKLY_REPORT_STEP_FILE"] = str(step_path)
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    "-m",
-                    "market_bot.weekly_report_worker",
+                    "-c",
+                    worker_code,
                     "--data-dir",
                     data_dir,
                     "--paper-data-dir",
@@ -9446,6 +9451,7 @@ class KiteTradingBot:
                 ],
                 cwd=os.getcwd(),
                 env=environment,
+                start_new_session=os.name != "nt",
             )
             while process.poll() is None:
                 try:
@@ -9458,24 +9464,35 @@ class KiteTradingBot:
                         break
                     budget_error = f"RSS monitoring failed: {exc}"
                     break
-                try:
-                    process.wait(timeout=0.25)
-                except subprocess.TimeoutExpired:
-                    pass
-                if process.poll() is not None:
-                    break
                 elapsed = time.monotonic() - started
                 if peak_rss_bytes > WEEKLY_REPORT_MEMORY_BUDGET_BYTES:
+                    try:
+                        step_name = (
+                            step_path.read_text(encoding="utf-8").strip()
+                            if step_path is not None
+                            else ""
+                        )
+                    except OSError:
+                        logger.exception("Could not read the active report step")
+                        step_name = ""
                     budget_error = (
-                        f"peak RSS {peak_rss_bytes / (1024 * 1024):.1f} MB "
+                        f"step={step_name or 'weekly_report_idle'} peak RSS "
+                        f"{peak_rss_bytes / (1024 * 1024):.1f} MB "
                         f"exceeded {WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024):.0f} MB"
                     )
                     break
-                if elapsed > WEEKLY_REPORT_TIME_BUDGET_SECONDS:
+                remaining = WEEKLY_REPORT_TIME_BUDGET_SECONDS - elapsed
+                if remaining <= 0:
                     budget_error = (
                         f"elapsed {elapsed:.1f}s exceeded "
                         f"{WEEKLY_REPORT_TIME_BUDGET_SECONDS:.0f}s"
                     )
+                    break
+                try:
+                    process.wait(timeout=min(0.25, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.poll() is not None:
                     break
             if budget_error:
                 process.terminate()
@@ -9485,45 +9502,57 @@ class KiteTradingBot:
                     process.kill()
                     process.wait(timeout=5.0)
                 logger.error(
-                    "Weekly report skipped: budget exceeded (%s); "
+                    "Weekly report skipped on budget: %s; "
                     "daily finalization and Telegram summary are unaffected",
                     budget_error,
                 )
                 return
 
-            if process.returncode != 0:
-                logger.error(
-                    "Weekly report worker failed with exit code %s",
-                    process.returncode,
-                )
-                return
             try:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                logger.exception("Weekly report worker returned no completion status")
+                logger.error(
+                    "Weekly report worker failed with exit code %s and no "
+                    "completion status",
+                    process.returncode,
+                    exc_info=True,
+                )
                 return
             status = result.get("status")
-            report_path = result.get("report_path", result.get("error", ""))
+            error = result.get("error", "worker returned no failure reason")
+            report_path = result.get("report_path", error)
             review_path = result.get("review_path", "")
             child_peak_rss_bytes = int(result.get("peak_rss_bytes", 0))
             peak_rss_bytes = max(peak_rss_bytes, child_peak_rss_bytes)
+            if status == "budget":
+                logger.error(
+                    "Weekly report skipped on budget: %s; "
+                    "daily finalization and Telegram summary are unaffected",
+                    error,
+                )
+                return
             if peak_rss_bytes > WEEKLY_REPORT_MEMORY_BUDGET_BYTES:
                 logger.error(
-                    "Weekly report skipped: peak RSS %.1f MB exceeded %.0f MB; "
+                    "Weekly report skipped on budget: "
+                    "step=weekly_report_finalize peak RSS %.1f MB exceeded %.0f MB; "
                     "daily finalization and Telegram summary are unaffected",
                     peak_rss_bytes / (1024 * 1024),
                     WEEKLY_REPORT_MEMORY_BUDGET_BYTES / (1024 * 1024),
                 )
                 return
-            if status == "budget":
+            if status != "ok":
                 logger.error(
-                    "Weekly report skipped: budget exceeded (%s); "
-                    "daily finalization and Telegram summary are unaffected",
-                    report_path,
+                    "Weekly report worker failed: %s (exit code %s)",
+                    error,
+                    process.returncode,
                 )
                 return
-            if status != "ok":
-                logger.error("Weekly analytics failed: %s", report_path)
+            if process.returncode != 0:
+                logger.error(
+                    "Weekly report worker failed with exit code %s despite "
+                    "completion status",
+                    process.returncode,
+                )
                 return
             self.last_weekly_report_date = self._weekly_report_attempt_date
             logger.info(
@@ -9538,6 +9567,11 @@ class KiteTradingBot:
             logger.exception(
                 "Weekly analytics worker failed; daily finalization remains active"
             )
+        except KeyboardInterrupt:
+            logger.warning(
+                "Weekly report wait interrupted; stopping the worker before bot exit"
+            )
+            raise
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()
@@ -9558,6 +9592,20 @@ class KiteTradingBot:
                     except OSError:
                         logger.exception(
                             "Could not remove weekly report status file %s",
+                            temporary_file,
+                        )
+            if step_path is not None:
+                for temporary_file in (
+                    step_path,
+                    step_path.with_suffix(step_path.suffix + ".tmp"),
+                ):
+                    try:
+                        temporary_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.exception(
+                            "Could not remove weekly report step file %s",
                             temporary_file,
                         )
             if staging_path is not None:
@@ -9588,6 +9636,8 @@ def main() -> None:
     try:
         bot = KiteTradingBot()
         bot.run()
+    except KeyboardInterrupt:
+        logger.info("Bot shutdown requested")
     except FileNotFoundError as exc:
         logger.error(f"Configuration error: {exc}")
         sys.exit(1)

@@ -29,10 +29,16 @@ Paper journal P&L is the recorded simulated result and does not deduct brokerage
 Each reporting step adds an INFO log with the source files, rows, row groups,
 projected and source column counts, file bytes, elapsed seconds, and peak RSS.
 Daily reports read the target day only; the review's paper-shadow calculation
-reuses the already-loaded decision rows. The Friday worker runs in a separate
-process with a 120-second / 600-MB peak-RSS budget. If it exceeds either limit,
-it logs an error and leaves daily finalization and the queued Telegram summary
-untouched.
+reuses the already-loaded decision rows. The Friday worker runs in a separate,
+supervised process after daily finalization. The bot waits for it up to 120
+seconds; SIGINT stops and reaps it before staged files are removed. A 600-MiB
+RSS watchdog is combined with Linux `RLIMIT_AS`. An over-budget reporting step
+logs its name at ERROR, and failure leaves daily finalization and the queued
+Telegram summary untouched. A per-week lock serializes concurrent bot and
+manual workers before stale-stage cleanup. Weekly decision reads project 19
+columns and only accept hourly files under `day_DD/decisions/`. If recent days
+still contain legacy `decisions.parquet` or `decisions_part*.parquet` files, the
+worker fails with the affected days instead of silently omitting those decisions.
 
 On a copied 2026-11-04 day, daily summary generation took 0.729 seconds and
 review generation took 0.787 seconds (1.517 seconds combined); the maximum
@@ -42,18 +48,24 @@ hourly files in `day_04/decisions/`, projecting 32 of 107 source columns.
 `stop_events.jsonl` and `reentry_checks.jsonl`, but neither file was present
 in the supplied data tree.
 
-On a copy of week 45, the prior report benchmark was 46.326 seconds / 1,160.65
-MB and counted 27,115 decisions. The isolated worker now completed in 4.5
-seconds / 587.5 MB, below the 120-second / 600-MB limits. It read 31,053
-decisions, projecting 19 of 107 source columns. The count increase is
-intentional: the old `decisions_part1_until_1257IST.parquet` is included, and
-two distinct Nov. 3 records that match on the selected report fields are no
-longer collapsed. The archived Nov. 4 summary/review also differs from output
-generated from the current source rows: the archive records two stop events
-although their JSONL inputs are absent, and it records zero opened entries
-while the current decision rows contain four. The optimized output matches
-the full-history calculation over the current inputs; no stale-output fallback
-is used.
+The earlier all-layout worker benchmark was 4.5 seconds / 587.5 MB, leaving
+little room under the 600-MB limit. With the hourly-only reader, a migrated
+copy of week 45 completed in 3.3 seconds / 132.6 MB, reading the 19 projected
+decision columns from hourly files. These are local-copy measurements; VPS
+storage and runtime can differ. The report's date window and strategy/filter
+behavior are unchanged.
+
+On separate local reads before migration, Nov. 2 (`day_02`) took 1.052 seconds
+and peaked at 584.3 MB RSS for 5,176 projected rows from one 59.5-MB legacy
+file. Nov. 3 (`day_03`) took 1.185 seconds and peaked at 455.3 MB RSS for 7,007
+projected rows from two 80.7-MB legacy files. After migrating a copy to hourly
+files, those days took 0.242 seconds / 92.9 MB and 0.231 seconds / 100.6 MB,
+respectively. The weekly worker now requires the migration before generating a
+complete report; it refuses to publish a report from the current unmigrated
+week-45 layout. The Nov. 4 archived summary/review still differs from current
+source rows: the archive records two stop events although their JSONL inputs
+are absent, and it records zero opened entries while the current decision rows
+contain four. No stale-output fallback is used.
 
 Legacy Nov. 2 / Nov. 3 files can be migrated only offline and on a copy. The
 tool checks source/output row counts and reader parity, removes exact duplicate
@@ -75,6 +87,55 @@ python .\migrate_legacy_decisions.py `
 
 Inspect the parity and archive results before applying the same procedure to
 any other copy. Never point the migration command at the live data tree.
+
+### Manual week-45 report on the VPS
+
+The following command makes a temporary copy of week 45, migrates only the
+copy, and writes the report under `/opt/market-bot` and the review into the
+service's week-45 data directory. It does not stop or deploy the service and
+does not modify the live decision files. Run it from an account allowed to use
+`sudo`:
+
+```bash
+sudo -u marketbot bash -s <<'VPS'
+set -euo pipefail
+cd /opt/market-bot
+
+input_root=$(mktemp -d /opt/market-bot/.weekly_report_input_XXXXXX)
+archive_root=$(mktemp -d /opt/market-bot/.weekly_report_archive_XXXXXX)
+report_stage=$(mktemp -d /opt/market-bot/.weekly_report_stage_XXXXXX)
+week_dir=/opt/market-bot/paper_trading_data/2026-11/week_45
+review_stage=$(mktemp --tmpdir="$week_dir" --suffix=.md .weekly_review_stage_XXXXXX)
+status_file=$(mktemp --tmpdir=/tmp --suffix=.json weekly_report_status_XXXXXX)
+trap 'rm -rf -- "$input_root" "$archive_root" "$report_stage"; rm -f -- "$review_stage" "$status_file" "$status_file.tmp"' EXIT
+
+mkdir -p "$input_root/2026-11"
+cp -a "$week_dir" "$input_root/2026-11/week_45"
+/opt/market-bot/venv/bin/python /opt/market-bot/migrate_legacy_decisions.py \
+  --day-dir "$input_root/2026-11/week_45/day_02" \
+  --day-dir "$input_root/2026-11/week_45/day_03" \
+  --data-root "$input_root" \
+  --archive-dir "$archive_root" \
+  --confirm-copy
+
+/opt/market-bot/venv/bin/python -c "import resource; limit=629145600; resource.setrlimit(resource.RLIMIT_AS, (limit, limit)); from market_bot.weekly_report_worker import main; raise SystemExit(main())" \
+  --data-dir /opt/market-bot \
+  --paper-data-dir "$input_root" \
+  --output-dir /opt/market-bot \
+  --staging-dir "$report_stage" \
+  --review-staging-path "$review_stage" \
+  --review-final-path "$week_dir/weekly_review_2026_11_06.md" \
+  --days 7 \
+  --result-file "$status_file" \
+  --memory-budget-bytes 629145600 \
+  --time-budget-seconds 120
+cat "$status_file"
+VPS
+```
+
+After migration, expect about 3–5 seconds and approximately 133 MB peak RSS
+based on the local copy; the hard RSS budget remains 600 MiB. The two
+unmigrated legacy days are the reason the copy/migrate step is required.
 
 ### Exporting Kite History for Offline Replay
 

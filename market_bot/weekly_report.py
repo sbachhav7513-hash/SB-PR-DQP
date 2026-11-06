@@ -17,7 +17,7 @@ from .trade_journal import (
     read_decisions,
 )
 from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
-from .reporting_metrics import ReportingStep
+from .reporting_metrics import ReportingBudgetExceeded, ReportingStep
 
 
 logger = logging.getLogger(__name__)
@@ -217,12 +217,15 @@ def _recent_parquet_records(
     filename: str,
     days: int,
     columns: List[str],
+    hourly_decisions_only: bool = False,
 ) -> List[Dict[str, Any]]:
     candidate_records: List[Dict[str, Any]] = []
     day_dirs = _recent_day_directories(root, days)
     for day_dir in day_dirs:
         if filename == "decisions.parquet":
-            sources = _decision_source_files(day_dir)
+            sources = _decision_source_files(
+                day_dir, hourly_only=hourly_decisions_only
+            )
             try:
                 with ReportingStep(
                     logger,
@@ -231,7 +234,10 @@ def _recent_parquet_records(
                     columns,
                 ) as step:
                     frame = read_decisions(
-                        day_dir, columns=columns, reporting_step=step
+                        day_dir,
+                        columns=columns,
+                        reporting_step=step,
+                        hourly_only=hourly_decisions_only,
                     )
                     step.rows = len(frame)
                     day_records = (
@@ -241,6 +247,8 @@ def _recent_parquet_records(
                     )
                     candidate_records.extend(day_records)
                     del frame, day_records
+            except ReportingBudgetExceeded:
+                raise
             except Exception:
                 logger.exception("Could not read paper decision journal %s", day_dir)
             continue
@@ -323,13 +331,21 @@ def _read_projected_parquet(
     return frame, selected_columns
 
 
-def _decision_source_files(day_dir: Path) -> List[Path]:
+def _decision_source_files(
+    day_dir: Path, hourly_only: bool = False
+) -> List[Path]:
+    parts_dir = day_dir / "decisions"
+    if hourly_only:
+        return (
+            sorted(parts_dir.glob("decisions_*.parquet"))
+            if parts_dir.is_dir()
+            else []
+        )
     sources = []
     legacy = day_dir / "decisions.parquet"
     if legacy.is_file():
         sources.append(legacy)
     sources.extend(sorted(day_dir.glob("decisions_part*.parquet")))
-    parts_dir = day_dir / "decisions"
     if parts_dir.is_dir():
         sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
     return sources
@@ -357,6 +373,15 @@ def _recent_day_directories(root: Path, days: int) -> List[Path]:
     if recent:
         return [path for _, path in recent]
     return candidates[-max(days, 1):]
+
+
+def _legacy_decision_days(root: Path, days: int) -> List[str]:
+    return [
+        day_dir.name
+        for day_dir in _recent_day_directories(root, days)
+        if (day_dir / "decisions.parquet").is_file()
+        or any(day_dir.glob("decisions_part*.parquet"))
+    ]
 
 
 def _recent_records(
@@ -395,12 +420,19 @@ def _load_report_records(
     parquet_name: str,
     days: int,
     columns: List[str],
+    hourly_decisions_only: bool = False,
 ) -> List[Dict[str, Any]]:
     parquet_records = _recent_parquet_records(
-        paper_data_dir, parquet_name, days, columns
+        paper_data_dir,
+        parquet_name,
+        days,
+        columns,
+        hourly_decisions_only=hourly_decisions_only,
     )
     if parquet_records:
         return parquet_records
+    if hourly_decisions_only and parquet_name == "decisions.parquet":
+        return []
     return _load_jsonl(data_dir / jsonl_name, days)
 
 
@@ -647,9 +679,17 @@ def build_weekly_report(
     data_dir: str = ".",
     days: int = 7,
     paper_data_dir: str | None = None,
+    hourly_decisions_only: bool = False,
 ) -> Dict[str, Any]:
     root = Path(data_dir)
     paper_root = Path(paper_data_dir) if paper_data_dir else root / "paper_trading_data"
+    if hourly_decisions_only:
+        legacy_days = _legacy_decision_days(paper_root, days)
+        if legacy_days:
+            raise ValueError(
+                "Weekly report requires hourly decision partitions; migrate legacy "
+                f"decision files for {', '.join(legacy_days)} before running"
+            )
     trade_records = _load_report_records(
         root,
         paper_root,
@@ -684,6 +724,7 @@ def build_weekly_report(
             "event", "ema_reentry_event", "original_trade_id", "stop_time",
             "reentry_signal_time", "reentry_reason", "reentry_vwap",
         ],
+        hourly_decisions_only=hourly_decisions_only,
     )
 
     grouped: Dict[str, List[float]] = defaultdict(list)

@@ -786,6 +786,7 @@ def read_decisions(
     day_path: str | Path,
     columns: Optional[List[str]] = None,
     reporting_step: Optional[ReportingStep] = None,
+    hourly_only: bool = False,
 ) -> pd.DataFrame:
     """Read day decisions; single-source projections retain source row multiplicity."""
     directory = Path(day_path)
@@ -799,14 +800,21 @@ def read_decisions(
         if not writer.flush_decisions(timeout=20.0):
             raise TimeoutError(f"Timed out flushing decisions before reading {directory}")
 
-    sources = []
-    legacy = directory / "decisions.parquet"
-    if legacy.is_file():
-        sources.append(legacy)
-    sources.extend(sorted(directory.glob("decisions_part*.parquet")))
     parts_dir = directory / "decisions"
-    if parts_dir.is_dir():
-        sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
+    legacy = directory / "decisions.parquet"
+    if hourly_only:
+        sources = (
+            sorted(parts_dir.glob("decisions_*.parquet"))
+            if parts_dir.is_dir()
+            else []
+        )
+    else:
+        sources = []
+        if legacy.is_file():
+            sources.append(legacy)
+        sources.extend(sorted(directory.glob("decisions_part*.parquet")))
+        if parts_dir.is_dir():
+            sources.extend(sorted(parts_dir.glob("decisions_*.parquet")))
     if not sources:
         return pd.DataFrame()
 
@@ -873,9 +881,12 @@ def read_decisions(
         has_legacy_parts = any(
             source.name.startswith("decisions_part") for source in sources
         )
-        has_legacy_overlap = has_legacy_parts or (
-            legacy.is_file()
-            and any(source.parent != directory for source in sources)
+        has_legacy_overlap = not hourly_only and (
+            has_legacy_parts
+            or (
+                legacy.is_file()
+                and any(source.parent != directory for source in sources)
+            )
         )
         if has_legacy_overlap and source_columns.issubset(columns):
             result = _deduplicate_decision_frame(result)

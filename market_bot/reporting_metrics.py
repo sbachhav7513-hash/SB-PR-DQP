@@ -12,6 +12,17 @@ from typing import Iterable, Optional
 from fastparquet import ParquetFile
 
 
+class ReportingBudgetExceeded(RuntimeError):
+    def __init__(self, step: str, peak_rss_bytes: int, budget_bytes: int) -> None:
+        self.step = step
+        self.peak_rss_bytes = peak_rss_bytes
+        self.budget_bytes = budget_bytes
+        super().__init__(
+            f"step={step} peak RSS {peak_rss_bytes / (1024 * 1024):.1f} MB "
+            f"exceeded {budget_bytes / (1024 * 1024):.0f} MB"
+        )
+
+
 def _windows_working_set_bytes() -> tuple[int, int]:
     class ProcessMemoryCounters(ctypes.Structure):
         _fields_ = [
@@ -141,10 +152,20 @@ class ReportingStep:
         self.bytes_read = 0
         self.seconds = 0.0
         self.peak_rss_bytes = 0
+        budget = os.environ.get("WEEKLY_REPORT_MEMORY_BUDGET_BYTES")
+        self.memory_budget_bytes = int(budget) if budget else None
+        step_file = os.environ.get("WEEKLY_REPORT_STEP_FILE")
+        self._active_step_file = Path(step_file) if step_file else None
         self._stop = threading.Event()
         self._sampler: Optional[threading.Thread] = None
 
     def __enter__(self) -> "ReportingStep":
+        if self._active_step_file is not None:
+            temporary = self._active_step_file.with_suffix(
+                self._active_step_file.suffix + ".tmp"
+            )
+            temporary.write_text(self.name, encoding="utf-8")
+            temporary.replace(self._active_step_file)
         self._sample_rss()
         self._sampler = threading.Thread(
             target=self._sample_until_stopped,
@@ -161,6 +182,28 @@ class ReportingStep:
         if self._sampler is not None:
             self._sampler.join(timeout=1.0)
         self._sample_rss()
+        if self.memory_budget_bytes is not None and (
+            self.peak_rss_bytes > self.memory_budget_bytes
+            or (_exc_type is not None and issubclass(_exc_type, MemoryError))
+        ):
+            reason = (
+                "RLIMIT_AS prevented an allocation"
+                if _exc_type is not None and issubclass(_exc_type, MemoryError)
+                else (
+                    f"peak RSS {self.peak_rss_bytes / (1024 * 1024):.1f} MB "
+                    f"exceeded {self.memory_budget_bytes / (1024 * 1024):.0f} MB"
+                )
+            )
+            self.logger.error(
+                "Reporting memory budget exceeded: step=%s %s",
+                self.name,
+                reason,
+            )
+            raise ReportingBudgetExceeded(
+                self.name,
+                self.peak_rss_bytes,
+                self.memory_budget_bytes,
+            ) from _exc_value
         names = []
         for path in self.files:
             names.append(str(path))
@@ -210,6 +253,11 @@ class ReportingStep:
             self.seconds,
             self.peak_rss_bytes / (1024 * 1024),
         )
+        if self._active_step_file is not None:
+            try:
+                self._active_step_file.unlink()
+            except FileNotFoundError:
+                pass
 
     def record_parquet_metadata(
         self, row_groups: int, source_columns: int

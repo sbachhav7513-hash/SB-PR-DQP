@@ -25,6 +25,24 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-11-06
+
+#### DLY-2026-11-06-01
+
+- Reason: Make the weekly report worker lifecycle bounded and interrupt-safe, enforce its memory budget, prevent incomplete reports from legacy decision layouts, and document the week-45 operation.
+- Related prior entries checked: Reviewed the latest 2026-11-05 entry and the existing weekly-report resource-safety notes; no earlier entry covers worker wait/interrupt handling or hourly-only worker validation.
+- Files:
+  - `market_bot/kite_main.py` (modified): Wait for and reap the bounded report worker; clean staged files on interruption.
+  - `market_bot/reporting_metrics.py` (modified): Enforce RSS budget checks at reporting-step boundaries with step-specific errors.
+  - `market_bot/trade_journal.py` (modified): Support projection reads restricted to hourly decision files.
+  - `market_bot/weekly_report.py` (modified): Restrict worker decision reads to hourly partitions and reject unmigrated legacy days.
+  - `market_bot/weekly_report_worker.py` (modified): Apply resource limits and clean stale staging paths.
+  - `tests/test_reporting_resource_safety.py` (modified): Cover budget failure, wait, SIGINT, cleanup, and migration requirements.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the measured week-45 run and manual VPS command.
+  - `DAILY_CHANGELOG.md` (modified): Record this change and its validation.
+- Validation and result: Focused weekly reporting tests passed; the final full suite passed (473 passed, 1 skipped) after 14:30 IST with no live-entry time-dependent failures. Changed Python files compiled, and `git diff --check` passed. On a migrated week-45 copy, the report took 3.3 seconds / 132.6 MB peak RSS; isolated legacy reads measured 1.052 seconds / 584.3 MB for Nov. 2 and 1.185 seconds / 455.3 MB for Nov. 3.
+- Outcome / follow-up / rollback: No strategy, filter, threshold, or config changes; no deployment performed. A full week-45 report requires migrating the two legacy days on a copy before running the hourly-only worker.
+
 ### 2026-11-05
 
 #### DLY-2026-11-05-01
