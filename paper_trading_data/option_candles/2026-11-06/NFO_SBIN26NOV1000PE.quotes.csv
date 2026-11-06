@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-06T15:30:07+05:30,NFO:SBIN26NOV1000PE,SBIN,PE,1000.0,2026-11-23,12.45,12.45,12.55,2026-11-06T15:30:05+05:30,2.275826,e14445721cc83930a172e104cea34e5c23956743e13a5ae0e90cce1c18c14da3,f47af0b3564af542458be0f5592b8dd60bb3064a,True
