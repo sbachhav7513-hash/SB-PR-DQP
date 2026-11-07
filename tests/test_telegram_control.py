@@ -374,8 +374,10 @@ def test_losing_manual_target_is_recorded_as_manual_exit(tmp_path):
 
     trade = bot.trade_journal.read_trades()[0]
     assert trade["reason"] == "MANUAL_EXIT"
+    assert trade["exit_reason"] == "MANUAL_EXIT"
     assert trade["manual_exit"] is True
     assert trade["exit_source"] == "MANUAL"
+    assert trade["manual_exit_reason"] == "MANUAL_EXIT"
 
 
 def test_exitat_rejects_reached_target_and_cancel_clears_trigger(tmp_path):

@@ -2144,10 +2144,14 @@ class TradeJournal:
                 or datetime.now(timezone.utc).isoformat(timespec="seconds")
             )
             trade["reason"] = reason
-            is_manual_exit = bool(manual_exit) if manual_exit is not None else False
-            trade["exit_source"] = exit_source or (
-                "MANUAL" if is_manual_exit else "BOT"
+            resolved_exit_source = exit_source or (
+                "MANUAL"
+                if manual_exit
+                or reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+                else "BOT"
             )
+            is_manual_exit = str(resolved_exit_source).upper() == "MANUAL"
+            trade["exit_source"] = resolved_exit_source
             trade["exit_reason"] = exit_reason or reason
             trade["manual_exit"] = is_manual_exit
             trade["manual_exit_reason"] = reason if is_manual_exit else None

@@ -125,6 +125,45 @@ def test_bot_trade_exits_always_record_exit_reason(tmp_path):
     assert trade["exit_reason"] == "SIGNAL_WEAKEN"
 
 
+def test_profitable_manual_target_is_labeled_as_manual(tmp_path):
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+        }
+    )
+
+    journal.close_trade("NIFTY_CE", 105.0, "BUY", "MANUAL_TARGET")
+
+    [trade] = journal.read_trades()
+    assert trade["reason"] == "MANUAL_TARGET"
+    assert trade["exit_source"] == "MANUAL"
+    assert trade["manual_exit"] is True
+    assert trade["manual_exit_reason"] == "MANUAL_TARGET"
+
+
+def test_losing_manual_target_becomes_manual_exit_and_stays_manual(tmp_path):
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    journal.log_trade(
+        {
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "entry": 100.0,
+        }
+    )
+
+    journal.close_trade("NIFTY_CE", 95.0, "BUY", "MANUAL_TARGET")
+
+    [trade] = journal.read_trades()
+    assert trade["reason"] == "MANUAL_EXIT"
+    assert trade["exit_reason"] == "MANUAL_EXIT"
+    assert trade["exit_source"] == "MANUAL"
+    assert trade["manual_exit"] is True
+    assert trade["manual_exit_reason"] == "MANUAL_EXIT"
+
+
 def test_entry_confirmation_outcomes_are_normalized(tmp_path):
     path = tmp_path / "decisions.jsonl"
     paper_dir = tmp_path / "paper"
