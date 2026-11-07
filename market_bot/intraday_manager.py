@@ -558,9 +558,16 @@ class IntradayManager:
             "quantity": quantity,
             "entry_price": entry_price,
             "stop_loss": stop_loss,
+            "initial_stop_loss": stop_loss,
             "take_profit": take_profit,
             "initial_target_distance": target_distance,
             "initial_risk_distance": initial_risk_distance,
+            "max_favorable_r_time": (
+                registered_at.isoformat(timespec="seconds")
+                if max_favorable_r > 0
+                else None
+            ),
+            "trailing_stop_history": [],
             "signal_score": entry_score,
             "current_signal_score": (
                 int(current_signal_score)
@@ -696,6 +703,11 @@ class IntradayManager:
                 float(position.get("max_favorable_r", 0.0)),
                 favorable_distance / risk_distance,
             )
+            if max_favorable_r > float(position.get("max_favorable_r", 0.0)):
+                observed_at = self._normalize_position_time(now)
+                position["max_favorable_r_time"] = observed_at.isoformat(
+                    timespec="seconds"
+                )
             position["max_favorable_r"] = max_favorable_r
             breakeven_r = float(position["adaptive_breakeven_r"])
             activation_r = float(position["adaptive_trail_activation_r"])

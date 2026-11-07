@@ -118,6 +118,47 @@ def test_capture_queue_full_drops_without_waiting(tmp_path):
     writer.close()
 
 
+def test_underlying_candle_and_contract_capture_timing_are_persisted(tmp_path):
+    start = datetime(2026, 10, 28, 9, 15, tzinfo=IST)
+    contract = _contract(101, "CE")
+    writer = OptionCaptureWriter(
+        tmp_path / "option_candles",
+        config_hash="cfg",
+        git_sha="sha",
+        contracts_by_token={101: contract},
+    )
+    assert writer.register_signal("signal", start, contract, None)
+    writer.record_tick(Tick(101, start, 100.0, bid=99.9, ask=100.1))
+    writer.record_tick(
+        Tick(101, start + timedelta(minutes=1), 101.0, bid=100.9, ask=101.1)
+    )
+    writer.record_underlying_bar(
+        "NIFTY", Bar(start, 25000.0, 25010.0, 24990.0, 25005.0, 1000)
+    )
+    writer.record_tick(
+        Tick(101, start.replace(hour=15, minute=30), 102.0, bid=101.9, ask=102.1)
+    )
+    assert writer.flush()
+    writer.close()
+
+    timing = json.loads(
+        (tmp_path / "option_candles" / "2026-10-28" / "capture_report.json").read_text(
+            encoding="utf-8"
+        )
+    )["contract_capture_timing"][contract["contract_id"]]
+    assert timing["registration_time"] == start.isoformat(timespec="seconds")
+    assert timing["first_tick_time"] == start.isoformat(timespec="seconds")
+    assert timing["first_candle_time"] == start.isoformat(timespec="seconds")
+    underlying = (
+        tmp_path
+        / "underlying_candles"
+        / "2026-10-28"
+        / "NIFTY.candles.csv"
+    )
+    assert underlying.is_file()
+    assert "25000.0" in underlying.read_text(encoding="utf-8")
+
+
 def test_capture_failure_does_not_change_rejected_decision_fields(tmp_path):
     start = datetime(2026, 10, 28, 9, 15, tzinfo=IST)
     contract = _contract(101, "CE")

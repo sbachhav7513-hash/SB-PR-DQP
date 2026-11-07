@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 
 from market_bot.trade_journal import PaperTradingRecorder
 from market_bot.weekly_report import (
+    _daily_record_columns,
+    _option_capture_window_status,
     build_weekly_report,
     summarize_best_setup_windows,
     write_daily_review,
@@ -320,3 +322,41 @@ def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
     assert "- Confirmed trades: 2" in review
     assert "- Gross recorded P&L: 5.00" in review
     assert "- After-cost P&L: 2.00" in review
+
+
+def test_daily_capture_window_and_trade_columns_include_exit_telemetry(tmp_path):
+    day = datetime(2026, 10, 28, 9, 15, tzinfo=ZoneInfo("Asia/Kolkata")).date()
+    trade = {
+        "contract_id": "NFO:NIFTY26NOV25000CE",
+        "signal_time": "2026-10-28T09:15:00+05:30",
+        "entry_time": "2026-10-28T09:15:30+05:30",
+        "closed_at": "2026-10-28T09:16:10+05:30",
+    }
+    candle_dir = tmp_path / "option_candles" / day.isoformat()
+    candle_dir.mkdir(parents=True)
+    candle_path = candle_dir / "NFO_NIFTY26NOV25000CE.candles.csv"
+    candle_path.write_text(
+        "contract_id,candle_start_time,gap\n"
+        "NFO:NIFTY26NOV25000CE,2026-10-28T09:15:00+05:30,false\n",
+        encoding="utf-8",
+    )
+    assert _option_capture_window_status(trade, tmp_path, day) == (
+        "incomplete: 1/2 minutes"
+    )
+    with candle_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "NFO:NIFTY26NOV25000CE,2026-10-28T09:16:00+05:30,false\n"
+        )
+    assert _option_capture_window_status(trade, tmp_path, day) == "complete"
+    required = {
+        "fill_bid",
+        "fill_ask",
+        "fill_ltp",
+        "fill_quote_age_seconds",
+        "fill_percent_change_from_signal",
+        "paper_change_flags_at_entry",
+        "paper_change_flags_at_exit",
+        "exit_trigger_price",
+        "exit_trigger_source",
+    }
+    assert required.issubset(set(_daily_record_columns("trades.parquet")))

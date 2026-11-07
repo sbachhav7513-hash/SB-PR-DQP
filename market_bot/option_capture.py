@@ -142,6 +142,8 @@ class OptionCaptureWriter:
             "seen_candles": defaultdict(set),
             "daily_bytes": defaultdict(int),
             "contracts_captured": defaultdict(set),
+            "contract_capture_timing": defaultdict(dict),
+            "underlying_candles_seen": defaultdict(set),
             "tick_gaps": defaultdict(int),
             "last_tick_time": {},
             "finalized_dates": set(),
@@ -208,6 +210,25 @@ class OptionCaptureWriter:
             "oi": tick.oi,
         }
         return self._enqueue(("tick", payload), "tick")
+
+    def record_underlying_bar(self, symbol: str, bar: Any) -> bool:
+        """Queue a completed underlying candle for date-partitioned persistence."""
+        if not self.enabled or self._closed:
+            return False
+        try:
+            payload = {
+                "symbol": str(symbol).upper(),
+                "timestamp": _minute_start(bar.timestamp),
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+            }
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            logger.exception("Could not serialize underlying candle for %s", symbol)
+            return False
+        return self._enqueue(("underlying_bar", payload), "underlying candle")
 
     def register_signal(
         self,
@@ -342,6 +363,8 @@ class OptionCaptureWriter:
                         payload.set()
                 elif kind == "tick":
                     self._handle_tick(payload)
+                elif kind == "underlying_bar":
+                    self._append_underlying_bar(payload)
                 elif kind == "register":
                     self._handle_registration(payload)
                 elif kind == "signal_status":
@@ -384,6 +407,18 @@ class OptionCaptureWriter:
         self._thread_state["last_tick_time"][token] = timestamp
         self._thread_state["last_ticks"][token] = timestamp
         self._thread_state["last_quotes"][token] = payload
+        contract_id = str(
+            self.contracts_by_token.get(token, {}).get("contract_id", "")
+        )
+        if contract_id:
+            timing = self._thread_state["contract_capture_timing"][
+                timestamp.date().isoformat()
+            ].setdefault(
+                contract_id,
+                {"registration_time": None, "first_tick_time": None,
+                 "first_candle_time": None},
+            )
+            timing["first_tick_time"] = timing["first_tick_time"] or _iso(timestamp)
 
         if current and minute > current["minute"]:
             self._complete_current_bar(token)
@@ -454,6 +489,16 @@ class OptionCaptureWriter:
         completed.append(candle)
         completed_by_minute[candle["candle_start_time"]] = candle
         day_key = candle["candle_start_time"].date().isoformat()
+        contract_id = str(self.contracts_by_token.get(token, {}).get("contract_id", ""))
+        if contract_id:
+            timing = self._thread_state["contract_capture_timing"][day_key].setdefault(
+                contract_id,
+                {"registration_time": None, "first_tick_time": None,
+                 "first_candle_time": None},
+            )
+            timing["first_candle_time"] = (
+                timing["first_candle_time"] or _iso(candle["candle_start_time"])
+            )
         if token in self._thread_state["registered"].get(day_key, {}):
             self._thread_state["flush_dirty"][day_key].add(token)
 
@@ -479,6 +524,15 @@ class OptionCaptureWriter:
             token = int(token)
             self.contracts_by_token[token] = dict(metadata)
             day_key = signal_time.date().isoformat()
+            timing = self._thread_state["contract_capture_timing"][day_key].setdefault(
+                contract_id,
+                {"registration_time": None, "first_tick_time": None,
+                 "first_candle_time": None},
+            )
+            registration_time = _iso(signal_time)
+            prior_registration = _file_time(str(timing.get("registration_time") or ""))
+            if prior_registration is None or signal_time < prior_registration:
+                timing["registration_time"] = registration_time
             self._thread_state["registered"][day_key][token] = dict(metadata)
             self._thread_state["signal_contracts"][(day_key, signal_id)].add(token)
             self._thread_state["next_minute"].setdefault(
@@ -488,6 +542,33 @@ class OptionCaptureWriter:
             if role == "contract":
                 signals[signal_id]["contract_id"] = contract_id
             self._persist_registered_history(day_key, token, signal_time)
+
+    def _append_underlying_bar(self, payload: Dict[str, Any]) -> None:
+        day_key = payload["timestamp"].date().isoformat()
+        symbol = payload["symbol"]
+        seen_key = (symbol, payload["timestamp"])
+        seen = self._thread_state["underlying_candles_seen"][day_key]
+        if seen_key in seen:
+            return
+        seen.add(seen_key)
+        directory = self.root.parent / "underlying_candles" / day_key
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{_safe_contract_id(symbol)}.candles.csv"
+        fields = (
+            "symbol", "candle_start_time", "open", "high", "low", "close",
+            "volume", "config_hash", "git_sha",
+        )
+        row = {
+            **payload,
+            "candle_start_time": _iso(payload["timestamp"]),
+            "config_hash": self.config_hash,
+            "git_sha": self.git_sha,
+        }
+        with path.open("a", encoding="utf-8", newline="") as target:
+            writer = csv.DictWriter(target, fieldnames=fields)
+            if path.stat().st_size == 0:
+                writer.writeheader()
+            writer.writerow({key: row.get(key) for key in fields})
 
     def _persist_registered_history(
         self, day_key: str, token: int, signal_time: datetime
@@ -818,6 +899,12 @@ class OptionCaptureWriter:
             "match_rate": round(match_rate, 4),
             "contracts_captured": captured,
             "contracts_captured_count": len(captured),
+            "contract_capture_timing": {
+                contract_id: timing
+                for contract_id, timing in sorted(
+                    self._thread_state["contract_capture_timing"].get(day_key, {}).items()
+                )
+            },
             "contracts_skipped": self._thread_state["skipped_contracts"],
             "contracts_skipped_count": len(
                 self._thread_state["skipped_contracts"]
@@ -842,6 +929,7 @@ class OptionCaptureWriter:
             f"60-minute forward candles: {forward}/{len(signals)}",
             f"Match rate: {match_rate:.1%}",
             f"Contracts captured ({len(captured)}): {', '.join(captured)}",
+            f"Contract capture timing: {json.dumps(report['contract_capture_timing'], sort_keys=True)}",
             f"Contracts skipped ({report['contracts_skipped_count']}): "
             f"{json.dumps(report['contracts_skipped'], sort_keys=True)}",
             f"Tick gaps >30s: {json.dumps(gaps, sort_keys=True)}",

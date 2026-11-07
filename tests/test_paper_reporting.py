@@ -173,9 +173,11 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert "Status: collecting_evidence (1/10 closed trades" in content
     assert "No strategy or configuration settings are changed automatically." in content
     assert (
-        "| NIFTY | BUY | trend_shadow_paper | 60 | N/A | N/A | -10.00 | STOP_LOSS |"
+        "| NIFTY | BUY | trend_shadow_paper | 60 | N/A | -10.00 | STOP_LOSS |"
         in content
     )
+    assert "Flags at entry → exit" in content
+    assert "Trigger price/source" in content
     assert "- BUY/SELL signals: 1" in content
     assert "- Unselected option-leg skips: 1" in content
     assert "- Side-eligible directional candidates: 0" in content

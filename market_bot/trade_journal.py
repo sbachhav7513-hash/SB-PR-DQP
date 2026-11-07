@@ -164,6 +164,35 @@ class PaperTradingRecorder:
         "paper_entry_ltp",
         "paper_entry_bid",
         "paper_entry_ask",
+        "entry_quote_ltp",
+        "entry_quote_bid",
+        "entry_quote_ask",
+        "entry_quote_timestamp",
+        "entry_fill_source",
+        "fill_premium",
+        "fill_bid",
+        "fill_ask",
+        "fill_ltp",
+        "fill_quote_age_seconds",
+        "fill_rule",
+        "fill_percent_change_from_signal",
+        "entry_regime",
+        "entry_pivot_count",
+        "support_reclaim_result",
+        "support_distance_pct",
+        "signal_to_entry_delay_seconds",
+        "manual_exit",
+        "manual_exit_reason",
+        "initial_stop_loss",
+        "initial_risk_per_unit",
+        "planned_risk_rupees",
+        "max_favorable_r_time",
+        "trailing_stop_history",
+        "runner_active",
+        "exit_trigger_price",
+        "exit_trigger_source",
+        "paper_change_flags_at_entry",
+        "paper_change_flags_at_exit",
         "entry_mode",
         "route",
         "after_cost_pnl",
@@ -2073,6 +2102,7 @@ class TradeJournal:
         closed_at: Optional[str] = None,
         exit_source: Optional[str] = None,
         exit_reason: Optional[str] = None,
+        manual_exit: Optional[bool] = None,
     ) -> float:
         trades = self.read_trades()
         for trade in reversed(trades):
@@ -2096,6 +2126,8 @@ class TradeJournal:
                 pnl = 0.0
 
             trade["pnl"] = pnl
+            if reason == "MANUAL_TARGET" and pnl <= 0:
+                reason = "MANUAL_EXIT"
             trade["exit_price"] = exit_price
             trade["status"] = "closed"
             trade["closed_at"] = (
@@ -2103,10 +2135,13 @@ class TradeJournal:
                 or datetime.now(timezone.utc).isoformat(timespec="seconds")
             )
             trade["reason"] = reason
+            is_manual_exit = bool(manual_exit) if manual_exit is not None else False
             trade["exit_source"] = exit_source or (
-                "MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT"
+                "MANUAL" if is_manual_exit else "BOT"
             )
             trade["exit_reason"] = exit_reason or reason
+            trade["manual_exit"] = is_manual_exit
+            trade["manual_exit_reason"] = reason if is_manual_exit else None
             trade["manual_exit_price"] = None
             self._write_trades(trades)
             if self.paper_recorder:

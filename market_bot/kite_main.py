@@ -28,6 +28,7 @@ from .engine import (
     SupportResistanceReversal,
     aggregate_ohlcv_bars,
     calculate_adx,
+    classify_price_regime,
     detect_support_resistance_reversal,
     filter_signal_by_context,
     market_session_state,
@@ -3330,6 +3331,28 @@ class KiteTradingBot:
                 logger.exception("Could not calculate entry ATR telemetry for %s", symbol)
         return {
             "signal_id": signal_id,
+            "entry_regime": classify_price_regime(
+                [float(bar["close"]) for bar in history if bar.get("close") is not None]
+            ),
+            "entry_pivot_count": gate_measurements.get(
+                "support_resistance_touches"
+            ),
+            "support_reclaim_result": (
+                True
+                if "support_reversal" in str(strategy_variant or "")
+                else None
+            ),
+            "support_distance_pct": (
+                (
+                    float(history[-1]["close"])
+                    - float(gate_measurements["support_resistance_level"])
+                )
+                / float(gate_measurements["support_resistance_level"])
+                * 100.0
+                if gate_measurements.get("support_resistance_level") not in (None, 0)
+                and history
+                else None
+            ),
             "atr_pct": atr_pct,
             "effective_volatility_threshold_pct": gate_measurements.get(
                 "volatility_min_pct"
@@ -4379,6 +4402,10 @@ class KiteTradingBot:
         """Called when a new bar is completed."""
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        if not symbol.endswith(("_CE", "_PE")):
+            writer = getattr(self, "option_capture_writer", None)
+            if writer is not None:
+                writer.record_underlying_bar(symbol, bar)
         if symbol.endswith(("_CE", "_PE")):
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
             contexts = getattr(self, "_signal_change_attributions", None)
@@ -6197,6 +6224,20 @@ class KiteTradingBot:
             position["last_valid_bid"] = quote_metrics["bid"]
 
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
+        if (
+            self._is_option_dynamic_exit(position)
+            and position.get("trailing_stop") is not None
+            and position.get("trailing_stop") != risk_values_before["trailing_stop"]
+        ):
+            history = list(position.get("trailing_stop_history") or [])
+            history.append(
+                {
+                    "time": datetime.now(IST).isoformat(timespec="seconds"),
+                    "level": float(position["trailing_stop"]),
+                    "mode": position.get("adaptive_exit_mode"),
+                }
+            )
+            position["trailing_stop_history"] = history
         risk_changes = {
             field: position.get(field)
             for field, old_value in risk_values_before.items()
@@ -6357,6 +6398,12 @@ class KiteTradingBot:
             "adaptive_runner_gap_r": position.get("adaptive_runner_gap_r"),
             "adaptive_exit_mode": position.get("adaptive_exit_mode"),
             "max_favorable_r": position.get("max_favorable_r"),
+            "max_favorable_r_time": position.get("max_favorable_r_time"),
+            "trailing_stop_history": position.get("trailing_stop_history", []),
+            "runner_active": (
+                position.get("adaptive_exit_mode") == "runner"
+                or bool(position.get("trailing_active"))
+            ),
             "highest_price": position["highest_price"],
             "lowest_price": position["lowest_price"],
             "trailing_stop": position["trailing_stop"],
@@ -6838,6 +6885,16 @@ class KiteTradingBot:
             self, "live_orders_enabled", False
         ):
             self._record_paper_shadow_actual_exit(trade, price, reason)
+        if reason == "MANUAL_TARGET" and trade is not None:
+            entry_price = float(trade.get("entry", 0.0))
+            direction = str(trade.get("action", "")).upper()
+            realized_points = (
+                float(price) - entry_price
+                if direction == "BUY"
+                else entry_price - float(price)
+            )
+            if realized_points <= 0:
+                reason = "MANUAL_EXIT"
         closed_at = datetime.now(IST)
         journal_pnl = self.trade_journal.close_trade(
             symbol,
@@ -6845,6 +6902,7 @@ class KiteTradingBot:
             action,
             reason,
             closed_at=closed_at.isoformat(),
+            manual_exit=reason in {"MANUAL_EXIT", "MANUAL_TARGET"},
         )
         exit_info = self.intraday_manager.close_position(symbol, price, reason)
         if not trade and not exit_info:
@@ -6932,6 +6990,43 @@ class KiteTradingBot:
                     str(quote["timestamp"])
                     if quote.get("timestamp") is not None
                     else None
+                ),
+                "paper_change_flags_at_exit": self._active_paper_change_flags(),
+                "max_favorable_r": (
+                    position.get("max_favorable_r") if position else None
+                ),
+                "max_favorable_r_time": (
+                    position.get("max_favorable_r_time") if position else None
+                ),
+                "trailing_stop_history": (
+                    position.get("trailing_stop_history", []) if position else []
+                ),
+                "runner_active": (
+                    bool(position.get("trailing_active")) if position else False
+                ),
+                "manual_exit": reason == "MANUAL_EXIT",
+                "manual_exit_reason": reason if reason == "MANUAL_EXIT" else None,
+                "initial_stop_loss": (
+                    position.get("initial_stop_loss") if position else None
+                ),
+                "initial_risk_per_unit": (
+                    position.get("initial_risk_distance") if position else None
+                ),
+                "planned_risk_rupees": (
+                    position.get("initial_risk_distance", 0.0)
+                    * int(position.get("quantity", 0))
+                    if position
+                    else None
+                ),
+                "exit_trigger_price": (
+                    position.get("trailing_stop")
+                    if reason == "TRAILING_STOP" and position
+                    else position.get("initial_stop_loss")
+                    if reason == "STOP_LOSS" and position
+                    else float(price)
+                ),
+                "exit_trigger_source": (
+                    "bid" if quote_metrics["bid"] is not None else "last_price"
                 ),
             }
             if is_ema_reentry:
@@ -7085,7 +7180,7 @@ class KiteTradingBot:
             trading_symbol=trading_symbol,
             trade_id=(trade or {}).get("telegram_trade_id"),
             exit_source=(
-                "MANUAL" if reason in {"MANUAL_EXIT", "MANUAL_TARGET"} else "BOT"
+                "MANUAL" if reason == "MANUAL_EXIT" else "BOT"
             ),
             exit_reason=reason,
         )
@@ -7369,6 +7464,7 @@ class KiteTradingBot:
                 "daily_tick_gaps_over_30s", 0
             ),
             "paper_change_flags": active_changes,
+            "paper_change_flags_at_entry": active_changes,
             "paper_change_attributions": list(
                 getattr(self, "_signal_change_attributions", {}).get(symbol, [])
             ),
@@ -8377,6 +8473,7 @@ class KiteTradingBot:
                         "daily_tick_gaps_over_30s", 0
                     ),
                     "paper_change_flags": active_changes,
+                    "paper_change_flags_at_entry": active_changes,
                     "paper_change_attributions": paper_change_attributions,
                     "paper_change_gate_evaluations": change_gate_evaluations,
                     "would_pass_baseline": would_pass_baseline,
@@ -8453,6 +8550,31 @@ class KiteTradingBot:
                 else None
             )
             alert["entry_fill_source"] = entry_fill_source
+            if self._options_enabled() and "_" in symbol:
+                signal_premium = self._positive_quote_value(
+                    alert.get("signal_premium", alert.get("signal_ltp"))
+                )
+                fill_change_pct = (
+                    (float(price) - signal_premium) / signal_premium * 100.0
+                    if signal_premium is not None
+                    else None
+                )
+                alert.update(
+                    {
+                        "order_premium": float(price),
+                        "order_bid": entry_quote_metrics["bid"],
+                        "order_ask": entry_quote_metrics["ask"],
+                        "order_ltp": entry_quote_metrics["ltp"],
+                        "order_quote_age_seconds": entry_quote_metrics["age_seconds"],
+                        "fill_premium": float(price),
+                        "fill_bid": entry_quote_metrics["bid"],
+                        "fill_ask": entry_quote_metrics["ask"],
+                        "fill_ltp": entry_quote_metrics["ltp"],
+                        "fill_quote_age_seconds": entry_quote_metrics["age_seconds"],
+                        "fill_rule": entry_fill_source,
+                        "fill_percent_change_from_signal": fill_change_pct,
+                    }
+                )
             if staged_option_targets:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
@@ -8525,6 +8647,13 @@ class KiteTradingBot:
                 alert.update(entry_telemetry)
             if confirmed_entry_metadata is not None:
                 alert.update(confirmed_entry_metadata)
+            entry_timestamp = datetime.now(IST)
+            alert["entry_time"] = entry_timestamp.isoformat(timespec="seconds")
+            signal_timestamp = self._journal_datetime(alert.get("signal_time"))
+            if signal_timestamp is not None:
+                alert["signal_to_entry_delay_seconds"] = max(
+                    (entry_timestamp - signal_timestamp).total_seconds(), 0.0
+                )
             active_attributions = list(
                 dict.fromkeys(
                     [
@@ -9040,6 +9169,14 @@ class KiteTradingBot:
                             stop_journal.end_session(now),
                             stop_journal.flush(timeout=1.0),
                         ),
+                    )
+                capture_writer = getattr(self, "option_capture_writer", None)
+                if capture_writer is not None and not self._measure_finalization_step(
+                    "daily_finalization_option_capture",
+                    lambda: capture_writer.flush(timeout=20.0),
+                ):
+                    raise TimeoutError(
+                        "Option capture did not flush before end-of-day reporting"
                     )
                 decision_journal = getattr(self, "decision_journal", None)
                 if decision_journal is not None and not self._measure_finalization_step(

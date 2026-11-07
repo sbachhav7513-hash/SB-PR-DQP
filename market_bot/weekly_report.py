@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import csv
+import gzip
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -1000,6 +1002,7 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
     if parquet_name == "trades.parquet":
         return [
             "trade_id", "timestamp", "status", "pnl", "pnl_rupees", "reason",
+            "contract_id", "entry_time", "closed_at",
             "exit_reason_category", "ticker", "action", "score",
             "strategy_variant", "is_ema_reentry", "original_trade_id",
             "ema_reentry_eligible", "ema_reentry_outcome",
@@ -1008,6 +1011,16 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "confirmation_candle_time", "confirmation_close",
             "confirmation_result", "confirmation_delay_seconds",
             "signal_premium", "order_premium", "after_cost_pnl", "net_pnl",
+            "entry_quote_bid", "entry_quote_ask", "entry_quote_ltp",
+            "entry_quote_timestamp", "fill_premium", "fill_bid", "fill_ask",
+            "fill_ltp", "fill_quote_age_seconds", "fill_percent_change_from_signal",
+            "fill_rule", "entry_regime", "entry_pivot_count",
+            "support_reclaim_result", "support_distance_pct",
+            "signal_to_entry_delay_seconds", "holding_time_seconds",
+            "manual_exit", "manual_exit_reason", "paper_change_flags_at_entry",
+            "paper_change_flags_at_exit", "exit_trigger_price",
+            "exit_trigger_source", "initial_stop_loss", "initial_risk_per_unit",
+            "planned_risk_rupees",
         ]
     return [
         "timestamp", "signal", "outcome", "score", "reasons",
@@ -1271,6 +1284,59 @@ def write_daily_summary(
     return destination
 
 
+def _option_capture_window_status(
+    trade: Dict[str, Any], paper_data_dir: Path, target_date: date
+) -> str:
+    contract_id = str(trade.get("contract_id") or "").strip()
+    if not contract_id:
+        return "incomplete: missing contract_id"
+    start = _parse_datetime(trade.get("signal_time")) or _parse_datetime(
+        trade.get("entry_time")
+    )
+    end = _parse_datetime(trade.get("closed_at"))
+    if start is None or end is None or end < start:
+        return "incomplete: missing trade window"
+    day_dir = paper_data_dir / "option_candles" / target_date.isoformat()
+    symbol = contract_id.split(":", 1)[-1]
+    paths = sorted(day_dir.glob(f"NFO_{symbol}.candles.csv*"))
+    if not paths:
+        return "incomplete: no candle file"
+    rows_by_minute: Dict[datetime, bool] = {}
+    for path in paths:
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rt", encoding="utf-8-sig", newline="") as source:
+            for row in csv.DictReader(source):
+                if row.get("contract_id") != contract_id:
+                    continue
+                timestamp = _parse_datetime(row.get("candle_start_time"))
+                if timestamp is None:
+                    continue
+                minute = timestamp.replace(second=0, microsecond=0)
+                rows_by_minute[minute] = row.get("gap", "").lower() not in {
+                    "true", "1"
+                }
+    first = start.replace(second=0, microsecond=0)
+    last = end.replace(second=0, microsecond=0)
+    expected = int((last - first).total_seconds() // 60) + 1
+    observed = sum(
+        rows_by_minute.get(first + timedelta(minutes=index), False)
+        for index in range(expected)
+    )
+    return "complete" if observed == expected else f"incomplete: {observed}/{expected} minutes"
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=IST)
+    return parsed.astimezone(IST)
+
+
 def write_daily_review(
     data_dir: str = ".", paper_data_dir: str = "paper_trading_data", target_date=None
 ) -> Path:
@@ -1286,6 +1352,10 @@ def write_daily_review(
         )
         if trade.get("status") == "closed"
     ]
+    for trade in trades:
+        trade["option_capture_status"] = _option_capture_window_status(
+            trade, Path(paper_data_dir), target_date
+        )
     decisions = _date_records(
         Path(data_dir) / "decision_log.jsonl",
         Path(paper_data_dir),
@@ -1462,21 +1532,16 @@ def write_daily_review(
         *format_counts(outcome_counts),
         "",
         "## Closed Trades",
-        "| Symbol | Direction | Variant | Score | Milestone | Held (s) | Recorded P&L | Exit reason |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+        "| Symbol | Direction | Variant | Score | Held (s) | P&L | Exit | Flags at entry → exit | Fill bid/ask/LTP | Fill Δ% | Trigger price/source | Capture |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | --- |",
     ]
     if trades:
         lines.extend(
-            "| {ticker} | {action} | {variant} | {score} | {milestone} | {held} | {pnl:.2f} | {reason} |".format(
+            "| {ticker} | {action} | {variant} | {score} | {held} | {pnl:.2f} | {reason} | {entry_flags} → {exit_flags} | {quote} | {fill_change} | {trigger} | {capture} |".format(
                 ticker=str(trade.get("ticker") or "UNKNOWN").replace("|", "/"),
                 action=str(trade.get("action") or "UNKNOWN").replace("|", "/"),
                 variant=str(trade.get("strategy_variant") or "primary").replace("|", "/"),
                 score=trade.get("score") or "N/A",
-                milestone=(
-                    f"{_number(trade['milestone_reached_pct']):.1f}%"
-                    if trade.get("milestone_reached_pct") not in (None, "")
-                    else "N/A"
-                ),
                 held=(
                     int(_number(trade.get("holding_time_seconds", trade.get("duration_seconds"))))
                     if trade.get("holding_time_seconds", trade.get("duration_seconds"))
@@ -1487,11 +1552,36 @@ def write_daily_review(
                 reason=str(
                     trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
                 ).replace("|", "/"),
+                entry_flags=str(
+                    trade.get("paper_change_flags_at_entry")
+                    or trade.get("paper_change_flags")
+                    or []
+                ).replace("|", "/"),
+                exit_flags=str(trade.get("paper_change_flags_at_exit") or []).replace(
+                    "|", "/"
+                ),
+                quote=(
+                    f"{trade.get('fill_bid', 'N/A')}/"
+                    f"{trade.get('fill_ask', 'N/A')}/"
+                    f"{trade.get('fill_ltp', 'N/A')}"
+                ).replace("|", "/"),
+                fill_change=(
+                    f"{_number(trade.get('fill_percent_change_from_signal')):.3f}"
+                    if trade.get("fill_percent_change_from_signal") not in (None, "")
+                    else "N/A"
+                ),
+                trigger=(
+                    f"{trade.get('exit_trigger_price', 'N/A')}/"
+                    f"{trade.get('exit_trigger_source', 'N/A')}"
+                ).replace("|", "/"),
+                capture=str(trade.get("option_capture_status") or "unverified").replace(
+                    "|", "/"
+                ),
             )
             for trade in trades
         )
     else:
-        lines.append("| No closed trades | - | - | - | - | - | 0.00 | - |")
+        lines.append("| No closed trades | - | - | - | - | 0.00 | - | - | - | - | - | - |")
     learning_feedback = _learning_feedback(trades)
     loss_patterns = learning_feedback["loss_patterns_for_review"]
     lines.extend(

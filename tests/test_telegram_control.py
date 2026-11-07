@@ -334,7 +334,13 @@ def _queue_command(bot, text, chat_id="101"):
 def _close_trade_for_test(bot, symbol, price, reason):
     position = bot.intraday_manager.active_positions.pop(symbol)
     position["manual_exit_price"] = None
-    bot.trade_journal.close_trade(symbol, price, position["direction"], reason)
+    bot.trade_journal.close_trade(
+        symbol,
+        price,
+        position["direction"],
+        reason,
+        manual_exit=reason in {"MANUAL_EXIT", "MANUAL_TARGET"},
+    )
 
 
 def test_exitat_closes_at_or_above_price_and_journals_manual_target(tmp_path):
@@ -353,7 +359,23 @@ def test_exitat_closes_at_or_above_price_and_journals_manual_target(tmp_path):
     trade = bot.trade_journal.read_trades()[0]
     assert trade["exit_source"] == "MANUAL"
     assert trade["exit_reason"] == "MANUAL_TARGET"
+    assert trade["manual_exit"] is True
+    assert trade["manual_exit_reason"] == "MANUAL_TARGET"
     assert trade["manual_exit_price"] is None
+
+
+def test_losing_manual_target_is_recorded_as_manual_exit(tmp_path):
+    bot, _, symbol, _ = _trade_bot(tmp_path)
+    bot._close_position = lambda s, price, reason: _close_trade_for_test(
+        bot, s, price, reason
+    )
+
+    bot._close_position(symbol, 95.0, "MANUAL_TARGET")
+
+    trade = bot.trade_journal.read_trades()[0]
+    assert trade["reason"] == "MANUAL_EXIT"
+    assert trade["manual_exit"] is True
+    assert trade["exit_source"] == "MANUAL"
 
 
 def test_exitat_rejects_reached_target_and_cancel_clears_trigger(tmp_path):
