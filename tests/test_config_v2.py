@@ -4,11 +4,27 @@ from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 from market_bot.intraday_manager import IntradayManager
-from market_bot.kite_main import KiteTradingBot
+from market_bot.kite_main import (
+    DEFAULT_OPTION_PREMIUM_STOP_PCT,
+    KiteTradingBot,
+    _configured_option_premium_stop_pct,
+)
 from market_bot.strategy_config import strategy_config_hash
 
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+def test_missing_option_premium_stop_setting_uses_shared_ten_percent_default():
+    stop_pct = _configured_option_premium_stop_pct({})
+
+    assert DEFAULT_OPTION_PREMIUM_STOP_PCT == 0.10
+    assert stop_pct == 0.10
+    assert 100.0 - 100.0 * stop_pct == 90.0
+    assert 100.0 + 100.0 * stop_pct == 110.0
+    assert _configured_option_premium_stop_pct(
+        {"option_premium_stop_pct": 0.10}
+    ) == stop_pct
 
 
 def _quote(timestamp, *, bid, ask, ltp):

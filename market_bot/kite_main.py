@@ -101,6 +101,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 WEEKLY_REPORT_TIME_BUDGET_SECONDS = 120.0
 WEEKLY_REPORT_MEMORY_BUDGET_BYTES = 600 * 1024 * 1024
+DEFAULT_OPTION_PREMIUM_STOP_PCT = 0.10
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -152,6 +153,12 @@ OPTION_ENTRY_RISK_FIELDS = (
     "rejection_reason",
     "capital_based_risk_v2",
 )
+
+
+def _configured_option_premium_stop_pct(config: dict) -> float:
+    return float(
+        config.get("option_premium_stop_pct", DEFAULT_OPTION_PREMIUM_STOP_PCT)
+    )
 
 
 def _aligned_option_volume_history(
@@ -690,7 +697,7 @@ class KiteTradingBot:
                         getattr(manager, "MULTIPLIERS", {}).get(symbol, 1),
                     )
                 )
-                stop_pct = float(config.get("option_premium_stop_pct", 0.10))
+                stop_pct = _configured_option_premium_stop_pct(config)
                 risk_inr = (
                     measured_premium * stop_pct * lot_size * multiplier
                     if measured_premium is not None
@@ -706,7 +713,7 @@ class KiteTradingBot:
                 try:
                     open_risk = (
                         self._capital_based_open_risk(
-                            float(config.get("option_premium_stop_pct", 0.10))
+                            _configured_option_premium_stop_pct(config)
                         )
                         if capital_based_risk
                         else float(manager.open_position_risk())
@@ -1082,7 +1089,7 @@ class KiteTradingBot:
         max_open_risk_pct = float(self.config.get("max_open_risk_pct", 4.0))
         max_open_risk = account_size * max_open_risk_pct / 100.0
         option_stop_pct = float(
-            self.config.get("option_premium_stop_pct", 0.10)
+            _configured_option_premium_stop_pct(self.config)
         )
         open_risk = self._capital_based_open_risk(option_stop_pct)
         remaining_daily = max(
@@ -1726,7 +1733,7 @@ class KiteTradingBot:
             option_risk_pct = float(
                 self.config.get("option_max_risk_per_lot_pct", MAX_TRADE_RISK_PCT)
             )
-            option_stop_pct = float(self.config.get("option_premium_stop_pct", 0.10))
+            option_stop_pct = _configured_option_premium_stop_pct(self.config)
             if (
                 not math.isfinite(option_risk_pct)
                 or not 0 < option_risk_pct <= MAX_TRADE_RISK_PCT
@@ -2034,7 +2041,7 @@ class KiteTradingBot:
         )
         if stop_loss is None or take_profit is None:
             premium_stop_pct = float(
-                self.config.get("option_premium_stop_pct", 0.20)
+                _configured_option_premium_stop_pct(self.config)
             )
             target_pct = self._option_entry_target_pct(staged_targets)
             calculated_stop = max(entry_price * (1.0 - premium_stop_pct), 0.01)
@@ -7898,7 +7905,7 @@ class KiteTradingBot:
                 else self._staged_option_targets_enabled(symbol)
             )
             if self._options_enabled() and "_" in symbol:
-                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
+                premium_stop_pct = _configured_option_premium_stop_pct(self.config)
                 premium_target_pct = self._option_entry_target_pct(
                     staged_option_targets
                 )
@@ -8242,7 +8249,7 @@ class KiteTradingBot:
                     )
                     * float(self.config.get("account_size", 100000.0))
                     / 100.0
-                    * float(self.config.get("option_premium_stop_pct", 0.10))
+                    * _configured_option_premium_stop_pct(self.config)
                 )
                 banknifty_gate.update(
                     {
@@ -8627,7 +8634,7 @@ class KiteTradingBot:
                 else self._staged_option_targets_enabled(symbol)
             )
             if self._options_enabled() and "_" in symbol:
-                premium_stop_pct = float(self.config.get("option_premium_stop_pct", 0.20))
+                premium_stop_pct = _configured_option_premium_stop_pct(self.config)
                 premium_target_pct = self._option_entry_target_pct(
                     staged_option_targets
                 )
