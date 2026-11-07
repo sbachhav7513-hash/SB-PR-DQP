@@ -42,7 +42,7 @@ Thumbs.db
 paper_trading_data/**/decisions.csv
 /backtest_artifacts/
 /data_uploads/
-/reports/audit/
+/reports/
 sim/
 .scratch_backtest/
 .scratch_lock_analysis/
