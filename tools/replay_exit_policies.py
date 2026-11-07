@@ -29,9 +29,10 @@ IST = ZoneInfo("Asia/Kolkata")
 EXIT_FRACTIONS = (0.33, 0.50, 0.66)
 RUNNER_GAPS = (1.25, 1.50, 1.75, 2.00)
 PAPER_PROFIT_LOCKS = (0.10, 0.15, 0.25)
-DEFAULT_START = date(2026, 11, 4)
+DEFAULT_START = date(2026, 10, 28)
 DEFAULT_END = date(2026, 11, 6)
 EXPECTED_NOV06_GROSS = 5344.50
+EXPECTED_EXACT_PATH_TRADES = 22
 
 
 def paper_exit_policy_specs() -> list[tuple[str, float, float, bool, bool]]:
@@ -977,8 +978,29 @@ def render_report(
     p4_eligible_ids: set[str],
     replays: dict[tuple[str, str], Replay],
     args: argparse.Namespace,
+    excluded_without_contract: int = 0,
 ) -> str:
     sessions = sorted({trade["_entry_time_parsed"].date() for trade in trades})
+    archived_path_trades = sum(
+        bool(
+            valid_market_rows(market.get(str(trade.get("trade_id")), ([], []))[0])
+            and any(
+                valid_quote(quote)
+                for quote in market.get(str(trade.get("trade_id")), ([], []))[1]
+            )
+        )
+        for trade in trades
+    )
+    missing_failed_reclaim = sum(
+        contexts.get(str(trade.get("trade_id")), {}).get("failed_support_reclaim")
+        is None
+        for trade in trades
+    )
+    missing_regime_and_pivot = sum(
+        contexts.get(str(trade.get("trade_id")), {}).get("regime") is None
+        and contexts.get(str(trade.get("trade_id")), {}).get("pivot_count") is None
+        for trade in trades
+    )
     lines = [
         f"# Exact-contract exit-policy replay: {args.start} to {args.end}",
         "",
@@ -988,7 +1010,7 @@ def render_report(
         lines += ["", "**WARNING: fewer than 3 sessions are covered.**"]
     lines += [
         "",
-        f"Trades: **{len(trades)}**. This replay uses only exact option-contract archives; no underlying candles are used for option prices.",
+        f"Exact-contract trade rows: **{len(trades)}**; both candle and valid sampled-quote archives: **{archived_path_trades}**. This replay uses no underlying candles for option prices.",
         "It is an offline analysis tool and does not import or modify the live exit path, bot configuration, or running paper session.",
         "",
         "## Method and assumptions",
@@ -1026,7 +1048,7 @@ def render_report(
         )
     lines += [
         "",
-        "Capture-reported contract gaps are **flagged, not silently imputed**. Policy summaries retain those trades if a replay path exists; the per-trade table and limitations identify capture warnings. This makes the estimates conditional on recorded candles and does not reconstruct missing ticks. The requested trade partitions, exact option candles, capture reports, and sampled quote streams were present for these three sessions; some contracts have capture-reported gaps. Explicit failed-support-reclaim labels are missing for all 17 trades, and per-entry regime/pivot labels are not available for three.",
+        f"The earlier reconstruction cited {EXPECTED_EXACT_PATH_TRADES} exact-path trades. This archive has both candle and valid quote files for {archived_path_trades}/{len(trades)} exact-contract trade rows; {len(trades) - archived_path_trades} rows lack at least one of those archives, and {excluded_without_contract} additional closed trades have no exact contract ID and are excluded from replay. Missing paths remain `NA` in the trade table and are not included in paired results. Capture-reported candle/tick gaps are **flagged, not silently imputed**; results remain conditional on the intervals actually recorded. Explicit failed-support-reclaim labels are missing for {missing_failed_reclaim}/{len(trades)} exact-contract rows, and regime/pivot context is unavailable for {missing_regime_and_pivot}/{len(trades)}.",
         "",
         "## Required checks",
         "",
@@ -1507,7 +1529,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("reports/EXIT_POLICY_REPLAY_2026-11-04_to_2026-11-06.md"),
+        default=Path("reports/EXIT_POLICY_REPLAY_2026-10-28_to_2026-11-06.md"),
     )
     parser.add_argument("--slippage", type=float, default=0.01, help="Adverse fraction per side; default 0.01")
     parser.add_argument("--brokerage-per-order", type=float, default=20.0)
@@ -1667,7 +1689,7 @@ def run(args: argparse.Namespace) -> int:
 
     report = render_report(
         trades, market, capture_index, contexts, max_rs,
-        p4_eligible_ids, replays, args
+        p4_eligible_ids, replays, args, excluded_without_contract
     )
     output = args.output if args.output.is_absolute() else root / args.output
     output.parent.mkdir(parents=True, exist_ok=True)

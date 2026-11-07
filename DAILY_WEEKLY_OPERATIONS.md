@@ -50,6 +50,29 @@ profit lock, then a confirmed trail. A trailing wick without a confirming
 one-minute close does not exit. The two-consecutive-bid variant is an offline
 replay only and is not a production flag.
 
+#### PAPER exit rollback procedure
+
+After each session, run the rollback check from the repository root:
+
+```powershell
+python .\paper_change_rollback_check.py
+```
+
+The check evaluates each exit flag against its own entry-tagged trades. If a
+threshold is reached, it writes only that flag as `false` in `kite_config.json`
+and prints the reason. Review the matching row in `daily_review.md` and confirm
+the reported flag and evidence before restarting. For a manual rollback, set
+only the selected flag to `false` in the active runtime's `kite_config.json`;
+leave the tier parameters and all other flags unchanged.
+
+To apply the rollback, stop the PAPER process, verify the flag remains false,
+then start PAPER again and verify the next trade's
+`paper_exit_flags_at_entry` omits the selected flag. On the documented VPS systemd deployment, use
+`sudo systemctl stop kite-trading-bot.service`, edit the active config, then
+`sudo systemctl start kite-trading-bot.service`. For a directly launched
+process, send Ctrl+C, edit the config, and run `python .\run_kite_bot.py` again.
+Do not use a LIVE-mode config or enable live orders to apply a paper rollback.
+
 ### Reporting resource logs and legacy decision migration
 
 Each reporting step adds an INFO log with the source files, rows, row groups,

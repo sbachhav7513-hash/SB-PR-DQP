@@ -74,6 +74,23 @@ No completed experiments recorded yet.
 - Rollback/version if reverted: Set the relevant flag to `false` in the active runtime config and restart the PAPER process; exact flag-specific checks and steps will be recorded with Phase 4.
 - Follow-up or reason to revisit: Complete the exact-path replay, then review the tagged daily table and first 10 tagged trades for each relevant flag; disable a flag if a requested rollback threshold is met.
 
+#### Replay evidence follow-up — 2026-11-06
+
+- Replay command: `python .\tools\replay_exit_policies.py --start 2026-10-28 --end 2026-11-06`; the output was kept outside the repository to leave the existing untracked `reports/` content untouched.
+- Data reconciliation: The archive had 25 closed rows in this date range: 23 with exact contract IDs and 2 without IDs. Only 20/23 exact-contract rows had both a valid option-candle archive and sampled-quote archive; three exact-contract rows lacked at least one archive. Six sessions had exact-contract rows. The earlier claimed 22 exact-path sample could not be reproduced from the current files.
+- Paired net change versus current P1, 20 paired trades:
+
+  | Profit lock / trail variant | Flat 1% net change / without best (₹) | Measured half-spread net change / without best (₹) |
+  | --- | ---: | ---: |
+  | 0.10R, one-minute close confirmation | 7,947.73 / 1,870.90 | 8,012.19 / 1,884.72 |
+  | 0.10R, two consecutive bids | 9,558.14 / 1,870.90 | 9,636.01 / 1,884.72 |
+  | 0.15R, one-minute close confirmation | 8,249.99 / 2,173.16 | 8,316.90 / 2,189.44 |
+  | 0.15R, two consecutive bids | 9,860.40 / 2,173.16 | 9,940.73 / 2,189.44 |
+  | 0.25R, one-minute close confirmation | -2,150.17 / -2,780.40 | -2,169.09 / -2,803.84 |
+  | 0.25R, two consecutive bids | -2,150.17 / -2,780.40 | -2,169.09 / -2,803.84 |
+
+- Interpretation: Information only. BANKNIFTY CE on Nov. 6 is the best paired trade for the 0.10R and 0.15R rows, the sample is short and archive coverage is incomplete, and several paths have capture gaps. No PAPER flag default was changed and no performance improvement is claimed.
+
 ### EXP-2026-09-30-01
 - Status: running; performance outcome is inconclusive until closed paper trades are recorded.
 - Problem and evidence: Sept 28-30 archived sessions recorded zero BUY/SELL signals and zero opened trades. Sept 28 and 29 had 11,315 and 10,859 regular-session sideways-regime reason mentions. Sept 30 included repeated 85-point HOLDs citing missing volatility compression and breakout confirmation. Archived histories are truncated to five bars, so they cannot support a valid historical replay.

@@ -324,6 +324,75 @@ def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
     assert "- After-cost P&L: 2.00" in review
 
 
+def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(microsecond=0)
+    trades = [
+        {
+            "trade_id": "paper-lock",
+            "timestamp": now.isoformat(),
+            "entry_time": now.isoformat(),
+            "closed_at": now.isoformat(),
+            "ticker": "NIFTY_CE",
+            "action": "BUY",
+            "status": "closed",
+            "reason": "PROFIT_LOCK",
+            "pnl_rupees": 15.0,
+            "signal_premium": 100.0,
+            "order_premium": 101.0,
+            "fill_premium": 101.0,
+            "fill_bid": 100.5,
+            "fill_ask": 101.0,
+            "fill_ltp": 100.75,
+            "fill_quote_age_seconds": 2.5,
+            "fill_percent_change_from_signal": 1.0,
+            "paper_exit_flags_at_entry": ["profit_lock_v2"],
+            "paper_exit_flags_at_exit": ["profit_lock_v2"],
+            "manual_exit": False,
+            "exit_trigger_price": 100.15,
+            "exit_trigger_source": "option_bid",
+        },
+        {
+            "trade_id": "manual-stop",
+            "timestamp": now.isoformat(),
+            "entry_time": now.isoformat(),
+            "closed_at": now.isoformat(),
+            "ticker": "BANKNIFTY_CE",
+            "action": "BUY",
+            "status": "closed",
+            "reason": "STOP_LOSS",
+            "pnl_rupees": -10.0,
+            "paper_exit_flags_at_entry": [],
+            "paper_exit_flags_at_exit": [],
+            "manual_exit": True,
+            "manual_exit_reason": "operator_request",
+        },
+    ]
+    (tmp_path / "trades.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in trades) + "\n",
+        encoding="utf-8",
+    )
+
+    review_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+    review = review_path.read_text(encoding="utf-8")
+
+    assert "Signal/order/fill premium" in review
+    assert "100.0/101.0/101.0" in review
+    assert "100.5/101.0/100.75/2.5s" in review
+    assert "yes: operator_request" in review
+    assert "| profit_lock_v2 | 1 (1/0/0) | 15.00 | 1 (0/1/0) | -10.00 |" in review
+    recovery = build_weekly_report(
+        str(tmp_path), paper_data_dir=str(tmp_path / "paper")
+    )["stop_out_recovery"]
+    assert recovery["trades"] == 1
+    assert recovery["incomplete"] == 1
+    assert recovery["stop_within_5m"] == 1
+
+
 def test_daily_capture_window_and_trade_columns_include_exit_telemetry(tmp_path):
     day = datetime(2026, 10, 28, 9, 15, tzinfo=ZoneInfo("Asia/Kolkata")).date()
     trade = {

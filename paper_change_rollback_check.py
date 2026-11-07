@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from market_bot.paper_exit_rollback import EXIT_FLAGS, evaluate_paper_exit_rollbacks
+
 
 IST = ZoneInfo("Asia/Kolkata")
 CHANGE_KEYS = (
@@ -578,6 +580,20 @@ def run_check(
             )
 
     _print_capital_based_daily_summary(trades)
+    exit_rollbacks = evaluate_paper_exit_rollbacks(
+        list(trades.values()), candle_root
+    )
+    for key in EXIT_FLAGS:
+        result = exit_rollbacks[key]
+        print(
+            f"{key}: tagged_trades={result['tagged_trades']} "
+            f"{'; '.join(result['checks']) or 'checks=not evaluated'} "
+            f"active={bool(config.get(key, True))}"
+        )
+        for reason in result["rollback_reasons"]:
+            if bool(config.get(key, True)):
+                config[key] = False
+                changes.append((key, reason))
     removed = _removed_decisions(decisions_path, candle_root, config)
     estimated = [
         row for row in removed if row.get("status") == "estimated"
@@ -620,7 +636,12 @@ def run_check(
             raise
         for key, reason in changes:
             print(f"Rollback switched OFF: {key} ({reason})")
-        print("Restart the PAPER bot to apply the updated config hash and flags.")
+        print(
+            "Rollback steps: verify the listed flag is false in kite_config.json, "
+            "stop and restart the PAPER bot using that config, then verify the "
+            "next trade's paper_exit_flags_at_entry omits the flag. No LIVE "
+            "setting is changed."
+        )
     return 0
 
 

@@ -19,6 +19,8 @@ from .trade_journal import (
     read_decisions,
 )
 from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
+from .paper_recovery import RECOVERY_COLUMNS, build_recovery_record
+from .paper_exit_rollback import EXIT_FLAGS, evaluate_paper_exit_rollbacks
 from .reporting_metrics import ReportingBudgetExceeded, ReportingStep
 
 
@@ -211,6 +213,42 @@ def _stop_risk_overruns(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "stop_losses_with_risk_data": len(stop_losses),
         "overrun_trades": sum(1 for overrun in stop_losses if overrun > 0.01),
         "total_overrun_rupees": round(sum(stop_losses), 2),
+    }
+
+
+def _recent_recovery_summary(paper_root: Path, days: int) -> Dict[str, Any]:
+    cutoff = datetime.now(IST).date() - timedelta(days=max(days - 1, 0))
+    records: Dict[str, Dict[str, Any]] = {}
+    for path in paper_root.rglob("stop_out_recovery.parquet"):
+        try:
+            frame = pd.read_parquet(path, engine="fastparquet")
+        except (OSError, ValueError, ImportError):
+            logger.exception("Could not read stop-out recovery file %s", path)
+            continue
+        for row in frame.to_dict(orient="records"):
+            exit_time = _parse_datetime(row.get("exit_time"))
+            trade_id = str(row.get("trade_id") or "")
+            if (
+                not trade_id
+                or exit_time is None
+                or exit_time.date() < cutoff
+                or exit_time.date() > datetime.now(IST).date()
+            ):
+                continue
+            records[trade_id] = row
+    recovered = list(records.values())
+    return {
+        "trades": len(recovered),
+        "incomplete": sum(
+            str(row.get("status", "")).lower() != "complete"
+            for row in recovered
+        ),
+        "stop_within_5m": sum(_flag(row.get("stop_within_5m")) for row in recovered),
+        "reclaimed_entry": sum(_flag(row.get("reclaimed_entry")) for row in recovered),
+        "reached_plus_1r": sum(_flag(row.get("reached_plus_1r")) for row in recovered),
+        "underlying_reversed": sum(
+            _flag(row.get("underlying_reversed_to_close")) for row in recovered
+        ),
     }
 
 
@@ -512,6 +550,19 @@ def _flag(value: Any) -> bool:
     return value is True or str(value).strip().lower() in {"1", "true", "yes"}
 
 
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return []
+
+
 def _ema_reentry_summary(
     trade_records: List[Dict[str, Any]],
     decisions: List[Dict[str, Any]],
@@ -728,6 +779,25 @@ def build_weekly_report(
         ],
         hourly_decisions_only=hourly_decisions_only,
     )
+    rollback_trades = _load_report_records(
+        root,
+        paper_root,
+        "trades.jsonl",
+        "trades.parquet",
+        30,
+        [
+            "trade_id", "timestamp", "entry_time", "closed_at", "status",
+            "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
+            "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
+            "planned_risk_rupees", "paper_entry_risk_rupees",
+            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "paper_exit_flags", "paper_change_flags_at_entry",
+            "paper_change_flags", "paper_exit_parameters",
+        ],
+    )
+    exit_flag_rollback = evaluate_paper_exit_rollbacks(
+        rollback_trades, paper_root / "option_candles"
+    )
 
     grouped: Dict[str, List[float]] = defaultdict(list)
     for trade in trades:
@@ -831,6 +901,8 @@ def build_weekly_report(
         "option_exit_comparison": _option_exit_comparison(trade_records, days),
         "quote_cost_coverage": _quote_cost_coverage(trades),
         "stop_risk_overruns": _stop_risk_overruns(trades),
+        "stop_out_recovery": _recent_recovery_summary(paper_root, days),
+        "paper_exit_rollback": exit_flag_rollback,
         "filter_stats": _load_filter_stats(root, days, decisions),
         "news_summary": {
             "risk_counts": news_risk_counts,
@@ -1200,6 +1272,25 @@ def write_daily_summary(
         "decisions.parquet",
         target_date,
     )
+    rollback_trades = _load_report_records(
+        Path(data_dir),
+        Path(paper_data_dir),
+        "trades.jsonl",
+        "trades.parquet",
+        30,
+        [
+            "trade_id", "timestamp", "entry_time", "closed_at", "status",
+            "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
+            "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
+            "planned_risk_rupees", "paper_entry_risk_rupees",
+            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "paper_exit_flags", "paper_change_flags_at_entry",
+            "paper_change_flags", "paper_exit_parameters",
+        ],
+    )
+    exit_flag_rollback = evaluate_paper_exit_rollbacks(
+        rollback_trades, Path(paper_data_dir) / "option_candles"
+    )
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
     ema_reentry = _ema_reentry_summary(trades, decisions)
     entry_confirmation = _entry_confirmation_metrics(trades, decisions)
@@ -1270,6 +1361,10 @@ def write_daily_summary(
         values[f"stop_events_first_failed_{bucket.replace(' ', '_')}"] = (
             stop_reentry["stop_events_first_failed_condition"].get(bucket, 0)
         )
+    for flag, result in exit_flag_rollback.items():
+        values[f"{flag}_tagged_trades"] = result["tagged_trades"]
+        values[f"{flag}_rollback_required"] = result["rollback_required"]
+        values[f"{flag}_rollback_reasons"] = result["rollback_reasons"]
     for reason, count in entry_confirmation[
         "filter_failed_after_confirmation"
     ].items():
@@ -1358,6 +1453,16 @@ def write_daily_review(
         trade["option_capture_status"] = _option_capture_window_status(
             trade, Path(paper_data_dir), target_date
         )
+    recovery_rows = [
+        recovery
+        for trade in trades
+        if (
+            recovery := build_recovery_record(
+                trade, Path(paper_data_dir), target_date
+            )
+        )
+        is not None
+    ]
     decisions = _date_records(
         Path(data_dir) / "decision_log.jsonl",
         Path(paper_data_dir),
@@ -1366,6 +1471,25 @@ def write_daily_review(
     )
     stop_reentry = summarize_stop_events(
         paper_data_dir, target_date, warn_missing=False
+    )
+    rollback_trades = _load_report_records(
+        Path(data_dir),
+        Path(paper_data_dir),
+        "trades.jsonl",
+        "trades.parquet",
+        30,
+        [
+            "trade_id", "timestamp", "entry_time", "closed_at", "status",
+            "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
+            "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
+            "planned_risk_rupees", "paper_entry_risk_rupees",
+            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "paper_exit_flags", "paper_change_flags_at_entry",
+            "paper_change_flags", "paper_exit_parameters",
+        ],
+    )
+    exit_flag_rollback = evaluate_paper_exit_rollbacks(
+        rollback_trades, Path(paper_data_dir) / "option_candles"
     )
 
     pnls = [_recorded_trade_pnl(trade) for trade in trades]
@@ -1447,6 +1571,16 @@ def write_daily_review(
         datetime.combine(target_date, datetime.min.time()).isoformat(),
         "daily_review.md",
     )
+    if recovery_rows:
+        recovery_path = recorder._day_path(
+            datetime.combine(target_date, datetime.min.time()).isoformat(),
+            "stop_out_recovery.parquet",
+        )
+        recorder._write_parquet(
+            recovery_path,
+            recovery_rows,
+            list(RECOVERY_COLUMNS),
+        )
     lines = [
         f"# Daily Paper-Trading Review - {target_date:%Y-%m-%d}",
         "",
@@ -1534,12 +1668,12 @@ def write_daily_review(
         *format_counts(outcome_counts),
         "",
         "## Closed Trades",
-        "| Symbol | Direction | Variant | Score | Held (s) | P&L | Exit | Flags at entry → exit | Fill bid/ask/LTP | Fill Δ% | Trigger price/source | Capture |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | --- |",
+        "| Symbol | Direction | Variant | Score | Held (s) | P&L | Exit | Manual | Flags at entry → exit | Signal/order/fill premium | Fill bid/ask/LTP/age | Fill Δ% | Trigger price/source | Capture |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | --- | --- |",
     ]
     if trades:
         lines.extend(
-            "| {ticker} | {action} | {variant} | {score} | {held} | {pnl:.2f} | {reason} | {entry_flags} → {exit_flags} | {quote} | {fill_change} | {trigger} | {capture} |".format(
+            "| {ticker} | {action} | {variant} | {score} | {held} | {pnl:.2f} | {reason} | {manual} | {entry_flags} → {exit_flags} | {premiums} | {quote} | {fill_change} | {trigger} | {capture} |".format(
                 ticker=str(trade.get("ticker") or "UNKNOWN").replace("|", "/"),
                 action=str(trade.get("action") or "UNKNOWN").replace("|", "/"),
                 variant=str(trade.get("strategy_variant") or "primary").replace("|", "/"),
@@ -1553,6 +1687,11 @@ def write_daily_review(
                 pnl=_number(trade.get("pnl", trade.get("profit", 0))),
                 reason=str(
                     trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
+                ).replace("|", "/"),
+                manual=(
+                    "yes: " + str(trade.get("manual_exit_reason") or "manual")
+                    if _flag(trade.get("manual_exit"))
+                    else "no"
                 ).replace("|", "/"),
                 entry_flags=str(
                     trade.get("paper_exit_flags_at_entry")
@@ -1568,7 +1707,12 @@ def write_daily_review(
                 quote=(
                     f"{trade.get('fill_bid', 'N/A')}/"
                     f"{trade.get('fill_ask', 'N/A')}/"
-                    f"{trade.get('fill_ltp', 'N/A')}"
+                    f"{trade.get('fill_ltp', 'N/A')}/"
+                    f"{trade.get('fill_quote_age_seconds', 'N/A')}s"
+                ).replace("|", "/"),
+                premiums="/".join(
+                    str(trade.get(key, "N/A"))
+                    for key in ("signal_premium", "order_premium", "fill_premium")
                 ).replace("|", "/"),
                 fill_change=(
                     f"{_number(trade.get('fill_percent_change_from_signal')):+.3f}"
@@ -1586,7 +1730,126 @@ def write_daily_review(
             for trade in trades
         )
     else:
-        lines.append("| No closed trades | - | - | - | - | 0.00 | - | - | - | - | - | - |")
+        lines.append("| No closed trades | - | - | - | - | 0.00 | - | - | - | - | - | - | - | - |")
+    lines.extend(
+        [
+            "",
+            "## Stop-out recovery",
+            "",
+            "Option R uses initial per-unit risk and one-minute option OHLC; checkpoint bids are the nearest valid archived quote after exit to each checkpoint, with quote age and sample offset shown. Underlying reversal means the captured one-minute range crossed the entry-time underlying reference against the option direction.",
+            "",
+            "| Trade | Exit type | Entry→exit seconds | ≤5m | Bid @ 5m | Bid @ 15m | Bid @ 30m | Bid @ 60m | Max/min R 60m | Max/min R close | Reclaimed entry | Reached +1R | Underlying reversed | Capture |",
+            "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+
+    def recovery_bid_text(value: Any) -> str:
+        if not isinstance(value, dict):
+            return "N/A"
+        bid = _number(value.get("bid"))
+        age = value.get("quote_age_seconds")
+        offset = value.get("sample_offset_seconds")
+        return (
+            f"{bid:.2f} (age {age if age is not None else 'N/A'}s; "
+            f"offset {offset if offset is not None else 'N/A'}s)"
+            if bid is not None
+            else "N/A"
+        )
+
+    if recovery_rows:
+        for recovery in recovery_rows:
+            within_5m = (
+                "yes" if _flag(recovery.get("stop_within_5m")) else "no"
+            )
+            reclaimed = (
+                str(recovery.get("reclaimed_entry_time") or "yes")
+                if _flag(recovery.get("reclaimed_entry"))
+                else "no"
+            )
+            plus_one_r = (
+                str(recovery.get("reached_plus_1r_time") or "yes")
+                if _flag(recovery.get("reached_plus_1r"))
+                else "no"
+            )
+            underlying = (
+                "yes"
+                if _flag(recovery.get("underlying_reversed_to_close"))
+                else "no"
+                if recovery.get("underlying_reversed_to_close") not in (None, "")
+                else "unknown"
+            )
+            max_min_60 = (
+                f"{recovery.get('max_r_within_60m')}/"
+                f"{recovery.get('min_r_within_60m')}"
+            )
+            max_min_close = (
+                f"{recovery.get('max_r_to_close')}/"
+                f"{recovery.get('min_r_to_close')}"
+            )
+            lines.append(
+                f"| {recovery.get('trade_id')} | {recovery.get('exit_type')} | "
+                f"{recovery.get('entry_to_exit_seconds')} | {within_5m} | "
+                f"{recovery_bid_text(recovery.get('bid_after_5m'))} | "
+                f"{recovery_bid_text(recovery.get('bid_after_15m'))} | "
+                f"{recovery_bid_text(recovery.get('bid_after_30m'))} | "
+                f"{recovery_bid_text(recovery.get('bid_after_60m'))} | "
+                f"{max_min_60} | {max_min_close} | {reclaimed} | {plus_one_r} | "
+                f"{underlying} | {recovery.get('status')} |"
+            )
+    else:
+        lines.append("| No initial-stop, trailing-stop, or breakeven exits | - | - | - | - | - | - | - | - | - | - | - | - | - |")
+    lines.extend(
+        [
+            "",
+            "## Paper exit flag results",
+            "",
+            "| Flag | Tagged trades (W/L/BE) | Tagged P&L | Untagged trades (W/L/BE) | Untagged P&L |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for flag in EXIT_FLAGS:
+        tagged = [
+            trade
+            for trade in trades
+            if flag
+            in _string_list(
+                trade.get("paper_exit_flags_at_entry")
+                or trade.get("paper_change_flags_at_entry")
+                or trade.get("paper_change_flags")
+            )
+        ]
+        untagged = [trade for trade in trades if trade not in tagged]
+
+        def result_counts(rows: List[Dict[str, Any]]) -> str:
+            values = [_recorded_trade_pnl(item) for item in rows]
+            return (
+                f"{len(rows)} ({sum(value > 0 for value in values)}/"
+                f"{sum(value < 0 for value in values)}/"
+                f"{sum(value == 0 for value in values)})"
+            )
+
+        lines.append(
+            f"| {flag} | {result_counts(tagged)} | "
+            f"{sum(_recorded_trade_pnl(item) for item in tagged):.2f} | "
+            f"{result_counts(untagged)} | "
+            f"{sum(_recorded_trade_pnl(item) for item in untagged):.2f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Paper exit flag rollback checks",
+            "",
+            "| Flag | Tagged trades | Threshold checks | Status |",
+            "| --- | ---: | --- | --- |",
+        ]
+    )
+    for flag in EXIT_FLAGS:
+        result = exit_flag_rollback[flag]
+        lines.append(
+            f"| {flag} | {result['tagged_trades']} | "
+            f"{'; '.join(result['checks']) or 'checks not evaluated'} | "
+            f"{'; '.join(result['rollback_reasons']) or 'no rollback trigger'} |"
+        )
     learning_feedback = _learning_feedback(trades)
     loss_patterns = learning_feedback["loss_patterns_for_review"]
     lines.extend(
@@ -1796,6 +2059,28 @@ def write_weekly_review(
         f"with re-entries: "
         f"{ema_reentry_summary['baseline_comparison']['strategy_pnl']:.2f}",
         "Paper-only comparison; the baseline excludes EMA re-entry trades, and all figures use recorded P&L.",
+        "",
+        "## Stop-out Recovery",
+        f"- Recovery records: {report['stop_out_recovery']['trades']}",
+        f"- Incomplete records: {report['stop_out_recovery']['incomplete']}",
+        f"- Exits within five minutes: {report['stop_out_recovery']['stop_within_5m']}",
+        f"- Option reclaimed entry / reached +1R: "
+        f"{report['stop_out_recovery']['reclaimed_entry']} / "
+        f"{report['stop_out_recovery']['reached_plus_1r']}",
+        f"- Underlying reversed against the position: "
+        f"{report['stop_out_recovery']['underlying_reversed']}",
+        "Detailed per-trade checkpoint bids and R excursions are in each session's stop_out_recovery.parquet file.",
+        "",
+        "## PAPER Exit Rollback Checks",
+        "| Flag | Tagged trades | Checks | Result |",
+        "| --- | ---: | --- | --- |",
+        *[
+            f"| {flag} | {report['paper_exit_rollback'][flag]['tagged_trades']} | "
+            f"{'; '.join(report['paper_exit_rollback'][flag]['checks']) or 'checks not evaluated'} | "
+            f"{'; '.join(report['paper_exit_rollback'][flag]['rollback_reasons']) or 'no rollback trigger'} |"
+            for flag in EXIT_FLAGS
+        ],
+        "If a threshold triggers, set that flag to false, stop and restart the PAPER bot, then verify the next trade's paper_exit_flags_at_entry omits the flag. LIVE behavior is unaffected.",
         "",
         "## Loss Clusters",
         "| Exit reason | Closed trades | Wins | Losses | Recorded P&L |",

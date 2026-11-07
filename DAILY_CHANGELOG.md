@@ -59,6 +59,23 @@ Outcome / follow-up / rollback:
 - Validation and result: Phase 1 full suite passed (`477 passed, 1 skipped`). Phase 2 targeted exit, capture, report, and journal tests passed (`192 passed`). Full Phase 2 validation pending.
 - Outcome / follow-up / rollback: Phase 1 commit `dd9b704`; stop-default fix `b4a065e`. Phase 2 flags default on in PAPER and remain inactive for LIVE. Recovery-window metrics and offline replay are still pending; no performance conclusion is made.
 
+#### DLY-2026-11-06-03
+
+- Reason: Close omissions found in the post-implementation audit: stop-out recovery output, per-flag rollback enforcement/tests, replay coverage claims, and rollback instructions.
+- Related prior entries checked: `DLY-2026-11-06-01`, `DLY-2026-11-06-02`, and `EXP-2026-11-06-01`; preserved default-on PAPER flags and unchanged LIVE execution.
+- Files:
+  - `market_bot/paper_recovery.py` (added): Compute post-exit option/underlying recovery, quote checkpoints, R excursions, and incomplete capture status; avoid a still-forming underlying candle as entry reference.
+  - `market_bot/paper_exit_rollback.py` (added): Evaluate per-flag risk/day-loss, runner-drawdown, and first-ten paired replay rollback conditions.
+  - `market_bot/weekly_report.py` (modified): Persist and display recovery rows, tagged/untagged results, and rollback checks.
+  - `paper_change_rollback_check.py` (modified): Enforce PAPER-only exit-flag rollbacks and print actionable restart/verification steps.
+  - `tools/replay_exit_policies.py` (modified): Default to the full requested archive window and report actual candle/quote coverage and missing context rather than hardcoded counts.
+  - `tests/test_paper_recovery.py`, `tests/test_paper_exit_rollback.py` (added), and `tests/test_weekly_report.py` (modified): Cover recovery completeness, rollback thresholds and CLI behavior, and daily/weekly reporting.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the exact rollback procedure for the service and directly launched process.
+  - `STRATEGY_CHANGELOG.md` (modified): Record the replay reconciliation and paired results without changing flag defaults.
+  - `DAILY_CHANGELOG.md` (modified): Record the audit corrections.
+- Validation and result: Focused recovery/rollback/report/replay tests passed (`29 passed`); required `python -m pytest -q` passed (`498 passed, 1 skipped`); `git diff --check` passed. The Oct. 28-Nov. 6 replay window completed its integrity checks; the archive has six sessions with exact-contract trade rows and 20/23 rows with both option candle and valid quote archives.
+- Outcome / follow-up / rollback: No replay-driven default changes. Archive currently has 20 of 23 exact-contract trade rows with both option candle and valid quote files; two other closed trades have no contract ID. CPU/RSS impact was not measured on a recorded-feed run.
+
 ### 2026-11-05
 
 #### DLY-2026-11-05-01
