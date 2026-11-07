@@ -9,6 +9,7 @@ writes a Markdown report. It never writes to the paper session or bot config.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import gzip
 import json
@@ -27,9 +28,19 @@ import pandas as pd
 IST = ZoneInfo("Asia/Kolkata")
 EXIT_FRACTIONS = (0.33, 0.50, 0.66)
 RUNNER_GAPS = (1.25, 1.50, 1.75, 2.00)
+PAPER_PROFIT_LOCKS = (0.10, 0.15, 0.25)
 DEFAULT_START = date(2026, 11, 4)
 DEFAULT_END = date(2026, 11, 6)
 EXPECTED_NOV06_GROSS = 5344.50
+
+
+def paper_exit_policy_specs() -> list[tuple[str, float, float, bool, bool]]:
+    specs = []
+    for lock_r in PAPER_PROFIT_LOCKS:
+        label = f"ALL_PL_{lock_r:.2f}"
+        specs.append((label, 1.5, lock_r, True, False))
+        specs.append((f"{label}_2BID", 1.5, lock_r, True, True))
+    return specs
 
 
 @dataclass(frozen=True)
@@ -241,6 +252,13 @@ def next_bar_fill(
     return None
 
 
+def next_bid_fill(quotes: list[dict[str, Any]], after: datetime) -> Fill | None:
+    for quote in quotes:
+        if quote["time"] >= after and valid_quote(quote):
+            return Fill(float(quote["bid"]), quote["time"], "next_available_bid")
+    return None
+
+
 def stop_bar_fill(
     candles: list[dict[str, Any]],
     quotes: list[dict[str, Any]],
@@ -428,6 +446,9 @@ def simulate_policy(
     partial_fraction: float = 0.0,
     partial_r: float | None = None,
     p4_qualifies: bool = False,
+    profit_lock_r: float | None = None,
+    close_confirm: bool = False,
+    two_consecutive_bids: bool = False,
 ) -> Replay:
     values = trade_values(trade)
     entry, initial_stop = values["entry"], values["stop"]
@@ -486,38 +507,78 @@ def simulate_policy(
             if sampled_prices:
                 high = max(sampled_prices)
                 low = min(sampled_bids or sampled_prices)
-        stop_hit = low <= current_stop
         highest_after = max(highest, high)
-        candidate_stop = current_stop
+        initial_stop_hit = low <= initial_stop
+        profit_stop: float | None = None
         if highest_after >= entry + 0.5 * risk_points:
-            candidate_stop = max(candidate_stop, entry)
+            lock_r = 0.0 if profit_lock_r is None else profit_lock_r
+            profit_stop = entry + lock_r * risk_points
         if highest_after >= entry + 2.0 * risk_points:
             runner_active = True
+        candidate_stop = max(
+            current_stop,
+            profit_stop if profit_stop is not None else initial_stop,
+        )
+        runner_stop: float | None = None
         if runner_active:
-            candidate_stop = max(candidate_stop, highest_after - runner_gap * risk_points)
-        stop_hit = stop_hit or low <= candidate_stop
+            runner_stop = max(
+                candidate_stop,
+                highest_after - runner_gap * risk_points,
+            )
+        stop_kind: str | None = None
+        stop_level = None
+        if initial_stop_hit:
+            stop_kind, stop_level = "initial_stop", initial_stop
+        elif profit_lock_r is not None and profit_stop is not None and low <= profit_stop:
+            stop_kind, stop_level = "profit_lock", profit_stop
+        elif runner_stop is not None and low <= runner_stop:
+            confirmed = not close_confirm
+            if close_confirm:
+                confirmed = float(bar["close"]) < runner_stop
+            if two_consecutive_bids:
+                start = bar["time"]
+                end = start + timedelta(minutes=1)
+                below_count = 0
+                confirmed = False
+                for quote in quotes:
+                    if not start <= quote["time"] < end or not valid_quote(quote):
+                        continue
+                    below_count = (
+                        below_count + 1
+                        if float(quote["bid"]) < runner_stop
+                        else 0
+                    )
+                    if below_count >= 2:
+                        confirmed = True
+                        break
+            if confirmed:
+                stop_kind, stop_level = "runner_stop", runner_stop
+        elif profit_stop is not None and low <= profit_stop:
+            stop_kind, stop_level = "breakeven_stop", profit_stop
 
-        if stop_hit:
-            fill = stop_bar_fill(candles, quotes, i, candidate_stop)
+        if stop_kind is not None and stop_level is not None:
+            fill = (
+                next_bid_fill(quotes, bar["time"] + timedelta(minutes=1))
+                if close_confirm and stop_kind == "runner_stop"
+                else stop_bar_fill(candles, quotes, i, stop_level)
+            )
             if fill is None:
                 return Replay(policy, None, None, None, None, None, "stop hit but no permitted fill", None, False)
             realized_gross += (fill.price - entry) * remaining
             exit_fills.append((fill.price, remaining))
             exits_summary.append((fill.price, remaining))
             last_fill = fill
-            reason = "runner_stop" if runner_active else (
-                "breakeven_stop" if candidate_stop >= entry else "initial_stop"
-            )
+            reason = stop_kind
             remaining = 0.0
             break
 
         highest = highest_after
-        current_stop = candidate_stop
+        current_stop = runner_stop if runner_stop is not None else candidate_stop
         partial_triggered = (
             not partial_done
             and partial_r is not None
             and highest >= entry + partial_r * risk_points
-            and (policy != "P4" or p4_qualifies)
+            and (not policy.startswith("P4") or p4_qualifies)
         )
         if partial_triggered:
             fill = next_bar_fill(candles, quotes, i)
@@ -668,6 +729,104 @@ def summary_metrics(
         "drawdown": max_drawdown,
         "without_best": sum(nets) - best,
         "missing": len(outcomes) - len(valid),
+    }
+
+
+def p4_eligible_results(
+    trades: list[dict[str, Any]],
+    replays: dict[tuple[str, str], Replay],
+    eligible_ids: set[str],
+    policy: str,
+) -> list[tuple[dict[str, Any], Replay]]:
+    return [
+        (trade, result)
+        for trade in trades
+        if str(trade.get("trade_id")) in eligible_ids
+        and (result := replays.get((str(trade.get("trade_id")), policy))) is not None
+    ]
+
+
+def p4_column_result(
+    trade: dict[str, Any],
+    replays: dict[tuple[str, str], Replay],
+    eligible_ids: set[str],
+    policy: str,
+) -> Replay | None:
+    trade_id = str(trade.get("trade_id"))
+    return (
+        replays.get((trade_id, policy))
+        if trade_id in eligible_ids
+        else None
+    )
+
+
+def p4_summary(
+    trades: list[dict[str, Any]],
+    replays: dict[tuple[str, str], Replay],
+    eligible_ids: set[str],
+    policy: str,
+) -> tuple[dict[str, Any], int]:
+    rows = p4_eligible_results(trades, replays, eligible_ids, policy)
+    stats = summary_metrics(rows)
+    displayed = sum(
+        result.complete and result.net is not None
+        for trade in trades
+        if (result := p4_column_result(trade, replays, eligible_ids, policy))
+        is not None
+    )
+    if stats["n"] != displayed:
+        raise ValueError(
+            f"{policy} summary has {stats['n']} complete rows, but its displayed "
+            f"eligible columns contain {displayed}"
+        )
+    return stats, displayed
+
+
+def measured_half_spread_rate(
+    quotes: list[dict[str, Any]],
+) -> float | None:
+    rates = []
+    for quote in quotes:
+        if not valid_quote(quote):
+            continue
+        bid, ask = float(quote["bid"]), float(quote["ask"])
+        midpoint = (bid + ask) / 2.0
+        if midpoint > 0:
+            rates.append((ask - bid) / 2.0 / midpoint)
+    return sum(rates) / len(rates) if rates else None
+
+
+def paired_net_change(
+    trades: list[dict[str, Any]],
+    replays: dict[tuple[str, str], Replay],
+    baseline_policy: str,
+    policy: str,
+) -> dict[str, Any]:
+    deltas = []
+    for trade in trades:
+        trade_id = str(trade.get("trade_id"))
+        baseline = replays.get((trade_id, baseline_policy))
+        alternative = replays.get((trade_id, policy))
+        if (
+            baseline is None
+            or alternative is None
+            or not baseline.complete
+            or not alternative.complete
+            or baseline.net is None
+            or alternative.net is None
+        ):
+            continue
+        deltas.append((trade_id, alternative.net - baseline.net))
+    best = max((delta for _, delta in deltas), default=None)
+    return {
+        "n": len(deltas),
+        "net_change": sum(delta for _, delta in deltas),
+        "without_best": (
+            sum(delta for _, delta in deltas) - best if best is not None else None
+        ),
+        "best_trade_id": (
+            max(deltas, key=lambda item: item[1])[0] if deltas else None
+        ),
     }
 
 
@@ -929,6 +1088,10 @@ def render_report(
                 "P4_33", "P4_50", "P4_66",
             ]
         }
+        for name in ("P4_33", "P4_50", "P4_66"):
+            outcomes[name] = p4_column_result(
+                trade, replays, p4_eligible_ids, name
+            )
         p0 = outcomes["P0"]
         p1 = outcomes["P1"]
         def compact(result: Replay | None) -> str:
@@ -949,19 +1112,27 @@ def render_report(
         "",
         "## Policy summary",
         "",
-        "P0 net is cost-adjusted estimate; alternative policies use simulated gross less estimated costs. R uses initial premium risk. Drawdown is peak-to-trough over chronological closed-trade net equity, starting at zero. Profit factor is net wins divided by absolute net losses.",
+        "P0 net is cost-adjusted estimate; alternative policies use simulated gross less estimated costs. Flat-cost runs use 1% adverse slippage per side. Half-spread runs use the mean measured half-spread/midpoint rate from each trade's valid archived quotes. R uses initial premium risk. Drawdown is peak-to-trough over chronological closed-trade net equity, starting at zero.",
         "",
         "| Policy | N | Gross ₹ | Net ₹ | Net R | Win % | Profit factor | Median R | Max drawdown ₹ | Net without best trade ₹ | Incomplete |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    policy_names = ["P0", "P1"] + [f"P2_{gap:.2f}" for gap in RUNNER_GAPS]
+    policy_names = ["P0", "P1", "P1_HALF_SPREAD"] + [
+        f"P2_{gap:.2f}" for gap in RUNNER_GAPS
+    ]
     policy_names += [
         f"P3_{gap:.2f}_{pct}"
         for gap in RUNNER_GAPS for pct in (33, 50, 66)
     ]
     policy_names += [f"P4_{pct}" for pct in (33, 50, 66)]
+    for spec_name, _, _, _, _ in paper_exit_policy_specs():
+        policy_names.extend((spec_name, f"{spec_name}_HALF_SPREAD"))
     for name in policy_names:
-        rows = [(t, replays.get((str(t.get("trade_id")), name))) for t in trades]
+        rows = (
+            p4_eligible_results(trades, replays, p4_eligible_ids, name)
+            if name.startswith("P4_")
+            else [(t, replays.get((str(t.get("trade_id")), name))) for t in trades]
+        )
         outcomes = [(t, r) for t, r in rows if r is not None]
         stats = summary_metrics(outcomes)
         lines.append(
@@ -970,6 +1141,26 @@ def render_report(
             f"{metric(stats['median_r'])} | {money(stats['drawdown'])} | "
             f"{money(stats['without_best'])} | {stats['missing']} |"
         )
+    lines += [
+        "",
+        "## New PAPER exit variants: paired net change vs current P1",
+        "",
+        "Each row uses paired trades complete under both policies. `Without best` removes the single trade with the largest paired net improvement. The half-spread columns use the measured mean half-spread rate for that exact contract's quote archive; flat columns use 1% per side.",
+        "",
+        "| Policy | Cost model | Paired N | Net change vs current ₹ | Net change without best paired trade ₹ | Best paired trade |",
+        "|---|---|---:|---:|---:|---|",
+    ]
+    for spec_name, _, _, _, _ in paper_exit_policy_specs():
+        for policy, baseline, model in (
+            (spec_name, "P1", "flat 1%"),
+            (f"{spec_name}_HALF_SPREAD", "P1_HALF_SPREAD", "measured half-spread"),
+        ):
+            paired = paired_net_change(trades, replays, baseline, policy)
+            lines.append(
+                f"| {policy_label(spec_name)} | {model} | {paired['n']} | "
+                f"{money(paired['net_change'])} | {money(paired['without_best'])} | "
+                f"{paired['best_trade_id'] or 'NA'} |"
+            )
     lines += [
         "",
         "## Full sensitivity grid",
@@ -992,10 +1183,9 @@ def render_report(
             )
     for pct in (33, 50, 66):
         name = f"P4_{pct}"
-        stats = summary_metrics([
-            (t, replays.get((str(t.get("trade_id")), name)))
-            for t in trades if replays.get((str(t.get("trade_id")), name)) is not None
-        ])
+        stats, eligible_completed = p4_summary(
+            trades, replays, p4_eligible_ids, name
+        )
         eligible = sum(str(t.get("trade_id")) in p4_eligible_ids for t in trades)
         lines.append(
             f"| {name} | 1.00 (P1 gap) | 0.5R conditional | {pct}% | {stats['n']} "
@@ -1291,7 +1481,7 @@ def render_report(
         "",
         "## Limitations",
         "",
-        "- Only 17 closed trades over three sessions were present (4 on Nov 4, 3 on Nov 5, 10 on Nov 6). This is a short, selected paper sample, not a holdout or walk-forward test.",
+        f"- Only {len(trades)} exact-contract trade rows across {len(sessions)} sessions were available. This is a short, selected paper sample, not a holdout or walk-forward test.",
         "- Nov 6's recorded total is dominated by BANKNIFTY CE and LT CE. The report includes results without each policy's best trade and should not be used to tune to Nov 6.",
         "- Archived option candles are one-minute aggregates; within-bar ordering is unknowable. The conservative stop-first convention and next-open fills reduce but do not remove this ambiguity.",
         "- Capture reports show missing candles/tick gaps for some contracts. The report flags those gaps; prices and exits through missing intervals cannot be reconstructed. Quote marks can be stale and their age is shown.",
@@ -1301,9 +1491,9 @@ def render_report(
         "",
         "## Paper-mode recommendation and data needed",
         "",
-        "Do not replace the current exit behavior based on this short replay alone. If the checks pass, the safest next paper experiment is a **shadow-only** comparison that records P1 and each wider-gap/partial variant side by side, without changing actual exits or orders; keep the original stop invariant. Avoid choosing a single gap from the best-performing day.",
+        "This replay is information only and does not change PAPER flag defaults. The three independently tagged PAPER policies run directly on paper trades; LIVE behavior remains unchanged. Do not select defaults from this short replay or from the best-performing day.",
         "",
-        "Before adopting any policy, collect more sessions of exact-contract candles and timestamped executable bid/ask quotes through each trade's exit, verified lot-level fill and order-cost data, explicit manual-exit rationale, and consistently persisted per-entry regime, pivot count, support-reclaim outcome, and signal-to-fill premium. Include out-of-sample/walk-forward sessions and gap-free intervals, and verify feasible lot quantities for partials.",
+        "Collect more sessions of exact-contract candles and timestamped executable bid/ask quotes through each trade's exit, verified lot-level fill and order-cost data, explicit manual-exit rationale, and consistently persisted per-entry regime, pivot count, support-reclaim outcome, and signal-to-fill premium. Include out-of-sample/walk-forward sessions and gap-free intervals, and verify feasible lot quantities for partials.",
         "",
     ]
     return "\n".join(lines)
@@ -1338,7 +1528,13 @@ def run(args: argparse.Namespace) -> int:
     ):
         raise ValueError("Cost and slippage parameters must be non-negative")
     root = args.root.resolve()
-    trades = load_trades(root, args.start, args.end)
+    all_trades = load_trades(root, args.start, args.end)
+    trades = [
+        trade
+        for trade in all_trades
+        if str(trade.get("contract_id") or "").startswith("NFO:")
+    ]
+    excluded_without_contract = len(all_trades) - len(trades)
     if not trades:
         raise ValueError(f"No closed trades found between {args.start} and {args.end}")
     capture_index = build_capture_index(root)
@@ -1365,8 +1561,23 @@ def run(args: argparse.Namespace) -> int:
         contexts[tid] = entry_context(trade, decisions_by_day[day])
         max_rs[tid] = session_max_r(trade, candles, quotes) if candles else None
         replays[(tid, "P0")] = recorded_replay(trade, args)
+        half_spread = measured_half_spread_rate(quotes)
+        half_args = copy.copy(args)
+        half_args.slippage = half_spread
         if not candles:
-            for name in ["P1"] + [f"P2_{gap:.2f}" for gap in RUNNER_GAPS]:
+            missing_names = (
+                ["P1", "P1_HALF_SPREAD"]
+                + [f"P2_{gap:.2f}" for gap in RUNNER_GAPS]
+                + [
+                    name
+                    for name, _, _, _, _ in paper_exit_policy_specs()
+                ]
+                + [
+                    f"{name}_HALF_SPREAD"
+                    for name, _, _, _, _ in paper_exit_policy_specs()
+                ]
+            )
+            for name in missing_names:
                 replays[(tid, name)] = Replay(name, None, None, None, None, None, "missing exact-contract candles", None, False)
             for gap in RUNNER_GAPS:
                 for pct in (33, 50, 66):
@@ -1377,6 +1588,16 @@ def run(args: argparse.Namespace) -> int:
                 replays[(tid, name)] = Replay(name, None, None, None, None, None, "missing exact-contract candles", None, False)
             continue
         replays[(tid, "P1")] = simulate_policy(trade, candles, quotes, args, "P1", runner_gap=1.0)
+        replays[(tid, "P1_HALF_SPREAD")] = (
+            simulate_policy(
+                trade, candles, quotes, half_args, "P1_HALF_SPREAD", runner_gap=1.0
+            )
+            if half_spread is not None
+            else Replay(
+                "P1_HALF_SPREAD", None, None, None, None, None,
+                "no valid quote spread", None, False,
+            )
+        )
         p1_result = replays[(tid, "P1")]
         p1_path_r = path_max_r(
             trade, candles, quotes, p1_result.exit_time
@@ -1405,6 +1626,37 @@ def run(args: argparse.Namespace) -> int:
                 partial_fraction=pct / 100, partial_r=0.5,
                 p4_qualifies=qualifies,
             )
+        for name, gap, lock_r, confirm, two_bids in paper_exit_policy_specs():
+            replays[(tid, name)] = simulate_policy(
+                trade,
+                candles,
+                quotes,
+                args,
+                name,
+                runner_gap=gap,
+                profit_lock_r=lock_r,
+                close_confirm=confirm,
+                two_consecutive_bids=two_bids,
+            )
+            half_name = f"{name}_HALF_SPREAD"
+            replays[(tid, half_name)] = (
+                simulate_policy(
+                    trade,
+                    candles,
+                    quotes,
+                    half_args,
+                    half_name,
+                    runner_gap=gap,
+                    profit_lock_r=lock_r,
+                    close_confirm=confirm,
+                    two_consecutive_bids=two_bids,
+                )
+                if half_spread is not None
+                else Replay(
+                    half_name, None, None, None, None, None,
+                    "no valid quote spread", None, False,
+                )
+            )
 
     failures = checks(trades, market, replays)
     if failures:
@@ -1421,7 +1673,11 @@ def run(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     print(f"Report written: {output}")
-    print(f"Sessions: {len({t['_entry_time_parsed'].date() for t in trades})}; trades: {len(trades)}")
+    print(
+        f"Sessions: {len({t['_entry_time_parsed'].date() for t in trades})}; "
+        f"exact-contract trades: {len(trades)}; excluded without contract_id: "
+        f"{excluded_without_contract}"
+    )
     print("All required replay checks passed.")
     return 0
 

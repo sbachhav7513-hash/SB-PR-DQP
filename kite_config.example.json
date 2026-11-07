@@ -28,6 +28,19 @@
   "option_adaptive_trail_gap_r": 1.0,
   "option_adaptive_runner_activation_r": 2.0,
   "option_adaptive_runner_gap_r": 1.0,
+  "runner_gap_v2": true,
+  "profit_lock_v2": true,
+  "trail_close_confirm_v2": true,
+  "paper_exit_tiers": {
+    "index_options": {
+      "runner_gap_r": 1.5,
+      "profit_lock_r": 0.15
+    },
+    "stock_options": {
+      "runner_gap_r": 1.5,
+      "profit_lock_r": 0.15
+    }
+  },
   "max_risk_per_trade": 1000.0,
   "max_capital_per_trade_pct": 20.0,
   "banknifty_max_capital_per_trade_pct": 30.0,
