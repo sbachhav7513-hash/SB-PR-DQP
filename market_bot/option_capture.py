@@ -489,16 +489,6 @@ class OptionCaptureWriter:
         completed.append(candle)
         completed_by_minute[candle["candle_start_time"]] = candle
         day_key = candle["candle_start_time"].date().isoformat()
-        contract_id = str(self.contracts_by_token.get(token, {}).get("contract_id", ""))
-        if contract_id:
-            timing = self._thread_state["contract_capture_timing"][day_key].setdefault(
-                contract_id,
-                {"registration_time": None, "first_tick_time": None,
-                 "first_candle_time": None},
-            )
-            timing["first_candle_time"] = (
-                timing["first_candle_time"] or _iso(candle["candle_start_time"])
-            )
         if token in self._thread_state["registered"].get(day_key, {}):
             self._thread_state["flush_dirty"][day_key].add(token)
 
@@ -702,6 +692,14 @@ class OptionCaptureWriter:
             return False
         seen.add(key)
         self._thread_state["contracts_captured"][day_key].add(contract_id)
+        timing = self._thread_state["contract_capture_timing"][day_key].setdefault(
+            contract_id,
+            {"registration_time": None, "first_tick_time": None,
+             "first_candle_time": None},
+        )
+        timing["first_candle_time"] = (
+            timing["first_candle_time"] or _iso(candle_time)
+        )
         for signals in self._thread_state["signals"].get(day_key, {}).values():
             if contract_id == signals.get("contract_id"):
                 signal_end = signals["signal_time"] + timedelta(minutes=60)

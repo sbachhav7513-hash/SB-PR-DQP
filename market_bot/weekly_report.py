@@ -1018,7 +1018,9 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "support_reclaim_result", "support_distance_pct",
             "signal_to_entry_delay_seconds", "holding_time_seconds",
             "manual_exit", "manual_exit_reason", "paper_change_flags_at_entry",
-            "paper_change_flags_at_exit", "exit_trigger_price",
+            "paper_change_flags_at_exit", "paper_exit_flags_at_entry",
+            "paper_exit_flags_at_exit", "paper_exit_parameters",
+            "exit_trigger_price",
             "exit_trigger_source", "initial_stop_loss", "initial_risk_per_unit",
             "planned_risk_rupees",
         ]
@@ -1553,20 +1555,23 @@ def write_daily_review(
                     trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
                 ).replace("|", "/"),
                 entry_flags=str(
-                    trade.get("paper_change_flags_at_entry")
+                    trade.get("paper_exit_flags_at_entry")
+                    or trade.get("paper_change_flags_at_entry")
                     or trade.get("paper_change_flags")
                     or []
                 ).replace("|", "/"),
-                exit_flags=str(trade.get("paper_change_flags_at_exit") or []).replace(
-                    "|", "/"
-                ),
+                exit_flags=str(
+                    trade.get("paper_exit_flags_at_exit")
+                    or trade.get("paper_change_flags_at_exit")
+                    or []
+                ).replace("|", "/"),
                 quote=(
                     f"{trade.get('fill_bid', 'N/A')}/"
                     f"{trade.get('fill_ask', 'N/A')}/"
                     f"{trade.get('fill_ltp', 'N/A')}"
                 ).replace("|", "/"),
                 fill_change=(
-                    f"{_number(trade.get('fill_percent_change_from_signal')):.3f}"
+                    f"{_number(trade.get('fill_percent_change_from_signal')):+.3f}"
                     if trade.get("fill_percent_change_from_signal") not in (None, "")
                     else "N/A"
                 ),

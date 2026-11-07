@@ -485,6 +485,9 @@ class IntradayManager:
         highest_price: Optional[float] = None,
         lowest_price: Optional[float] = None,
         trailing_active: bool = False,
+        profit_lock_enabled: bool = False,
+        profit_lock_r: float = 0.15,
+        trail_close_confirm_enabled: bool = False,
     ) -> None:
         """Register a new position."""
         target_distance = abs(take_profit - entry_price)
@@ -543,6 +546,11 @@ class IntradayManager:
                 raise ValueError(
                     "Invalid risk or R thresholds for adaptive option exit"
                 )
+            if (
+                not math.isfinite(float(profit_lock_r))
+                or not 0 <= float(profit_lock_r) < 0.5
+            ):
+                raise ValueError("Invalid profit-lock R threshold")
         registered_at = self._normalize_position_time(entry_time)
         strong_threshold = int(strong_signal_score)
         entry_score = int(signal_score) if signal_score is not None else None
@@ -562,6 +570,11 @@ class IntradayManager:
             "take_profit": take_profit,
             "initial_target_distance": target_distance,
             "initial_risk_distance": initial_risk_distance,
+            "profit_lock_enabled": bool(profit_lock_enabled),
+            "profit_lock_r": float(profit_lock_r),
+            "profit_lock_stop": None,
+            "trail_close_confirm_enabled": bool(trail_close_confirm_enabled),
+            "trail_close_confirmed": False,
             "max_favorable_r_time": (
                 registered_at.isoformat(timespec="seconds")
                 if max_favorable_r > 0
@@ -719,7 +732,11 @@ class IntradayManager:
                 mode = "profit_trail"
                 trailing_gap_r = float(position["adaptive_trail_gap_r"])
             elif max_favorable_r >= breakeven_r:
-                mode = "breakeven"
+                mode = (
+                    "profit_lock"
+                    if position.get("profit_lock_enabled")
+                    else "breakeven"
+                )
                 trailing_gap_r = 0.0
             else:
                 mode = "initial_stop"
@@ -735,6 +752,27 @@ class IntradayManager:
                 if position["direction"] == "BUY"
                 else float(position["lowest_price"])
             )
+            if mode == "profit_lock":
+                lock_offset = float(position["profit_lock_r"]) * risk_distance
+                candidate = (
+                    entry_price + lock_offset
+                    if position["direction"] == "BUY"
+                    else entry_price - lock_offset
+                )
+                previous_lock = position.get("profit_lock_stop")
+                if position["direction"] == "BUY":
+                    position["profit_lock_stop"] = (
+                        candidate
+                        if previous_lock is None
+                        else max(float(previous_lock), candidate)
+                    )
+                else:
+                    position["profit_lock_stop"] = (
+                        candidate
+                        if previous_lock is None
+                        else min(float(previous_lock), candidate)
+                    )
+                return None
             if mode == "breakeven":
                 candidate = entry_price
             elif position["direction"] == "BUY":

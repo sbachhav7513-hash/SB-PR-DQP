@@ -121,6 +121,9 @@ PAPER_CHANGE_KEYS = (
     "banknifty_caps_v2",
     "nifty_vol_floor_v2",
     "capital_based_risk_v2",
+    "runner_gap_v2",
+    "profit_lock_v2",
+    "trail_close_confirm_v2",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -238,6 +241,31 @@ class KiteTradingBot:
         ):
             raise ValueError("Invalid adaptive-exit R thresholds")
         return values
+
+    def _paper_option_exit_tier_values(self, symbol: str) -> tuple[float, float]:
+        tier = (
+            "index_options"
+            if self._underlying_symbol(symbol) in {"NIFTY", "BANKNIFTY"}
+            else "stock_options"
+        )
+        configured_tiers = self.config.get("paper_exit_tiers", {})
+        configured = (
+            configured_tiers.get(tier, {})
+            if isinstance(configured_tiers, dict)
+            else {}
+        )
+        if not isinstance(configured, dict):
+            raise ValueError(f"paper_exit_tiers.{tier} must be a mapping")
+        runner_gap = float(configured.get("runner_gap_r", 1.5))
+        profit_lock = float(configured.get("profit_lock_r", 0.15))
+        if (
+            not math.isfinite(runner_gap)
+            or runner_gap <= 0
+            or not math.isfinite(profit_lock)
+            or not 0 <= profit_lock < 0.5
+        ):
+            raise ValueError(f"Invalid PAPER exit parameters for {tier}")
+        return runner_gap, profit_lock
 
     def _entry_risk_cap(self) -> Optional[float]:
         configured_cap = self.config.get("max_risk_per_trade")
@@ -4407,6 +4435,7 @@ class KiteTradingBot:
             if writer is not None:
                 writer.record_underlying_bar(symbol, bar)
         if symbol.endswith(("_CE", "_PE")):
+            self._confirm_option_trailing_close(symbol, bar)
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
             contexts = getattr(self, "_signal_change_attributions", None)
             if contexts is None:
@@ -6174,8 +6203,13 @@ class KiteTradingBot:
             if not quote_metrics["valid"]:
                 bid = quote_metrics["bid"]
                 stop_loss = self._positive_quote_value(position.get("stop_loss"))
-                trailing_level = self._positive_quote_value(
-                    position.get("trailing_stop")
+                trailing_level = (
+                    None
+                    if position.get("trail_close_confirm_enabled")
+                    else self._positive_quote_value(position.get("trailing_stop"))
+                )
+                profit_lock_level = self._positive_quote_value(
+                    position.get("profit_lock_stop")
                 )
                 previous_stale_checks = int(
                     position.get("stale_stop_trigger_checks", 0)
@@ -6185,6 +6219,10 @@ class KiteTradingBot:
                     and bid is not None
                     and (
                         (stop_loss is not None and bid <= stop_loss)
+                        or (
+                            profit_lock_level is not None
+                            and bid <= profit_lock_level
+                        )
                         or (
                             trailing_level is not None
                             and bid <= trailing_level
@@ -6324,7 +6362,18 @@ class KiteTradingBot:
             )
             if stop_price <= position["stop_loss"]:
                 reason = "STOP_LOSS"
+            elif (
+                position.get("profit_lock_stop") is not None
+                and stop_price <= float(position["profit_lock_stop"])
+            ):
+                reason = "PROFIT_LOCK"
+            elif position.get("trail_close_confirmed"):
+                reason = "TRAILING_STOP"
             elif trailing_stop is not None and stop_price <= trailing_stop:
+                if position.get("trail_close_confirm_enabled") and not position.get(
+                    "trail_close_confirmed"
+                ):
+                    return None
                 reason = "TRAILING_STOP"
             elif (
                 not trailing_enabled
@@ -6355,7 +6404,18 @@ class KiteTradingBot:
         else:
             if price >= position["stop_loss"]:
                 reason = "STOP_LOSS"
+            elif (
+                position.get("profit_lock_stop") is not None
+                and price >= float(position["profit_lock_stop"])
+            ):
+                reason = "PROFIT_LOCK"
+            elif position.get("trail_close_confirmed"):
+                reason = "TRAILING_STOP"
             elif trailing_stop is not None and price >= trailing_stop:
+                if position.get("trail_close_confirm_enabled") and not position.get(
+                    "trail_close_confirmed"
+                ):
+                    return None
                 reason = "TRAILING_STOP"
             elif (
                 not trailing_enabled
@@ -6374,15 +6434,48 @@ class KiteTradingBot:
             else:
                 return None
 
-        exit_price = (
-            quote_metrics["bid"]
-            if quote_validated_option
-            and quote_metrics is not None
-            and quote_metrics["bid"] is not None
-            else price
-        )
+        if (
+            reason == "TRAILING_STOP"
+            and position.get("trail_close_confirmed")
+        ):
+            confirmed_quote = self._option_quote_metrics(
+                getattr(self, "option_quote_cache", {}).get(symbol, {})
+            )
+            if not confirmed_quote["valid"] or confirmed_quote["bid"] is None:
+                return None
+            exit_price = confirmed_quote["bid"]
+        else:
+            exit_price = (
+                quote_metrics["bid"]
+                if quote_validated_option
+                and quote_metrics is not None
+                and quote_metrics["bid"] is not None
+                else price
+            )
         self._close_position(symbol, exit_price, reason)
         return reason
+
+    def _confirm_option_trailing_close(self, symbol: str, bar: Bar) -> None:
+        position = self.intraday_manager.active_positions.get(symbol)
+        if (
+            not isinstance(position, dict)
+            or not position.get("trail_close_confirm_enabled")
+            or position.get("trailing_stop") is None
+        ):
+            return
+        stop = float(position["trailing_stop"])
+        closed_beyond = (
+            float(bar.close) < stop
+            if position.get("direction") == "BUY"
+            else float(bar.close) > stop
+        )
+        if closed_beyond:
+            position["trail_close_confirmed"] = True
+            position["trail_close_confirmation"] = {
+                "time": bar.timestamp.isoformat(timespec="seconds"),
+                "close": float(bar.close),
+                "stop": stop,
+            }
 
     def _persist_paper_option_exit_state(
         self, symbol: str, position: dict
@@ -6398,11 +6491,22 @@ class KiteTradingBot:
             "adaptive_runner_gap_r": position.get("adaptive_runner_gap_r"),
             "adaptive_exit_mode": position.get("adaptive_exit_mode"),
             "max_favorable_r": position.get("max_favorable_r"),
+            "profit_lock_stop": position.get("profit_lock_stop"),
+            "profit_lock_r": position.get("profit_lock_r"),
+            "profit_lock_enabled": position.get("profit_lock_enabled"),
+            "trail_close_confirm_enabled": position.get(
+                "trail_close_confirm_enabled"
+            ),
+            "trail_close_confirmed": position.get("trail_close_confirmed"),
+            "trail_close_confirmation": position.get(
+                "trail_close_confirmation"
+            ),
             "max_favorable_r_time": position.get("max_favorable_r_time"),
             "trailing_stop_history": position.get("trailing_stop_history", []),
             "runner_active": (
                 position.get("adaptive_exit_mode") == "runner"
-                or bool(position.get("trailing_active"))
+                if position.get("exit_strategy") == PAPER_OPTION_ADAPTIVE_EXIT
+                else bool(position.get("trailing_active"))
             ),
             "highest_price": position["highest_price"],
             "lowest_price": position["lowest_price"],
@@ -6992,6 +7096,26 @@ class KiteTradingBot:
                     else None
                 ),
                 "paper_change_flags_at_exit": self._active_paper_change_flags(),
+                "paper_exit_flags_at_exit": [
+                    flag
+                    for flag in (
+                        "runner_gap_v2",
+                        "profit_lock_v2",
+                        "trail_close_confirm_v2",
+                    )
+                    if self._paper_change_enabled(flag)
+                ],
+                "paper_exit_parameters": (
+                    {
+                        "runner_gap_r": position.get("adaptive_runner_gap_r"),
+                        "profit_lock_r": position.get("profit_lock_r"),
+                        "trail_close_confirm": position.get(
+                            "trail_close_confirm_enabled"
+                        ),
+                    }
+                    if position
+                    else {}
+                ),
                 "max_favorable_r": (
                     position.get("max_favorable_r") if position else None
                 ),
@@ -7002,7 +7126,17 @@ class KiteTradingBot:
                     position.get("trailing_stop_history", []) if position else []
                 ),
                 "runner_active": (
-                    bool(position.get("trailing_active")) if position else False
+                    (
+                        position.get("adaptive_exit_mode") == "runner"
+                        if position.get("exit_strategy")
+                        == PAPER_OPTION_ADAPTIVE_EXIT
+                        else bool(position.get("trailing_active"))
+                    )
+                    if position
+                    else False
+                ),
+                "profit_lock_stop": (
+                    position.get("profit_lock_stop") if position else None
                 ),
                 "manual_exit": reason == "MANUAL_EXIT",
                 "manual_exit_reason": reason if reason == "MANUAL_EXIT" else None,
@@ -7023,6 +7157,8 @@ class KiteTradingBot:
                     if reason == "TRAILING_STOP" and position
                     else position.get("initial_stop_loss")
                     if reason == "STOP_LOSS" and position
+                    else position.get("profit_lock_stop")
+                    if reason == "PROFIT_LOCK" and position
                     else float(price)
                 ),
                 "exit_trigger_source": (
@@ -7194,6 +7330,8 @@ class KiteTradingBot:
     def _exit_reason_category(reason: str) -> str:
         if reason in {"STOP_LOSS", "TRAILING_STOP"}:
             return "SL"
+        if reason == "PROFIT_LOCK":
+            return "TRAILING_PROFIT"
         if reason == "MARKET_CLOSE_FORCED_EXIT":
             return "EOD"
         if reason in {"TIME_BOX", "SIGNAL_WEAKEN"}:
@@ -7989,9 +8127,13 @@ class KiteTradingBot:
             adaptive_exit_values = None
             if option_adaptive_exit:
                 try:
-                    adaptive_exit_values = (
+                    adaptive_exit_values = list(
                         self._option_adaptive_exit_r_values()
                     )
+                    runner_gap_r, _ = self._paper_option_exit_tier_values(symbol)
+                    if self._paper_change_enabled("runner_gap_v2"):
+                        adaptive_exit_values[4] = runner_gap_r
+                    adaptive_exit_values = tuple(adaptive_exit_values)
                 except (TypeError, ValueError, OverflowError):
                     logger.exception("[%s] Invalid adaptive-exit settings", symbol)
                     return "invalid_option_adaptive_exit_config"
@@ -8208,6 +8350,19 @@ class KiteTradingBot:
                 ),
                 adaptive_runner_gap_r=(
                     adaptive_exit_values[4] if adaptive_exit_values else None
+                ),
+                profit_lock_enabled=(
+                    option_adaptive_exit
+                    and self._paper_change_enabled("profit_lock_v2")
+                ),
+                profit_lock_r=(
+                    self._paper_option_exit_tier_values(symbol)[1]
+                    if option_adaptive_exit
+                    else 0.15
+                ),
+                trail_close_confirm_enabled=(
+                    option_adaptive_exit
+                    and self._paper_change_enabled("trail_close_confirm_v2")
                 ),
                 milestone_window_minutes=int(
                     self.config.get("option_milestone_window_minutes", 5)
@@ -8575,6 +8730,23 @@ class KiteTradingBot:
                         "fill_percent_change_from_signal": fill_change_pct,
                     }
                 )
+                entry_position = self.intraday_manager.active_positions[symbol]
+                alert["paper_exit_flags_at_entry"] = [
+                    flag
+                    for flag in (
+                        "runner_gap_v2",
+                        "profit_lock_v2",
+                        "trail_close_confirm_v2",
+                    )
+                    if self._paper_change_enabled(flag)
+                ]
+                alert["paper_exit_parameters"] = {
+                    "runner_gap_r": entry_position.get("adaptive_runner_gap_r"),
+                    "profit_lock_r": entry_position.get("profit_lock_r"),
+                    "trail_close_confirm": entry_position.get(
+                        "trail_close_confirm_enabled"
+                    ),
+                }
             if staged_option_targets:
                 position = self.intraday_manager.active_positions[symbol]
                 alert.update(
@@ -8715,6 +8887,9 @@ class KiteTradingBot:
         minimum_signal_score: Optional[int] = None,
     ) -> str:
         """Handle a SELL signal."""
+        sell_entry_quote_metrics = self._option_quote_metrics(
+            getattr(self, "option_quote_cache", {}).get(symbol, {})
+        )
         open_trade = self.trade_journal.get_open_trade(symbol, "SELL")
         opposite_trade = self.trade_journal.get_open_trade(symbol, "BUY")
         if opposite_trade or (
@@ -8751,9 +8926,13 @@ class KiteTradingBot:
             adaptive_exit_values = None
             if option_adaptive_exit:
                 try:
-                    adaptive_exit_values = (
+                    adaptive_exit_values = list(
                         self._option_adaptive_exit_r_values()
                     )
+                    runner_gap_r, _ = self._paper_option_exit_tier_values(symbol)
+                    if self._paper_change_enabled("runner_gap_v2"):
+                        adaptive_exit_values[4] = runner_gap_r
+                    adaptive_exit_values = tuple(adaptive_exit_values)
                 except (TypeError, ValueError, OverflowError):
                     logger.exception("[%s] Invalid adaptive-exit settings", symbol)
                     return "invalid_option_adaptive_exit_config"
@@ -8888,6 +9067,19 @@ class KiteTradingBot:
                 ),
                 adaptive_runner_gap_r=(
                     adaptive_exit_values[4] if adaptive_exit_values else None
+                ),
+                profit_lock_enabled=(
+                    option_adaptive_exit
+                    and self._paper_change_enabled("profit_lock_v2")
+                ),
+                profit_lock_r=(
+                    self._paper_option_exit_tier_values(symbol)[1]
+                    if option_adaptive_exit
+                    else 0.15
+                ),
+                trail_close_confirm_enabled=(
+                    option_adaptive_exit
+                    and self._paper_change_enabled("trail_close_confirm_v2")
                 ),
                 milestone_window_minutes=int(
                     self.config.get("option_milestone_window_minutes", 5)
@@ -9034,6 +9226,82 @@ class KiteTradingBot:
                 if strategy_variant == "paper_underlying_support_reversal"
                 else "scored"
             )
+            sell_entry_timestamp = datetime.now(IST)
+            alert["entry_time"] = sell_entry_timestamp.isoformat(
+                timespec="seconds"
+            )
+            signal_timestamp = self._journal_datetime(alert.get("signal_time"))
+            if signal_timestamp is not None:
+                alert["signal_to_entry_delay_seconds"] = max(
+                    (sell_entry_timestamp - signal_timestamp).total_seconds(),
+                    0.0,
+                )
+            if self._options_enabled() and "_" in symbol:
+                signal_premium = self._positive_quote_value(
+                    alert.get("signal_premium", alert.get("signal_ltp"))
+                )
+                alert.update(
+                    {
+                        "entry_quote_ltp": sell_entry_quote_metrics["ltp"],
+                        "entry_quote_bid": sell_entry_quote_metrics["bid"],
+                        "entry_quote_ask": sell_entry_quote_metrics["ask"],
+                        "entry_quote_timestamp": (
+                            sell_entry_quote_metrics["timestamp"].isoformat()
+                            if sell_entry_quote_metrics["timestamp"] is not None
+                            else None
+                        ),
+                        "entry_fill_source": "last_price",
+                        "order_premium": float(price),
+                        "order_bid": sell_entry_quote_metrics["bid"],
+                        "order_ask": sell_entry_quote_metrics["ask"],
+                        "order_ltp": sell_entry_quote_metrics["ltp"],
+                        "order_quote_age_seconds": sell_entry_quote_metrics[
+                            "age_seconds"
+                        ],
+                        "fill_premium": float(price),
+                        "fill_bid": sell_entry_quote_metrics["bid"],
+                        "fill_ask": sell_entry_quote_metrics["ask"],
+                        "fill_ltp": sell_entry_quote_metrics["ltp"],
+                        "fill_quote_age_seconds": sell_entry_quote_metrics[
+                            "age_seconds"
+                        ],
+                        "fill_rule": "last_price",
+                        "fill_percent_change_from_signal": (
+                            (float(price) - signal_premium)
+                            / signal_premium
+                            * 100.0
+                            if signal_premium is not None
+                            else None
+                        ),
+                        "paper_change_flags_at_entry": self._active_paper_change_flags(),
+                        "paper_exit_flags_at_entry": [
+                            flag
+                            for flag in (
+                                "runner_gap_v2",
+                                "profit_lock_v2",
+                                "trail_close_confirm_v2",
+                            )
+                            if self._paper_change_enabled(flag)
+                        ],
+                        "paper_exit_parameters": {
+                            "runner_gap_r": (
+                                self.intraday_manager.active_positions[symbol].get(
+                                    "adaptive_runner_gap_r"
+                                )
+                            ),
+                            "profit_lock_r": (
+                                self.intraday_manager.active_positions[symbol].get(
+                                    "profit_lock_r"
+                                )
+                            ),
+                            "trail_close_confirm": (
+                                self.intraday_manager.active_positions[symbol].get(
+                                    "trail_close_confirm_enabled"
+                                )
+                            ),
+                        },
+                    }
+                )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
             alert["trade_id"] = telegram_trade_id

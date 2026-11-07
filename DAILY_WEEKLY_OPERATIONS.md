@@ -24,6 +24,32 @@ The Parquet files use Snappy compression. `trades.parquet` contains the ticker, 
 
 Paper journal P&L is the recorded simulated result and does not deduct brokerage, taxes, or slippage. Use realistic non-zero costs in historical replay before considering a strategy change. The 10-trade threshold is only a minimum screen, not evidence of a durable edge; patterns in the reports are descriptive, not causal, and the feedback layer never changes trading or live-order settings.
 
+### PAPER option exit experiments
+
+The following exit flags are PAPER-only and default on; LIVE order behavior is
+unchanged. Set any flag to `false` in the active runtime config to return that
+policy to its prior behavior:
+
+- `runner_gap_v2`: after the existing 2R runner activation, use a 1.5R gap
+  (the prior gap is 1R).
+- `profit_lock_v2`: after the unchanged 0.5R threshold, protect 0.15R above
+  entry (or below entry for a short premium position).
+- `trail_close_confirm_v2`: require the option's one-minute candle to close
+  beyond the trailing/runner level, then exit at the next available valid bid.
+
+Index options (`NIFTY`, `BANKNIFTY`) and stock options can be configured
+independently under `paper_exit_tiers.index_options` and
+`paper_exit_tiers.stock_options`, using `runner_gap_r` and `profit_lock_r`.
+Both tiers default to 1.5R and 0.15R.
+
+Exit precedence is explicit: the initial hard stop is checked first and remains
+immediate; the profit-lock stop is checked next and remains immediate; only
+the adaptive trailing/runner stop is delayed by close confirmation. If the
+same sampled quote reaches multiple levels, the initial stop wins, then the
+profit lock, then a confirmed trail. A trailing wick without a confirming
+one-minute close does not exit. The two-consecutive-bid variant is an offline
+replay only and is not a production flag.
+
 ### Reporting resource logs and legacy decision migration
 
 Each reporting step adds an INFO log with the source files, rows, row groups,

@@ -43,6 +43,22 @@ Outcome / follow-up / rollback:
 - Validation and result: Focused weekly reporting tests passed; the final full suite passed (473 passed, 1 skipped) after 14:30 IST with no live-entry time-dependent failures. Changed Python files compiled, and `git diff --check` passed. On a migrated week-45 copy, the report took 3.3 seconds / 132.6 MB peak RSS; isolated legacy reads measured 1.052 seconds / 584.3 MB for Nov. 2 and 1.185 seconds / 455.3 MB for Nov. 3.
 - Outcome / follow-up / rollback: No strategy, filter, threshold, or config changes; no deployment performed. A full week-45 report requires migrating the two legacy days on a copy before running the hourly-only worker.
 
+#### DLY-2026-11-06-02
+
+- Reason: Continue the paper-options telemetry and exit-policy work approved after the read-only Phase 0 review, without changing entry filters, risk sizing, or LIVE execution.
+- Related prior entries checked: `DLY-2026-11-06-01`; the earlier replay evidence remains inconclusive (22 exact-path trades across 7 sessions, dominated by one runner trade).
+- Files:
+  - `market_bot/option_capture.py` (modified): Persist underlying minute bars and report per-contract registration/first-tick/first-candle times.
+  - `market_bot/kite_main.py` (modified): Add PAPER trade fill/exit telemetry and PAPER-only exit flags, precedence, profit-lock and trail-close-confirm logic.
+  - `market_bot/intraday_manager.py` (modified): Track initial risk, MFE time, runner and profit-lock state.
+  - `market_bot/trade_journal.py` (modified): Persist the additional trade fields and explicit manual-exit label.
+  - `market_bot/weekly_report.py` (modified): Show flag tags, fill quote metrics, exit trigger, and contract-window capture coverage.
+  - `tests/test_option_capture.py`, `tests/test_intraday_manager.py`, `tests/test_paper_reporting.py`, `tests/test_telegram_control.py`, and `tests/test_weekly_report.py` (modified): Cover capture timing, labels, reporting, and exit precedence.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document default flag values and exit precedence.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this work and its evidence status.
+- Validation and result: Phase 1 full suite passed (`477 passed, 1 skipped`). Phase 2 targeted exit, capture, report, and journal tests passed (`192 passed`). Full Phase 2 validation pending.
+- Outcome / follow-up / rollback: Phase 1 commit `dd9b704`; stop-default fix `b4a065e`. Phase 2 flags default on in PAPER and remain inactive for LIVE. Recovery-window metrics and offline replay are still pending; no performance conclusion is made.
+
 ### 2026-11-05
 
 #### DLY-2026-11-05-01

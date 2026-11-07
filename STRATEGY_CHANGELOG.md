@@ -58,6 +58,22 @@ Follow-up or reason to revisit:
 
 No completed experiments recorded yet.
 
+### EXP-2026-11-06-01
+
+- Status: running; replay and forward paper outcomes are unmeasured.
+- Problem and evidence: A seven-session replay of 22 exact-path trades was inconclusive and heavily influenced by one BANKNIFTY runner. That trade's trailing level was breached by a minute wick before the option later advanced substantially. Earlier review also found that the 0.5R break-even exits were mostly followed by moves through the original stop. These observations are hypotheses, not a representative performance result.
+- Prior related log entries checked: The 2026-10-30 corrected confirmation replay evidence and the existing option exit experiments; no valid multi-trade replay supports changing entry rules or risk sizing.
+- Hypothesis: A 1.5R runner gap after 2R, a 0.15R profit lock after the existing 0.5R threshold, and a one-minute close confirmation for trailing/runner breaches may improve paper exit behavior. Each policy has an independent PAPER-only flag so results can be attributed separately; LIVE logic and entry behavior remain unchanged.
+- Single policy being changed: PAPER exit policy only, implemented as three independently toggleable flags with configurable index-option and stock-option tiers. The flags default on per user direction; no replay result may change those defaults.
+- Code/config before: Commit `b4a065e` unified the option-stop fallback at 10%; active stop, sizing, and entry behavior are otherwise unchanged. The earlier baseline includes 22 exact-path trades across 7 sessions.
+- Baseline period and metrics: Seven replay sessions, 22 exact-path trades, net evidence inconclusive. The 2026-11-06 BANKNIFTY CE example entered at 772.20 and exited at 900.40 after a one-minute wick breach; it later reached approximately 1,066 within 30 minutes and 1,518 by close. Several 0.5R exits were later below their original stop. This is not sufficient evidence for a performance claim.
+- Test method and fixed evaluation period/sample: Replay the same 22 exact-path trades with the existing exit, each new flag independently, all flags together, the requested profit-lock values, close-confirmation and two-consecutive-bid variants, half-spread and flat 1% slippage. Report paired deltas with and without the best trade. Then observe tagged versus untagged paper results; require at least 10 closed trades before screening and do not infer causation from this small replay.
+- Change made: Implement PAPER-only `runner_gap_v2`, `profit_lock_v2`, and `trail_close_confirm_v2`; the initial stop and profit-lock remain immediate, while only trailing/runner exits require close confirmation. Phase 3 replay remains pending.
+- Results: Focused exit and reporting tests pass (`192 passed`); the full Phase 2 suite and replay are pending. No CPU/RSS feed-run measurement is available.
+- Decision and evidence: Keep the flags at their user-requested defaults for observation only. Do not claim improved returns or promote to LIVE.
+- Rollback/version if reverted: Set the relevant flag to `false` in the active runtime config and restart the PAPER process; exact flag-specific checks and steps will be recorded with Phase 4.
+- Follow-up or reason to revisit: Complete the exact-path replay, then review the tagged daily table and first 10 tagged trades for each relevant flag; disable a flag if a requested rollback threshold is met.
+
 ### EXP-2026-09-30-01
 - Status: running; performance outcome is inconclusive until closed paper trades are recorded.
 - Problem and evidence: Sept 28-30 archived sessions recorded zero BUY/SELL signals and zero opened trades. Sept 28 and 29 had 11,315 and 10,859 regular-session sideways-regime reason mentions. Sept 30 included repeated 85-point HOLDs citing missing volatility compression and breakout confirmation. Archived histories are truncated to five bars, so they cannot support a valid historical replay.

@@ -96,7 +96,7 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["adaptive_trail_activation_r"] == 1.0
     assert position["adaptive_trail_gap_r"] == 1.0
     assert position["adaptive_runner_activation_r"] == 2.0
-    assert position["adaptive_runner_gap_r"] == 1.0
+    assert position["adaptive_runner_gap_r"] == 1.5
 
 
 def test_adaptive_option_exit_uses_shared_strategy_config():
@@ -582,6 +582,163 @@ def test_adaptive_option_exit_behavior_below_one_r_is_unchanged():
         manager.active_positions["NIFTY_CE"]["adaptive_exit_mode"]
         == "breakeven"
     )
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_lock"),
+    [("BUY", 101.5), ("SELL", 98.5)],
+)
+def test_profit_lock_is_an_immediate_stop_at_configured_r(direction, expected_lock):
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        direction,
+        1,
+        100.0,
+        90.0 if direction == "BUY" else 110.0,
+        120.0 if direction == "BUY" else 80.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+        profit_lock_enabled=True,
+        profit_lock_r=0.15,
+    )
+
+    assert manager.update_trailing_stop(
+        "NIFTY_CE", 105.0 if direction == "BUY" else 95.0
+    ) is None
+    position = manager.active_positions["NIFTY_CE"]
+    assert position["profit_lock_stop"] == pytest.approx(expected_lock)
+    assert position["adaptive_exit_mode"] == "profit_lock"
+
+
+def test_paper_exit_flags_default_on_only_in_paper_mode():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+
+    assert {
+        "runner_gap_v2",
+        "profit_lock_v2",
+        "trail_close_confirm_v2",
+    }.issubset(set(bot._active_paper_change_flags()))
+    bot.config["profit_lock_v2"] = False
+    assert not bot._paper_change_enabled("profit_lock_v2")
+    bot.live_orders_enabled = True
+    assert not bot._paper_change_enabled("runner_gap_v2")
+
+
+def test_exit_tier_parameters_are_configurable_and_flag_off_keeps_legacy_gap():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "paper_exit_tiers": {
+            "index_options": {"runner_gap_r": 1.75, "profit_lock_r": 0.25}
+        },
+        "runner_gap_v2": False,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+
+    assert bot._paper_option_exit_tier_values("NIFTY_CE") == (1.75, 0.25)
+    assert bot._paper_option_exit_tier_values("HDFCBANK_PE") == (1.5, 0.15)
+    assert not bot._paper_change_enabled("runner_gap_v2")
+    assert IntradayManager().active_positions == {}
+
+
+def test_trailing_close_confirmation_requires_candle_close_beyond_trail():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+        trail_close_confirm_enabled=True,
+    )
+    manager.update_trailing_stop("NIFTY_CE", 120.0)
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    bot._confirm_option_trailing_close(
+        "NIFTY_CE",
+        Bar(datetime(2026, 10, 28, 10, 0), 115.0, 116.0, 105.0, 111.0, 10),
+    )
+    assert not manager.active_positions["NIFTY_CE"]["trail_close_confirmed"]
+    assert bot._check_position_exit("NIFTY_CE", 109.0) is None
+    bot._close_position.assert_not_called()
+
+    bot._confirm_option_trailing_close(
+        "NIFTY_CE",
+        Bar(datetime(2026, 10, 28, 10, 1), 111.0, 112.0, 107.0, 109.0, 10),
+    )
+    bot.option_quote_cache = {
+        "NIFTY_CE": {
+            "last_price": 115.1,
+            "bid": 115.0,
+            "ask": 115.2,
+            "timestamp": datetime.now(ZoneInfo("Asia/Kolkata")),
+        }
+    }
+    assert bot._check_position_exit("NIFTY_CE", 115.0) == "TRAILING_STOP"
+    bot._close_position.assert_called_once_with(
+        "NIFTY_CE", 115.0, "TRAILING_STOP"
+    )
+
+
+def test_profit_lock_is_classified_as_profit_not_stop_loss():
+    assert KiteTradingBot._exit_reason_category("PROFIT_LOCK") == "TRAILING_PROFIT"
+
+
+def test_profit_lock_exit_precedes_trail_and_does_not_use_stop_loss_reason():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+        profit_lock_enabled=True,
+        profit_lock_r=0.15,
+        trail_close_confirm_enabled=True,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY_CE", 105.0) is None
+    assert bot._check_position_exit("NIFTY_CE", 101.4) == "PROFIT_LOCK"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 101.4, "PROFIT_LOCK")
+
+
+def test_initial_stop_remains_immediate_with_close_confirmation_enabled():
+    manager = IntradayManager()
+    manager.register_position(
+        "NIFTY_CE",
+        "BUY",
+        1,
+        100.0,
+        90.0,
+        120.0,
+        trailing_enabled=True,
+        exit_strategy="paper_option_adaptive",
+        profit_lock_enabled=True,
+        trail_close_confirm_enabled=True,
+    )
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.intraday_manager = manager
+    bot._close_position = Mock()
+
+    assert bot._check_position_exit("NIFTY_CE", 89.0) == "STOP_LOSS"
+    bot._close_position.assert_called_once_with("NIFTY_CE", 89.0, "STOP_LOSS")
 
 
 def test_adaptive_option_exit_mode_and_mfe_are_persisted():
