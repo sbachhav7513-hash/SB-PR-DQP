@@ -40,6 +40,7 @@ Thumbs.db
 *.jsonl
 *.jsonl.gz
 paper_trading_data/**/decisions.csv
+paper_trading_data/**/.weekly_review_stage_*.md
 /backtest_artifacts/
 /data_uploads/
 /reports/
