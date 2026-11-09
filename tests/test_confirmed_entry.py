@@ -446,6 +446,63 @@ def test_entry_telemetry_and_signal_id_are_shared_across_decision_records(
     assert trade_opened["outcome_detail"] == "trade_opened"
 
 
+def test_entry_feature_telemetry_has_unique_uid_and_explains_nulls(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    bot = _bot(tmp_path, [], start)
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot._option_capture_signal_ids = {
+        "NIFTY_CE": f"NIFTY_CE|CE|{start.isoformat()}"
+    }
+    signal_bar = Bar(start, 100, 102, 99, 101, 1000)
+    option_bar = Bar(start, 20, 22, 19, 21, 100)
+    gate_measurements = {
+        "ltp": 21.0,
+        "bid": 20.9,
+        "ask": 21.1,
+        "quote_age_seconds": 1.0,
+        "support_resistance_level": 100.0,
+        "support_resistance_touches": 2,
+    }
+
+    first = bot._entry_signal_telemetry(
+        "NIFTY_CE",
+        "BUY",
+        80,
+        [signal_bar],
+        [{"close": 100}, {"close": 101}],
+        option_bar,
+        None,
+        gate_measurements,
+    )
+    second = bot._entry_signal_telemetry(
+        "NIFTY_CE",
+        "BUY",
+        80,
+        [signal_bar],
+        [{"close": 100}, {"close": 101}],
+        option_bar,
+        None,
+        gate_measurements,
+    )
+
+    assert first["signal_id"] == second["signal_id"]
+    assert first["signal_uid"] != second["signal_uid"]
+    assert first["entry_feature_values"]["signal_uid"] == first["signal_uid"]
+    assert first["entry_feature_values"]["pivot_count"] == 2
+    assert first["entry_feature_values"]["signal_premium"] == 21.0
+    assert first["entry_feature_values"]["regime_range_pct"] is None
+    assert (
+        first["entry_feature_null_reasons"]["regime_range_pct"]
+        == "insufficient_history"
+    )
+    assert first["entry_feature_values"]["prior_30m_option_move_pct"] is None
+    assert (
+        first["entry_feature_null_reasons"]["prior_30m_option_move_pct"]
+        == "insufficient_pre_signal_option_history"
+    )
+
+
 def test_second_same_leg_signal_is_logged_and_ignored_while_pending(tmp_path):
     start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
     original = _pending("NIFTY_CE", start, 100.0)

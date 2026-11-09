@@ -482,6 +482,10 @@ class IntradayManager:
         adaptive_runner_gap_r: Optional[float] = None,
         adaptive_exit_mode: Optional[str] = None,
         max_favorable_r: float = 0.0,
+        mfe_r: float = 0.0,
+        mfe_time: Optional[str] = None,
+        mae_r: float = 0.0,
+        mae_time: Optional[str] = None,
         highest_price: Optional[float] = None,
         lowest_price: Optional[float] = None,
         trailing_active: bool = False,
@@ -604,6 +608,10 @@ class IntradayManager:
             "adaptive_runner_gap_r": adaptive_runner_gap_r,
             "adaptive_exit_mode": adaptive_exit_mode or "initial_stop",
             "max_favorable_r": max(float(max_favorable_r), 0.0),
+            "mfe_r": float(mfe_r),
+            "mfe_time": mfe_time or registered_at.isoformat(),
+            "mae_r": float(mae_r),
+            "mae_time": mae_time or registered_at.isoformat(),
             "milestone_window_minutes": max(int(milestone_window_minutes), 1),
             "strong_milestone_window_minutes": max(
                 int(strong_milestone_window_minutes), 1

@@ -308,7 +308,12 @@ def _recent_parquet_records(
                 step.rows = len(frame)
                 day_records = frame.to_dict(orient="records")
                 for row in day_records:
-                    for field in ("reasons", "news_headlines"):
+                    for field in (
+                        "reasons",
+                        "news_headlines",
+                        "entry_feature_values",
+                        "entry_feature_null_reasons",
+                    ):
                         value = row.get(field)
                         if isinstance(value, str):
                             try:
@@ -1052,6 +1057,19 @@ def _date_records(
 
     if not records:
         records = _load_jsonl_for_date(path, target_date)
+    for record in records:
+        for field in ("entry_feature_values", "entry_feature_null_reasons"):
+            value = record.get(field)
+            if isinstance(value, str):
+                try:
+                    record[field] = json.loads(value)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Could not decode %s for trade %s",
+                        field,
+                        record.get("trade_id", record.get("signal_uid", "unknown")),
+                    )
+                    record[field] = {}
     return records
 
 
@@ -1090,6 +1108,9 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "support_reclaim_result", "support_distance_pct",
             "signal_to_entry_delay_seconds", "holding_time_seconds",
             "manual_exit", "manual_exit_reason", "paper_change_flags_at_entry",
+            "signal_uid", "order_time", "tier", "entry_feature_values",
+            "entry_feature_null_reasons", "mfe_r", "mfe_time", "mae_r",
+            "mae_time",
             "paper_change_flags_at_exit", "paper_exit_flags_at_entry",
             "paper_exit_flags_at_exit", "paper_exit_parameters",
             "exit_trigger_price",
@@ -1731,6 +1752,127 @@ def write_daily_review(
         )
     else:
         lines.append("| No closed trades | - | - | - | - | 0.00 | - | - | - | - | - | - | - | - |")
+    feature_names = (
+        "regime_label",
+        "regime_range_pct",
+        "regime_20_bar_move_pct",
+        "pivot_count",
+        "pivot_level",
+        "distance_to_pivot_pct",
+        "near_recent_high",
+        "distance_to_recent_high_pct",
+        "near_recent_low",
+        "distance_to_recent_low_pct",
+        "ema_fast_value",
+        "ema_slow_value",
+        "ema_state",
+        "macd_value",
+        "macd_state",
+        "rsi_value",
+        "rsi_state",
+        "adx_value",
+        "adx_state",
+        "option_candle_body_ratio",
+        "option_candle_body_ratio_threshold",
+        "option_candle_direction_rule",
+        "prior_30m_underlying_move_pct",
+        "prior_60m_underlying_move_pct",
+        "prior_30m_option_move_pct",
+        "prior_60m_option_move_pct",
+        "signal_id",
+        "signal_uid",
+        "signal_time",
+        "signal_premium",
+        "confirmation_time",
+        "confirmation_ltp",
+        "order_time",
+        "fill_bid",
+        "fill_ask",
+        "fill_ltp",
+        "fill_quote_age_seconds",
+        "signal_to_fill_pct",
+        "tier",
+        "lot_size",
+        "lots",
+        "quantity",
+        "risk_amount",
+        "risk_cap",
+        "time_of_day_bucket",
+        "active_paper_change_flags",
+        "paper_change_attributions",
+        "mfe_r",
+        "mfe_time",
+        "mae_r",
+        "mae_time",
+    )
+    feature_values_by_trade = []
+    for trade in trades:
+        values = trade.get("entry_feature_values")
+        if isinstance(values, str):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                values = {}
+        feature_values_by_trade.append(
+            values if isinstance(values, dict) else {}
+        )
+    feature_denominator = len(trades)
+    lines.extend(["", "## Entry Features"])
+    if trades:
+        for trade, values in zip(trades, feature_values_by_trade):
+            compact = (
+                f"regime={values.get('regime_label', 'N/A')}/"
+                f"{values.get('regime_range_pct', 'N/A')}%/"
+                f"{values.get('regime_20_bar_move_pct', 'N/A')}%; "
+                f"pivot={values.get('pivot_count', 'N/A')}@"
+                f"{values.get('pivot_level', 'N/A')}; "
+                f"near H/L={values.get('near_recent_high', 'N/A')}/"
+                f"{values.get('near_recent_low', 'N/A')}; "
+                f"EMA/MACD/RSI/ADX={values.get('ema_state', 'N/A')}/"
+                f"{values.get('macd_state', 'N/A')}/"
+                f"{values.get('rsi_state', 'N/A')}/"
+                f"{values.get('adx_state', 'N/A')}; "
+                f"option momentum={values.get('option_candle_body_ratio', 'N/A')}/"
+                f"{values.get('option_candle_direction_rule', 'N/A')}; "
+                f"prior U30/U60/O30/O60="
+                f"{values.get('prior_30m_underlying_move_pct', 'N/A')}/"
+                f"{values.get('prior_60m_underlying_move_pct', 'N/A')}/"
+                f"{values.get('prior_30m_option_move_pct', 'N/A')}/"
+                f"{values.get('prior_60m_option_move_pct', 'N/A')}; "
+                f"signal={values.get('signal_uid', 'N/A')}@"
+                f"{values.get('signal_time', 'N/A')} premium="
+                f"{values.get('signal_premium', 'N/A')}; "
+                f"tier/lots/qty={values.get('tier', 'N/A')}/"
+                f"{values.get('lots', 'N/A')}/{values.get('quantity', 'N/A')}; "
+                f"risk/cap={values.get('risk_amount', 'N/A')}/"
+                f"{values.get('risk_cap', 'N/A')}; "
+                f"bucket={values.get('time_of_day_bucket', 'N/A')}; "
+                f"MFE/MAE={values.get('mfe_r', 'N/A')}@"
+                f"{values.get('mfe_time', 'N/A')}/"
+                f"{values.get('mae_r', 'N/A')}@{values.get('mae_time', 'N/A')}"
+            ).replace("|", "/")
+            lines.append(
+                f"- {str(trade.get('ticker') or 'UNKNOWN').replace('|', '/')} "
+                f"({trade.get('signal_uid') or 'no signal_uid'}): {compact}"
+            )
+        lines.extend(
+            [
+                "",
+                "| Field | Populated | Share |",
+                "| --- | ---: | ---: |",
+            ]
+        )
+        for field in feature_names:
+            populated = sum(
+                field in values and values[field] is not None
+                for values in feature_values_by_trade
+            )
+            lines.append(
+                f"| {field} | {populated}/{feature_denominator} | "
+                f"{100 * populated / feature_denominator:.1f}% |"
+            )
+    else:
+        lines.append("- No closed trades.")
     lines.extend(
         [
             "",

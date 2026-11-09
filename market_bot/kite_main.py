@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from uuid import uuid4
 from collections import deque
 from datetime import datetime, time as time_type, timedelta
 from pathlib import Path
@@ -57,7 +58,7 @@ from .strategy_config import (
     resolve_execution_mode,
     strategy_config_hash,
 )
-from .strategy import ema
+from .strategy import ema, rsi
 from .stop_reentry_journal import StopReentryJournal
 from .telegram_notifier import TelegramNotifier
 from .telegram_control.commands import process_telegram_command
@@ -2599,6 +2600,10 @@ class KiteTradingBot:
                 ),
                 adaptive_exit_mode=trade.get("adaptive_exit_mode"),
                 max_favorable_r=float(trade.get("max_favorable_r", 0.0) or 0.0),
+                mfe_r=float(trade.get("mfe_r", 0.0) or 0.0),
+                mfe_time=trade.get("mfe_time"),
+                mae_r=float(trade.get("mae_r", 0.0) or 0.0),
+                mae_time=trade.get("mae_time"),
                 highest_price=(
                     float(trade["highest_price"])
                     if trade.get("highest_price") is not None
@@ -3251,6 +3256,287 @@ class KiteTradingBot:
         leg = "CE" if symbol.endswith("_CE") else "PE"
         return f"{symbol}|{leg}|{signal_time.isoformat()}"
 
+    def _entry_feature_snapshot(
+        self,
+        symbol: str,
+        signal: str,
+        signal_bars: list[Bar],
+        history: list[dict],
+        option_bar: Optional[Bar],
+        strategy_variant: Optional[str],
+        gate_measurements: dict,
+        *,
+        signal_id: Optional[str],
+        signal_uid: str,
+        signal_premium: Optional[float],
+        body_ratio: Optional[float],
+        body_threshold: Optional[float],
+        direction_rule: Optional[str],
+    ) -> tuple[dict, dict]:
+        closes = []
+        for item in history:
+            try:
+                close = float(item["close"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(close) and close > 0:
+                closes.append(close)
+
+        features = {}
+        null_reasons = {}
+
+        def add(name: str, value, reason: Optional[str] = None) -> None:
+            features[name] = value
+            if value is None:
+                null_reasons[name] = reason or "not_available"
+
+        recent_high = max(closes[-11:-1]) if len(closes) >= 11 else None
+        recent_low = min(closes[-11:-1]) if len(closes) >= 11 else None
+        current_close = closes[-1] if closes else None
+        range_pct = (
+            (max(closes[-10:-1]) - min(closes[-10:-1]))
+            / max(current_close, 1e-9)
+            * 100.0
+            if len(closes) >= 21 and current_close is not None
+            else None
+        )
+        move_20_pct = (
+            abs(current_close - closes[-20]) / closes[-20] * 100.0
+            if len(closes) >= 21 and current_close is not None
+            else None
+        )
+        proximity = float(self.config.get("signal_proximity_pct", 0.005))
+        pivot_level = gate_measurements.get("support_resistance_level")
+        try:
+            pivot_level = float(pivot_level) if pivot_level is not None else None
+        except (TypeError, ValueError, OverflowError):
+            pivot_level = None
+        if pivot_level is not None and (
+            not math.isfinite(pivot_level) or pivot_level <= 0
+        ):
+            pivot_level = None
+
+        fast_values = ema(closes, int(self.config.get("ema_fast", 9)))
+        slow_values = ema(closes, int(self.config.get("ema_slow", 21)))
+        fast_value = fast_values[-1] if fast_values else None
+        slow_value = slow_values[-1] if slow_values else None
+        macd_value = (
+            fast_value - slow_value
+            if fast_value is not None and slow_value is not None
+            else None
+        )
+        prior_macd = (
+            fast_values[-2] - slow_values[-2]
+            if len(fast_values) >= 2 and len(slow_values) >= 2
+            else macd_value
+        )
+        ema_state = None
+        if fast_value is not None and slow_value is not None:
+            ema_state = (
+                "bullish"
+                if fast_value > slow_value
+                else "bearish"
+                if fast_value < slow_value
+                else "flat"
+            )
+        macd_state = None
+        if macd_value is not None and prior_macd is not None:
+            macd_state = (
+                "improving"
+                if macd_value > prior_macd
+                else "weakening"
+                if macd_value < prior_macd
+                else "flat"
+            )
+        try:
+            rsi_values = rsi(closes, int(self.config.get("rsi_period", 14)))
+        except (TypeError, ValueError, OverflowError):
+            rsi_values = []
+        rsi_value = rsi_values[-1] if rsi_values else None
+        if rsi_value is not None:
+            rsi_state = (
+                "above_50"
+                if rsi_value > 50
+                else "below_50"
+                if rsi_value < 50
+                else "at_50"
+            )
+        else:
+            rsi_state = None
+        try:
+            adx_value = calculate_adx(history)
+        except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+            logger.exception(
+                "[%s] Could not calculate entry-feature ADX", symbol
+            )
+            adx_value = None
+
+        option_moves = {30: None, 60: None}
+        option_history = []
+        if symbol.endswith(("_CE", "_PE")):
+            token = (self.config.get("instrument_tokens", {}) or {}).get(symbol)
+            builder = getattr(self, "bar_builder", None)
+            if token is not None and builder is not None:
+                try:
+                    option_history = builder.get_bars(int(token), limit=61)
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    logger.exception(
+                        "[%s] Could not read pre-signal option candles", symbol
+                    )
+            if option_bar is not None and (
+                not option_history
+                or option_history[-1].timestamp != option_bar.timestamp
+            ):
+                option_history.append(option_bar)
+            option_closes = []
+            for bar in option_history:
+                try:
+                    value = float(bar.close)
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    option_closes.append(value)
+            for minutes in (30, 60):
+                if len(option_closes) > minutes:
+                    option_moves[minutes] = (
+                        option_closes[-1] / option_closes[-minutes - 1] - 1
+                    ) * 100.0
+
+        signal_time = (
+            self._journal_datetime(signal_bars[-1].timestamp)
+            if signal_bars
+            else None
+        )
+        is_option = symbol.endswith(("_CE", "_PE"))
+        underlying = self._underlying_symbol(symbol)
+        tier = (
+            "index"
+            if underlying in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+            else "stock"
+            if is_option
+            else None
+        )
+        add("regime_label", classify_price_regime(closes))
+        add("regime_range_pct", range_pct, "insufficient_history")
+        add("regime_20_bar_move_pct", move_20_pct, "insufficient_history")
+        add("pivot_count", gate_measurements.get("support_resistance_touches"), "not_computed_by_route")
+        add("pivot_level", pivot_level, "not_computed_by_route")
+        add(
+            "distance_to_pivot_pct",
+            abs(current_close - pivot_level) / pivot_level * 100.0
+            if current_close is not None and pivot_level is not None
+            else None,
+            "not_computed_by_route",
+        )
+        add(
+            "near_recent_high",
+            current_close >= recent_high * (1.0 - proximity)
+            if current_close is not None and recent_high is not None
+            else None,
+            "insufficient_history",
+        )
+        add(
+            "distance_to_recent_high_pct",
+            abs(recent_high - current_close) / recent_high * 100.0
+            if current_close is not None and recent_high is not None
+            else None,
+            "insufficient_history",
+        )
+        add(
+            "near_recent_low",
+            current_close <= recent_low * (1.0 + proximity)
+            if current_close is not None and recent_low is not None
+            else None,
+            "insufficient_history",
+        )
+        add(
+            "distance_to_recent_low_pct",
+            abs(current_close - recent_low) / recent_low * 100.0
+            if current_close is not None and recent_low is not None
+            else None,
+            "insufficient_history",
+        )
+        add("ema_fast_value", fast_value, "insufficient_history")
+        add("ema_slow_value", slow_value, "insufficient_history")
+        add("ema_state", ema_state, "insufficient_history")
+        add("macd_value", macd_value, "insufficient_history")
+        add("macd_state", macd_state, "insufficient_history")
+        add("rsi_value", rsi_value, "insufficient_history")
+        add("rsi_state", rsi_state, "insufficient_history")
+        add("adx_value", adx_value, "insufficient_history")
+        add(
+            "adx_state",
+            "above_threshold"
+            if adx_value is not None
+            and adx_value >= float(self.config.get("min_adx", 18.0))
+            else "below_threshold"
+            if adx_value is not None
+            else None,
+            "insufficient_history",
+        )
+        add("option_candle_body_ratio", body_ratio, "no_option_candle")
+        add("option_candle_body_ratio_threshold", body_threshold, "not_applicable")
+        add("option_candle_direction_rule", direction_rule, "not_available")
+        for minutes in (30, 60):
+            move = (
+                (closes[-1] / closes[-minutes - 1] - 1) * 100.0
+                if len(closes) > minutes
+                else None
+            )
+            add(
+                f"prior_{minutes}m_underlying_move_pct",
+                move,
+                "insufficient_history",
+            )
+            add(
+                f"prior_{minutes}m_option_move_pct",
+                option_moves[minutes],
+                "insufficient_pre_signal_option_history",
+            )
+        add("signal_id", signal_id, "not_applicable" if not is_option else "signal_id_unavailable")
+        add("signal_uid", signal_uid)
+        add(
+            "signal_time",
+            signal_time.isoformat() if signal_time is not None else None,
+            "no_signal_bar",
+        )
+        add("signal_premium", signal_premium, "no_signal_quote")
+        for key, reason in (
+            ("confirmation_time", "not_confirmed_yet"),
+            ("confirmation_ltp", "not_confirmed_yet"),
+            ("order_time", "not_ordered_yet"),
+            ("fill_bid", "not_filled_yet"),
+            ("fill_ask", "not_filled_yet"),
+            ("fill_ltp", "not_filled_yet"),
+            ("fill_quote_age_seconds", "not_filled_yet"),
+            ("signal_to_fill_pct", "not_filled_yet"),
+            ("lots", "not_sized_yet"),
+            ("quantity", "not_sized_yet"),
+            ("risk_amount", "not_sized_yet"),
+            ("risk_cap", "not_sized_yet"),
+            ("time_of_day_bucket", "entry_time_not_known_yet"),
+            ("mfe_r", "trade_not_open_yet"),
+            ("mfe_time", "trade_not_open_yet"),
+            ("mae_r", "trade_not_open_yet"),
+            ("mae_time", "trade_not_open_yet"),
+        ):
+            add(key, None, reason)
+        contract = self._option_contract_metadata(symbol, signal) if is_option else {}
+        add("tier", tier, "not_applicable" if not is_option else "tier_unavailable")
+        add(
+            "lot_size",
+            contract.get("lot_size") if contract else None,
+            "not_applicable" if not is_option else "contract_metadata_unavailable",
+        )
+        add("active_paper_change_flags", self._active_paper_change_flags())
+        add(
+            "paper_change_attributions",
+            list(
+                getattr(self, "_signal_change_attributions", {}).get(symbol, [])
+            ),
+        )
+        return features, null_reasons
+
     def _entry_signal_telemetry(
         self,
         symbol: str,
@@ -3357,8 +3643,54 @@ class KiteTradingBot:
                 ZeroDivisionError,
             ):
                 logger.exception("Could not calculate entry ATR telemetry for %s", symbol)
+        signal_uid = uuid4().hex
+        entry_feature_values, entry_feature_null_reasons = (
+            self._entry_feature_snapshot(
+                symbol,
+                signal,
+                signal_bars,
+                history,
+                option_bar,
+                strategy_variant,
+                gate_measurements,
+                signal_id=signal_id,
+                signal_uid=signal_uid,
+                signal_premium=gate_measurements.get(
+                    "signal_premium", gate_measurements.get("ltp")
+                ),
+                body_ratio=momentum_body_ratio,
+                body_threshold=body_ratio_threshold,
+                direction_rule=direction_rule,
+            )
+        )
+        snapshots = getattr(self, "_pending_entry_feature_snapshots", None)
+        if snapshots is None:
+            snapshots = {}
+            self._pending_entry_feature_snapshots = snapshots
+        snapshots[symbol] = {
+            "signal_uid": signal_uid,
+            "values": entry_feature_values,
+            "null_reasons": entry_feature_null_reasons,
+        }
         return {
             "signal_id": signal_id,
+            "signal_uid": signal_uid,
+            "signal_time": (
+                self._journal_datetime(signal_bars[-1].timestamp)
+                if signal_bars
+                and self._journal_datetime(signal_bars[-1].timestamp)
+                is not None
+                else None
+            ),
+            "signal_premium": gate_measurements.get(
+                "signal_premium", gate_measurements.get("ltp")
+            ),
+            "signal_bid": gate_measurements.get("bid"),
+            "signal_ask": gate_measurements.get("ask"),
+            "signal_ltp": gate_measurements.get("ltp"),
+            "signal_quote_age_seconds": gate_measurements.get(
+                "quote_age_seconds"
+            ),
             "entry_regime": classify_price_regime(
                 [float(bar["close"]) for bar in history if bar.get("close") is not None]
             ),
@@ -3391,7 +3723,176 @@ class KiteTradingBot:
             "direction_rule": direction_rule,
             "paper_change_attributions": attributions,
             "active_paper_change_attributions": attributions,
+            "entry_feature_values": entry_feature_values,
+            "entry_feature_null_reasons": entry_feature_null_reasons,
         }
+
+    def _finalize_entry_feature_snapshot(
+        self, alert: dict, symbol: str, entry_time: datetime
+    ) -> None:
+        values = dict(alert.get("entry_feature_values") or {})
+        null_reasons = dict(alert.get("entry_feature_null_reasons") or {})
+        is_option = symbol.endswith(("_CE", "_PE"))
+        manager = getattr(self, "intraday_manager", None)
+        specs = (
+            getattr(manager, "contract_specs", {}).get(symbol, {})
+            if manager is not None
+            else {}
+        )
+        if is_option:
+            lot_size = alert.get("lot_size") or specs.get("lot_size")
+            try:
+                lot_size = int(lot_size) if lot_size is not None else None
+            except (TypeError, ValueError, OverflowError):
+                lot_size = None
+            if lot_size and lot_size > 0:
+                alert["lot_size"] = lot_size
+                quantity = int(alert.get("quantity", 0) or 0)
+                if quantity > 0 and quantity % lot_size == 0:
+                    alert["lots"] = quantity // lot_size
+            if alert.get("risk_amount") is None:
+                try:
+                    quantity = int(alert["quantity"])
+                    entry = float(alert["entry"])
+                    stop = float(alert["stop_loss"])
+                    multiplier = float(specs.get("multiplier", 1.0))
+                    alert["risk_amount"] = abs(entry - stop) * quantity * multiplier
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+            if alert.get("risk_cap_rupees") is None:
+                entry_evaluation = getattr(
+                    self, "_pending_entry_evaluations", {}
+                ).get(symbol, {})
+                cap = entry_evaluation.get(
+                    "risk_cap_rupees",
+                    entry_evaluation.get(
+                        "risk_cap_inr",
+                        alert.get("paper_risk_cap_rupees"),
+                    ),
+                )
+                if cap is None and not self._paper_change_enabled(
+                    "capital_based_risk_v2"
+                ):
+                    cap = self.config.get("max_risk_per_trade")
+                if cap is not None:
+                    alert["risk_cap_rupees"] = cap
+            alert["tier"] = (
+                "index"
+                if self._underlying_symbol(symbol)
+                in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+                else "stock"
+            )
+        else:
+            alert["tier"] = None
+
+        def assign(name: str, value, reason: str) -> None:
+            values[name] = value
+            if value is None:
+                null_reasons[name] = reason
+            else:
+                null_reasons.pop(name, None)
+
+        assignments = {
+            "signal_id": ("signal_id", "signal_id_unavailable"),
+            "signal_uid": ("signal_uid", "signal_uid_unavailable"),
+            "signal_time": ("signal_time", "no_signal_bar"),
+            "signal_premium": ("signal_premium", "no_signal_quote"),
+            "confirmation_time": (
+                "confirmation_candle_time",
+                "not_confirmed",
+            ),
+            "confirmation_ltp": ("confirmation_ltp", "not_confirmed"),
+            "fill_bid": ("fill_bid", "no_fill_bid"),
+            "fill_ask": ("fill_ask", "no_fill_ask"),
+            "fill_ltp": ("fill_ltp", "no_fill_ltp"),
+            "fill_quote_age_seconds": (
+                "fill_quote_age_seconds",
+                "no_fill_quote",
+            ),
+            "signal_to_fill_pct": (
+                "fill_percent_change_from_signal",
+                "no_signal_or_fill_premium",
+            ),
+            "tier": ("tier", "tier_unavailable"),
+            "lot_size": ("lot_size", "contract_metadata_unavailable"),
+            "lots": ("lots", "not_sized"),
+            "quantity": ("quantity", "not_sized"),
+            "risk_amount": (
+                "risk_amount",
+                "risk_amount_unavailable",
+            ),
+            "risk_cap": (
+                "risk_cap_rupees",
+                "risk_cap_unavailable",
+            ),
+            "active_paper_change_flags": (
+                "paper_change_flags_at_entry",
+                "flags_unavailable",
+            ),
+        }
+        for feature, (field, reason) in assignments.items():
+            value = alert.get(field)
+            if feature == "risk_amount" and value is None:
+                value = alert.get("paper_entry_risk_rupees")
+            assign(feature, value, reason)
+
+        if alert.get("order_time") is None:
+            alert["order_time"] = entry_time.isoformat(timespec="seconds")
+        assign("order_time", alert.get("order_time"), "order_time_unavailable")
+        assign(
+            "time_of_day_bucket",
+            self._entry_time_bucket(entry_time),
+            "entry_time_unavailable",
+        )
+        assign("mfe_r", 0.0, "trade_not_open_yet")
+        assign("mfe_time", entry_time.isoformat(), "trade_not_open_yet")
+        assign("mae_r", 0.0, "trade_not_open_yet")
+        assign("mae_time", entry_time.isoformat(), "trade_not_open_yet")
+        alert["entry_feature_values"] = values
+        alert["entry_feature_null_reasons"] = null_reasons
+        alert["mfe_r"] = 0.0
+        alert["mfe_time"] = entry_time.isoformat()
+        alert["mae_r"] = 0.0
+        alert["mae_time"] = entry_time.isoformat()
+        pending_snapshots = getattr(
+            self, "_pending_entry_feature_snapshots", {}
+        )
+        pending_snapshot = pending_snapshots.get(symbol)
+        if (
+            isinstance(pending_snapshot, dict)
+            and pending_snapshot.get("signal_uid") == alert.get("signal_uid")
+        ):
+            pending_snapshot["values"] = values
+            pending_snapshot["null_reasons"] = null_reasons
+        position = getattr(manager, "active_positions", {}).get(symbol)
+        if position is not None:
+            position["entry_feature_values"] = values
+            position["entry_feature_null_reasons"] = null_reasons
+            position["mfe_r"] = 0.0
+            position["mfe_time"] = alert["mfe_time"]
+            position["mae_r"] = 0.0
+            position["mae_time"] = alert["mae_time"]
+
+    @staticmethod
+    def _entry_time_bucket(entry_time: datetime) -> str:
+        local_entry_time = (
+            entry_time.replace(tzinfo=IST)
+            if entry_time.tzinfo is None
+            else entry_time.astimezone(IST)
+        )
+        current = local_entry_time.time()
+        boundaries = (
+            (time_type(9, 15), time_type(10, 0), "09:15-10:00"),
+            (time_type(10, 0), time_type(11, 0), "10:00-11:00"),
+            (time_type(11, 0), time_type(12, 0), "11:00-12:00"),
+            (time_type(12, 0), time_type(13, 0), "12:00-13:00"),
+            (time_type(13, 0), time_type(14, 0), "13:00-14:00"),
+            (time_type(14, 0), time_type(15, 30), "14:00-15:30"),
+        )
+        for start, end, label in boundaries:
+            if start <= current < end:
+                return label
+        return "outside_regular_session"
 
     def _register_option_signal_capture(
         self,
@@ -3471,6 +3972,7 @@ class KiteTradingBot:
             "event": "entry_confirmation",
             "confirmation_event": event,
             "signal_id": pending["signal_id"],
+            "signal_uid": pending.get("signal_uid"),
             "ticker": pending["symbol"],
             "contract_id": pending["contract_id"],
             "strike": pending.get("strike"),
@@ -3491,6 +3993,10 @@ class KiteTradingBot:
             "signal_ask": pending["signal_ask"],
             "signal_ltp": pending["signal_ltp"],
             "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
+            "entry_feature_values": pending.get("entry_feature_values", {}),
+            "entry_feature_null_reasons": pending.get(
+                "entry_feature_null_reasons", {}
+            ),
             "gate_measurements": gate_measurements,
             "quote_source": gate_measurements.get("quote_source"),
             "quote_age_seconds": gate_measurements.get("quote_age_seconds"),
@@ -3549,6 +4055,26 @@ class KiteTradingBot:
             "ema_slow_value": pending["ema_slow_value"],
             **fields,
         }
+        if event == "confirmed_trade":
+            trade = getattr(self, "trade_journal", None)
+            trade_record = (
+                trade.get_open_trade(pending["symbol"], "BUY")
+                if trade is not None
+                else None
+            )
+            if isinstance(trade_record, dict):
+                for key in (
+                    "signal_uid",
+                    "entry_feature_values",
+                    "entry_feature_null_reasons",
+                    "order_time",
+                    "tier",
+                    "quantity",
+                    "lots",
+                    "risk_amount",
+                    "risk_cap_rupees",
+                ):
+                    payload[key] = trade_record.get(key)
         journal.log_decision(payload)
         writer = getattr(self, "option_capture_writer", None)
         if writer is not None:
@@ -4206,6 +4732,7 @@ class KiteTradingBot:
             )
             metadata = {
                 "signal_id": pending["signal_id"],
+                "signal_uid": pending.get("signal_uid"),
                 "entry_mode": "confirmed",
                 "route": pending["route"],
                 "contract_id": pending["contract_id"],
@@ -4217,6 +4744,7 @@ class KiteTradingBot:
                 "signal_ltp": pending["signal_ltp"],
                 "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
                 "confirmation_candle_time": confirmation_time.isoformat(),
+                "order_time": now.isoformat(timespec="seconds"),
                 "confirmation_close": close,
                 "confirmation_result": "passed",
                 "confirmation_bid": metrics["bid"],
@@ -4263,6 +4791,12 @@ class KiteTradingBot:
                     "momentum_body_ratio_threshold"
                 ),
                 "direction_rule": pending.get("direction_rule"),
+                "entry_feature_values": pending.get(
+                    "entry_feature_values", {}
+                ),
+                "entry_feature_null_reasons": pending.get(
+                    "entry_feature_null_reasons", {}
+                ),
             }
             gate_contexts = getattr(
                 self, "_signal_change_gate_evaluations", None
@@ -4339,6 +4873,7 @@ class KiteTradingBot:
                 "confirmed_trade",
                 now,
                 confirmation_candle_time=confirmation_time.isoformat(),
+                order_time=metadata["order_time"],
                 confirmation_close=close,
                 confirmation_result="passed",
                 confirmation_bid=metrics["bid"],
@@ -5202,12 +5737,22 @@ class KiteTradingBot:
                         entry_telemetry=entry_telemetry,
                     )
         elif trade_action == "SELL":
+            entry_telemetry = self._entry_signal_telemetry(
+                symbol,
+                market_score.signal,
+                market_score.score,
+                signal_bars,
+                history,
+                bar,
+                market_score.strategy_variant,
+            )
             outcome = self._handle_sell_signal(
                 symbol,
                 bar.close,
                 market_score.score,
                 strategy_variant=market_score.strategy_variant,
                 minimum_signal_score=position_minimum_score,
+                entry_telemetry=entry_telemetry,
             )
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
@@ -5426,6 +5971,78 @@ class KiteTradingBot:
             "in_spread": in_spread,
             "valid": fresh and in_spread,
         }
+
+    def _record_bid_excursions(self, symbol: str, tick: Tick) -> None:
+        if not getattr(self, "paper_trading_enabled", False) or getattr(
+            self, "live_orders_enabled", False
+        ):
+            return
+        position = self.intraday_manager.active_positions.get(symbol)
+        if not position:
+            return
+        tick_time = self._journal_datetime(tick.timestamp)
+        if tick_time is None:
+            return
+        quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+        metrics = self._option_quote_metrics(quote, now=tick_time)
+        if not metrics["valid"] or metrics["bid"] is None:
+            return
+        try:
+            entry = float(position["entry_price"])
+            risk = float(position["initial_risk_distance"])
+            bid = float(metrics["bid"])
+            if (
+                not all(math.isfinite(value) for value in (entry, risk, bid))
+                or risk <= 0
+            ):
+                return
+            direction = str(position["direction"]).upper()
+            observed_r = (
+                (bid - entry) / risk
+                if direction == "BUY"
+                else (entry - bid) / risk
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.exception("[%s] Could not calculate bid-based MFE/MAE", symbol)
+            return
+
+        updates = {}
+        if observed_r > float(position.get("mfe_r", 0.0)):
+            position["mfe_r"] = observed_r
+            position["mfe_time"] = tick_time.isoformat()
+            updates["mfe_r"] = observed_r
+            updates["mfe_time"] = position["mfe_time"]
+        if observed_r < float(position.get("mae_r", 0.0)):
+            position["mae_r"] = observed_r
+            position["mae_time"] = tick_time.isoformat()
+            updates["mae_r"] = observed_r
+            updates["mae_time"] = position["mae_time"]
+        if not updates:
+            return
+
+        feature_values = dict(position.get("entry_feature_values") or {})
+        feature_reasons = dict(
+            position.get("entry_feature_null_reasons") or {}
+        )
+        if "mfe_r" in updates:
+            feature_values["mfe_r"] = updates["mfe_r"]
+            feature_values["mfe_time"] = updates["mfe_time"]
+            feature_reasons.pop("mfe_r", None)
+            feature_reasons.pop("mfe_time", None)
+        if "mae_r" in updates:
+            feature_values["mae_r"] = updates["mae_r"]
+            feature_values["mae_time"] = updates["mae_time"]
+            feature_reasons.pop("mae_r", None)
+            feature_reasons.pop("mae_time", None)
+        updates["entry_feature_values"] = feature_values
+        updates["entry_feature_null_reasons"] = feature_reasons
+        journal = getattr(self, "trade_journal", None)
+        if journal is None or not journal.update_open_trade(
+            symbol, updates, str(position["direction"])
+        ):
+            logger.error(
+                "[%s] Could not persist bid-based MFE/MAE update", symbol
+            )
 
     def _quote_validated_long_option(self, symbol: str, position: dict) -> bool:
         return (
@@ -6003,6 +6620,8 @@ class KiteTradingBot:
         }
         self._update_paper_shadow_runner(symbol, tick)
         position = self.intraday_manager.active_positions.get(symbol)
+        if position:
+            self._record_bid_excursions(symbol, tick)
         if position and self._quote_validated_long_option(symbol, position):
             quote_metrics = self._option_quote_metrics(
                 self.option_quote_cache[symbol]
@@ -7138,8 +7757,29 @@ class KiteTradingBot:
                 "profit_lock_stop": (
                     position.get("profit_lock_stop") if position else None
                 ),
-                "manual_exit": reason == "MANUAL_EXIT",
-                "manual_exit_reason": reason if reason == "MANUAL_EXIT" else None,
+                "manual_exit": reason in {"MANUAL_EXIT", "MANUAL_TARGET"},
+                "manual_exit_reason": (
+                    reason
+                    if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+                    else None
+                ),
+                "order_time": (trade or {}).get("order_time"),
+                "tier": (trade or {}).get("tier"),
+                "signal_uid": (trade or {}).get("signal_uid"),
+                "entry_feature_values": (
+                    position.get("entry_feature_values")
+                    if position
+                    else (trade or {}).get("entry_feature_values", {})
+                ),
+                "entry_feature_null_reasons": (
+                    position.get("entry_feature_null_reasons")
+                    if position
+                    else (trade or {}).get("entry_feature_null_reasons", {})
+                ),
+                "mfe_r": position.get("mfe_r") if position else None,
+                "mfe_time": position.get("mfe_time") if position else None,
+                "mae_r": position.get("mae_r") if position else None,
+                "mae_time": position.get("mae_time") if position else None,
                 "initial_stop_loss": (
                     position.get("initial_stop_loss") if position else None
                 ),
@@ -7829,6 +8469,19 @@ class KiteTradingBot:
                 self._register_option_signal_capture(
                     symbol, signal_time, signal=signal
                 )
+        feature_snapshots = getattr(
+            self, "_pending_entry_feature_snapshots", {}
+        )
+        feature_snapshot = feature_snapshots.pop(symbol, None)
+        signal_uid = (
+            feature_snapshot.get("signal_uid")
+            if isinstance(feature_snapshot, dict)
+            else None
+        )
+        if signal_uid is None and signal in {"BUY", "SELL"}:
+            signal_uid = uuid4().hex
+        if feature_snapshot is not None:
+            signal_id = signal_id or feature_snapshot["values"].get("signal_id")
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
             reasons = [outcome]
@@ -7883,6 +8536,17 @@ class KiteTradingBot:
                     else self._contract_id(symbol)
                 ),
                 "signal_id": signal_id,
+                "signal_uid": signal_uid,
+                "entry_feature_values": (
+                    feature_snapshot.get("values", {})
+                    if feature_snapshot
+                    else {}
+                ),
+                "entry_feature_null_reasons": (
+                    feature_snapshot.get("null_reasons", {})
+                    if feature_snapshot
+                    else {}
+                ),
                 "strike": contract_metadata.get("strike"),
                 "expiry": contract_metadata.get("expiry"),
                 "lot_size": contract_metadata.get("lot_size"),
@@ -8838,6 +9502,12 @@ class KiteTradingBot:
             )
             alert["paper_change_attributions"] = active_attributions
             alert["active_paper_change_attributions"] = active_attributions
+            alert["order_time"] = alert.get(
+                "order_time", entry_timestamp.isoformat(timespec="seconds")
+            )
+            self._finalize_entry_feature_snapshot(
+                alert, symbol, entry_timestamp
+            )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
             alert["trade_id"] = telegram_trade_id
@@ -8885,6 +9555,7 @@ class KiteTradingBot:
         score: int,
         strategy_variant: Optional[str] = None,
         minimum_signal_score: Optional[int] = None,
+        entry_telemetry: Optional[dict] = None,
     ) -> str:
         """Handle a SELL signal."""
         sell_entry_quote_metrics = self._option_quote_metrics(
@@ -9156,6 +9827,8 @@ class KiteTradingBot:
             alert["take_profit"] = take_profit
             alert["quantity"] = quantity
             alert["strategy_variant"] = strategy_variant or "primary"
+            if entry_telemetry is not None:
+                alert.update(entry_telemetry)
             if self._options_enabled() and "_" in symbol:
                 entry_evaluation = getattr(
                     self, "_pending_entry_evaluations", {}
@@ -9302,6 +9975,12 @@ class KiteTradingBot:
                         },
                     }
                 )
+            alert["order_time"] = alert.get(
+                "order_time", sell_entry_timestamp.isoformat(timespec="seconds")
+            )
+            self._finalize_entry_feature_snapshot(
+                alert, symbol, sell_entry_timestamp
+            )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
             alert["trade_id"] = telegram_trade_id

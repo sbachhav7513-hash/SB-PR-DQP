@@ -39,6 +39,59 @@ def test_index_quantity_uses_complete_lot_size():
     assert manager.calculate_position_size("BANKNIFTY", 100.0, 90.0) == 75
 
 
+def test_paper_bid_excursions_record_signed_r_and_tick_times():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"option_quote_max_age_seconds": 60}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = SimpleNamespace(
+        active_positions={
+            "NIFTY_CE": {
+                "ticker": "NIFTY_CE",
+                "direction": "BUY",
+                "entry_price": 100.0,
+                "initial_risk_distance": 10.0,
+                "mfe_r": 0.0,
+                "mfe_time": None,
+                "mae_r": 0.0,
+                "mae_time": None,
+            }
+        }
+    )
+    bot.option_quote_cache = {}
+    bot.trade_journal = Mock()
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    bot.option_quote_cache["NIFTY_CE"] = {
+        "timestamp": start,
+        "bid": 103.0,
+        "ask": 103.2,
+        "last_price": 103.1,
+    }
+    bot._record_bid_excursions(
+        "NIFTY_CE",
+        Tick(1, start, 103.1, bid=103.0, ask=103.2),
+    )
+    second_tick = start + timedelta(minutes=1)
+    bot.option_quote_cache["NIFTY_CE"] = {
+        "timestamp": second_tick,
+        "bid": 95.0,
+        "ask": 95.2,
+        "last_price": 95.1,
+    }
+    bot._record_bid_excursions(
+        "NIFTY_CE",
+        Tick(1, second_tick, 95.1, bid=95.0, ask=95.2),
+    )
+
+    position = bot.intraday_manager.active_positions["NIFTY_CE"]
+    assert position["mfe_r"] == pytest.approx(0.3)
+    assert position["mfe_time"] == start.isoformat()
+    assert position["mae_r"] == pytest.approx(-0.5)
+    assert position["mae_time"] == (start + timedelta(minutes=1)).isoformat()
+    assert bot.trade_journal.update_open_trade.call_count == 2
+
+
 def test_position_size_skips_when_one_lot_exceeds_risk_budget():
     manager = IntradayManager(account_size=100_000, risk_per_trade_pct=1.0)
 

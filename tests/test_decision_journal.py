@@ -74,6 +74,21 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
             "momentum_body_ratio_threshold": 0.2,
             "direction_rule": "option_premium_rising",
             "active_paper_change_attributions": ["option_candle_momentum"],
+            "signal_uid": "uid-trade-1",
+            "order_time": timestamp,
+            "tier": "index",
+            "entry_feature_values": {
+                "signal_uid": "uid-trade-1",
+                "regime_range_pct": 1.25,
+                "mfe_r": 0.6,
+            },
+            "entry_feature_null_reasons": {
+                "prior_30m_option_move_pct": "insufficient_pre_signal_option_history"
+            },
+            "mfe_r": 0.6,
+            "mfe_time": timestamp,
+            "mae_r": -0.2,
+            "mae_time": timestamp,
             "git_sha": "payload-sha",
             "git_dirty": True,
         }
@@ -93,6 +108,14 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
     assert json.loads(parquet_record["active_paper_change_attributions"]) == [
         "option_candle_momentum"
     ]
+    assert parquet_record["signal_uid"] == "uid-trade-1"
+    assert parquet_record["order_time"] == timestamp
+    assert parquet_record["tier"] == "index"
+    assert json.loads(parquet_record["entry_feature_values"])["regime_range_pct"] == 1.25
+    assert json.loads(parquet_record["entry_feature_null_reasons"])[
+        "prior_30m_option_move_pct"
+    ] == "insufficient_pre_signal_option_history"
+    assert parquet_record["mae_r"] == "-0.2"
 
 
 def test_bot_trade_exits_always_record_exit_reason(tmp_path):
@@ -197,6 +220,12 @@ def test_entry_confirmation_outcomes_are_normalized(tmp_path):
                 "confirmation_event": event,
                 "outcome": "UNKNOWN",
                 "signal_id": "NIFTY_CE|CE|2026-10-30T09:29:00+05:30",
+                "signal_uid": "uid-confirmed-1",
+                "order_time": "2026-10-30T09:31:00+05:30",
+                "entry_feature_values": {"lots": 2, "quantity": 100},
+                "entry_feature_null_reasons": {
+                    "prior_60m_option_move_pct": "insufficient_pre_signal_option_history"
+                },
                 "atr_pct": 0.043,
                 "effective_volatility_threshold_pct": 0.04,
                 "momentum_candle": {
@@ -236,6 +265,12 @@ def test_entry_confirmation_outcomes_are_normalized(tmp_path):
     assert json.loads(parquet_rows[0]["active_paper_change_attributions"]) == [
         "option_candle_momentum"
     ]
+    assert parquet_rows[0]["signal_uid"] == "uid-confirmed-1"
+    assert parquet_rows[0]["order_time"] == "2026-10-30T09:31:00+05:30"
+    assert json.loads(parquet_rows[0]["entry_feature_values"])["lots"] == 2
+    assert json.loads(parquet_rows[0]["entry_feature_null_reasons"])[
+        "prior_60m_option_move_pct"
+    ] == "insufficient_pre_signal_option_history"
 
 def test_decision_journal_bounds_large_history_payloads(tmp_path):
     path = tmp_path / "decisions.jsonl"

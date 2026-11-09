@@ -351,6 +351,17 @@ def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_
             "manual_exit": False,
             "exit_trigger_price": 100.15,
             "exit_trigger_source": "option_bid",
+            "signal_uid": "uid-paper-lock",
+            "entry_feature_values": {
+                "regime_label": "trending",
+                "regime_range_pct": 1.2,
+                "regime_20_bar_move_pct": 0.8,
+                "signal_uid": "uid-paper-lock",
+                "mfe_r": 0.75,
+                "mfe_time": now.isoformat(),
+                "mae_r": -0.2,
+                "mae_time": now.isoformat(),
+            },
         },
         {
             "trade_id": "manual-stop",
@@ -385,6 +396,10 @@ def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_
     assert "100.5/101.0/100.75/2.5s" in review
     assert "yes: operator_request" in review
     assert "| profit_lock_v2 | 1 (1/0/0) | 15.00 | 1 (0/1/0) | -10.00 |" in review
+    assert "## Entry Features" in review
+    assert "regime=trending/1.2%/0.8%" in review
+    assert "MFE/MAE=0.75@" in review
+    assert "| regime_label | 1/2 | 50.0% |" in review
     recovery = build_weekly_report(
         str(tmp_path), paper_data_dir=str(tmp_path / "paper")
     )["stop_out_recovery"]
