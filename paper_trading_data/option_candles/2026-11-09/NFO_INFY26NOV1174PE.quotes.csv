@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-09T15:30:01+05:30,NFO:INFY26NOV1174PE,INFY,PE,1174.0,2026-11-23,40.55,39.9,40.25,2026-11-09T15:29:49+05:30,12.069407,b05081696fff605583b6c9b4c7a1022236b092c55e0b91d4c3528cd035c1f556,fd9d01aafa23308b127a45801d789e988a2282a8,True
