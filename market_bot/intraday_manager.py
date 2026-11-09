@@ -338,6 +338,8 @@ class IntradayManager:
         self.session_trade_counts.clear()
         self.session_loss_stop_times.clear()
         closed_today = []
+        open_partial_pnl = 0.0
+        open_partial_losses = 0.0
         for trade in trades:
             symbol = trade.get("ticker") or trade.get("symbol")
             try:
@@ -361,6 +363,21 @@ class IntradayManager:
                     self.session_trade_counts.get(symbol, 0) + 1
                 )
             if trade.get("status") != "closed":
+                if timestamp is not None and timestamp.date() == self._session_date:
+                    try:
+                        partial_pnl = float(trade.get("partial_pnl_rupees", 0.0) or 0.0)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise RuntimeError(
+                            "Cannot restore aggregate daily risk from an open "
+                            "trade with invalid partial-exit P&L"
+                        ) from exc
+                    if not math.isfinite(partial_pnl):
+                        raise RuntimeError(
+                            "Cannot restore aggregate daily risk from an open "
+                            "trade with non-finite partial-exit P&L"
+                        )
+                    open_partial_pnl += partial_pnl
+                    open_partial_losses += max(-partial_pnl, 0.0)
                 continue
             try:
                 closed_at = datetime.fromisoformat(
@@ -395,10 +412,10 @@ class IntradayManager:
                 closed_today.append((closed_at, pnl))
 
         closed_today.sort(key=lambda item: item[0])
-        self.daily_pnl = sum(pnl for _, pnl in closed_today)
+        self.daily_pnl = sum(pnl for _, pnl in closed_today) + open_partial_pnl
         self.daily_realized_losses = sum(
             max(-pnl, 0.0) for _, pnl in closed_today
-        )
+        ) + open_partial_losses
         self.consecutive_losses = 0
         for _, pnl in reversed(closed_today):
             if pnl < 0:
@@ -428,6 +445,65 @@ class IntradayManager:
         perf["win_rate"] = (perf["wins"] / perf["trades"]) * 100.0
 
         if pnl < 0:
+            self.consecutive_losses += 1
+            self.recent_loss_symbols[symbol] = datetime.now(IST)
+        else:
+            self.consecutive_losses = 0
+            self.recent_loss_symbols.pop(symbol, None)
+
+    def record_partial_realized_pnl(self, pnl: float) -> None:
+        self._refresh_session()
+        pnl = float(pnl)
+        if not math.isfinite(pnl):
+            raise ValueError("Partial-exit P&L must be finite")
+        self.daily_pnl += pnl
+        self.daily_realized_losses += max(-pnl, 0.0)
+
+    def record_trade_close_after_partial(
+        self,
+        symbol: str,
+        reason: str,
+        total_pnl: float,
+        previously_realized_pnl: float,
+    ) -> None:
+        self._refresh_session()
+        total_pnl = float(total_pnl)
+        previously_realized_pnl = float(previously_realized_pnl)
+        if not math.isfinite(total_pnl) or not math.isfinite(
+            previously_realized_pnl
+        ):
+            raise ValueError("Closed-trade P&L must be finite")
+        self.daily_pnl += total_pnl - previously_realized_pnl
+        self.daily_realized_losses = max(
+            0.0,
+            self.daily_realized_losses
+            + max(-total_pnl, 0.0)
+            - max(-previously_realized_pnl, 0.0),
+        )
+        self.trade_history.append(
+            {
+                "symbol": symbol,
+                "reason": reason,
+                "pnl": total_pnl,
+                "time": datetime.now(IST),
+            }
+        )
+        if total_pnl < 0 and reason in {"STOP_LOSS", "TRAILING_STOP"}:
+            self.session_loss_stop_times[symbol] = datetime.now(IST)
+        if reason == "SIGNAL_REVERSAL":
+            self.session_reversal_symbols.add(symbol)
+        if total_pnl < 0 and abs(total_pnl) >= self.daily_max_loss * 0.5:
+            self.session_reversal_symbols.add(symbol)
+
+        perf = self.symbol_performance.setdefault(
+            symbol, {"trades": 0, "wins": 0, "win_rate": 100.0}
+        )
+        perf["trades"] = int(perf.get("trades", 0)) + 1
+        if total_pnl > 0:
+            perf["wins"] = int(perf.get("wins", 0)) + 1
+        perf["win_rate"] = (perf["wins"] / perf["trades"]) * 100.0
+
+        if total_pnl < 0:
             self.consecutive_losses += 1
             self.recent_loss_symbols[symbol] = datetime.now(IST)
         else:
@@ -568,6 +644,13 @@ class IntradayManager:
         self.active_positions[symbol] = {
             "direction": direction,
             "quantity": quantity,
+            "entry_quantity": quantity,
+            "remaining_quantity": quantity,
+            "partial_status": "not-triggered",
+            "partial_exit_done": False,
+            "partial_quantity": 0,
+            "partial_pnl_rupees": 0.0,
+            "exit_legs": [],
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "initial_stop_loss": stop_loss,

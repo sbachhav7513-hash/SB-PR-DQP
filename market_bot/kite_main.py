@@ -125,6 +125,7 @@ PAPER_CHANGE_KEYS = (
     "runner_gap_v2",
     "profit_lock_v2",
     "trail_close_confirm_v2",
+    "partial_profit_v2",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -2487,7 +2488,9 @@ class KiteTradingBot:
                 continue
             try:
                 direction = str(trade.get("action", "")).upper()
-                quantity = int(trade.get("quantity", 0))
+                quantity = int(
+                    trade.get("remaining_quantity", trade.get("quantity", 0))
+                )
                 entry_price = float(trade["entry"])
                 stop_loss = float(trade["stop_loss"])
                 take_profit = float(trade["take_profit"])
@@ -2617,6 +2620,39 @@ class KiteTradingBot:
                 trailing_active=bool(
                     self._journal_optional_bool(trade.get("trailing_active"))
                 ),
+            )
+            restored_position = self.intraday_manager.active_positions[str(symbol)]
+            restored_position.update(
+                {
+                    "entry_quantity": int(
+                        trade.get("entry_quantity", trade.get("quantity", quantity))
+                    ),
+                    "remaining_quantity": quantity,
+                    "partial_status": trade.get(
+                        "partial_status", "not-triggered"
+                    ),
+                    "partial_exit_done": bool(
+                        trade.get("partial_exit_done")
+                        or any(
+                            isinstance(leg, dict)
+                            and leg.get("leg_type") == "partial"
+                            for leg in trade.get("exit_legs", [])
+                        )
+                    ),
+                    "partial_quantity": int(trade.get("partial_quantity", 0) or 0),
+                    "partial_pnl_rupees": float(
+                        trade.get("partial_pnl_rupees", 0.0) or 0.0
+                    ),
+                    "partial_profit_r": trade.get(
+                        "partial_profit_r",
+                        self.config.get("partial_profit_r", 0.5),
+                    ),
+                    "partial_profit_fraction": trade.get(
+                        "partial_profit_fraction",
+                        self.config.get("partial_profit_fraction", 0.5),
+                    ),
+                    "exit_legs": list(trade.get("exit_legs") or []),
+                }
             )
 
         if self.intraday_manager.daily_risk_exceeded():
@@ -3519,6 +3555,7 @@ class KiteTradingBot:
             ("mfe_time", "trade_not_open_yet"),
             ("mae_r", "trade_not_open_yet"),
             ("mae_time", "trade_not_open_yet"),
+            ("partial_status", "not-triggered"),
         ):
             add(key, None, reason)
         contract = self._option_contract_metadata(symbol, signal) if is_option else {}
@@ -3784,6 +3821,21 @@ class KiteTradingBot:
             )
         else:
             alert["tier"] = None
+        alert.setdefault("partial_status", "not-triggered")
+        alert.setdefault("partial_exit_done", False)
+        alert.setdefault("partial_ineligible_single_lot", False)
+        alert.setdefault("partial_quantity", 0)
+        alert.setdefault("partial_pnl_rupees", 0.0)
+        alert.setdefault("exit_legs", [])
+        alert.setdefault(
+            "partial_profit_r", self.config.get("partial_profit_r", 0.5)
+        )
+        alert.setdefault(
+            "partial_profit_fraction",
+            self.config.get("partial_profit_fraction", 0.5),
+        )
+        alert.setdefault("entry_quantity", int(alert.get("quantity", 0) or 0))
+        alert.setdefault("remaining_quantity", int(alert.get("quantity", 0) or 0))
 
         def assign(name: str, value, reason: str) -> None:
             values[name] = value
@@ -3836,6 +3888,7 @@ class KiteTradingBot:
                 value = alert.get("paper_entry_risk_rupees")
             assign(feature, value, reason)
 
+        assign("partial_status", alert["partial_status"], "not-triggered")
         if alert.get("order_time") is None:
             alert["order_time"] = entry_time.isoformat(timespec="seconds")
         assign("order_time", alert.get("order_time"), "order_time_unavailable")
@@ -3868,6 +3921,18 @@ class KiteTradingBot:
         if position is not None:
             position["entry_feature_values"] = values
             position["entry_feature_null_reasons"] = null_reasons
+            position["entry_quantity"] = int(alert.get("quantity", 0) or 0)
+            position["remaining_quantity"] = int(position.get("quantity", 0) or 0)
+            position["partial_status"] = "not-triggered"
+            position["partial_exit_done"] = False
+            position["partial_quantity"] = 0
+            position["partial_pnl_rupees"] = 0.0
+            position["lot_size"] = alert.get("lot_size")
+            position["partial_profit_r"] = alert["partial_profit_r"]
+            position["partial_profit_fraction"] = alert[
+                "partial_profit_fraction"
+            ]
+            position["exit_legs"] = []
             position["mfe_r"] = 0.0
             position["mfe_time"] = alert["mfe_time"]
             position["mae_r"] = 0.0
@@ -6334,13 +6399,59 @@ class KiteTradingBot:
             return
         if str(trade.get("action", "")).upper() != "BUY":
             return
-        ticker = str(trade.get("ticker", ""))
+        ticker = str(trade.get("ticker", "")        )
         if not ticker.endswith(("_CE", "_PE")):
             return
+        exit_legs = [
+            leg
+            for leg in trade.get("exit_legs", [])
+            if isinstance(leg, dict)
+        ]
+        partial_legs = [
+            leg for leg in exit_legs if leg.get("leg_type") == "partial"
+        ]
         quote = getattr(self, "option_quote_cache", {}).get(ticker, {})
-        quantity = int(trade.get("quantity", 0) or 0)
+        quantity = int(
+            trade.get("entry_quantity", trade.get("quantity", 0))
+            if partial_legs
+            else trade.get("quantity", 0)
+        )
         entry = float(trade.get("entry", 0.0) or 0.0)
-        actual_gross = (float(exit_price) - entry) * quantity
+        if partial_legs:
+            partial_quantity = sum(
+                int(leg.get("quantity", 0)) for leg in partial_legs
+            )
+            final_quantity = int(
+                trade.get("remaining_quantity", quantity - partial_quantity)
+            )
+            multiplier = float(
+                self.intraday_manager.contract_specs.get(ticker, {}).get(
+                    "multiplier", 1.0
+                )
+            )
+            exit_legs = [
+                *partial_legs,
+                {
+                    "leg_type": "final",
+                    "quantity": final_quantity,
+                    "fill": float(exit_price),
+                    "bid": self._positive_quote_value(quote.get("bid")),
+                    "gross_pnl_rupees": (
+                        float(exit_price) - entry
+                    ) * final_quantity * multiplier,
+                },
+            ]
+            actual_gross = sum(
+                float(leg.get("gross_pnl_rupees", 0.0) or 0.0)
+                for leg in exit_legs
+            )
+            actual_exit_price = sum(
+                float(leg.get("fill", exit_price)) * int(leg.get("quantity", 0))
+                for leg in exit_legs
+            ) / quantity
+        else:
+            actual_gross = (float(exit_price) - entry) * quantity
+            actual_exit_price = float(exit_price)
         fee_per_order = float(
             self.config.get("paper_shadow_fee_per_order", 0.0)
         )
@@ -6365,25 +6476,51 @@ class KiteTradingBot:
             else None
         )
         exit_bid = self._positive_quote_value(quote.get("bid"))
-        has_quotes = entry_ask is not None and exit_bid is not None
-        quote_entry = entry_ask if has_quotes else entry
-        quote_exit = exit_bid if has_quotes else float(exit_price)
-        bid_ask_gross = (
-            (quote_exit - quote_entry) * quantity if has_quotes else None
+        leg_bids = [
+            self._positive_quote_value(leg.get("bid"))
+            for leg in exit_legs
+        ]
+        has_quotes = entry_ask is not None and (
+            all(bid is not None for bid in leg_bids)
+            if partial_legs
+            else exit_bid is not None
         )
+        quote_entry = entry_ask if has_quotes else entry
+        if partial_legs and has_quotes:
+            quote_exit = sum(
+                float(bid) * int(leg.get("quantity", 0))
+                for leg, bid in zip(exit_legs, leg_bids)
+            ) / quantity
+            sell_turnover = sum(
+                float(bid) * int(leg.get("quantity", 0))
+                for leg, bid in zip(exit_legs, leg_bids)
+            )
+            bid_ask_gross = (quote_exit - quote_entry) * quantity
+            exit_order_count = len(exit_legs)
+        else:
+            quote_exit = exit_bid if has_quotes else actual_exit_price
+            bid_ask_gross = (
+                (quote_exit - quote_entry) * quantity if has_quotes else None
+            )
+            sell_turnover = quote_exit * quantity
+            exit_order_count = 1
         fee_cost = (
-            2.0 * fee_per_order
-            + (quote_entry + quote_exit) * fee_bps / 10000.0 * quantity
+            (1.0 + exit_order_count) * fee_per_order
+            + (quote_entry * quantity + sell_turnover) * fee_bps / 10000.0
         )
         slippage_cost = (
-            (quote_entry + quote_exit) * slippage_bps / 10000.0 * quantity
+            (quote_entry * quantity + sell_turnover)
+            * slippage_bps
+            / 10000.0
         )
         fields = {
             **state,
             "actual_exit_time": datetime.now(IST).isoformat(),
             "actual_exit_reason": reason,
-            "actual_exit_price": float(exit_price),
-            "actual_exit_bid": self._positive_quote_value(quote.get("bid")),
+            "actual_exit_price": actual_exit_price,
+            "actual_exit_bid": (
+                quote_exit if partial_legs and has_quotes else exit_bid
+            ),
             "actual_exit_ask": self._positive_quote_value(quote.get("ask")),
             "actual_gross_pnl_rupees": actual_gross,
             "actual_entry_ltp": entry,
@@ -6786,6 +6923,236 @@ class KiteTradingBot:
         )
         return True
 
+    def _maybe_execute_partial_profit(
+        self, symbol: str, position: dict, quote_metrics: Optional[dict]
+    ) -> bool:
+        if (
+            not self._paper_change_enabled("partial_profit_v2")
+            or position.get("direction") != "BUY"
+            or not quote_metrics
+            or not quote_metrics.get("valid")
+            or quote_metrics.get("bid") is None
+        ):
+            return False
+        if position.get("partial_exit_done") or position.get("partial_status") in {
+            "executed",
+            "single-lot-ineligible",
+        }:
+            return False
+
+        try:
+            entry = float(position["entry_price"])
+            risk = float(position["initial_risk_distance"])
+            bid = float(quote_metrics["bid"])
+            trigger_r = float(self.config.get("partial_profit_r", 0.5))
+            fraction = float(self.config.get("partial_profit_fraction", 0.5))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.exception(
+                "[%s] Partial-profit configuration or position is invalid", symbol
+            )
+            return False
+        if (
+            not all(math.isfinite(value) for value in (entry, risk, bid, trigger_r, fraction))
+            or risk <= 0
+            or trigger_r <= 0
+            or not 0 < fraction < 1
+        ):
+            logger.error("[%s] Partial-profit configuration is outside valid bounds", symbol)
+            return False
+        if bid < entry + trigger_r * risk:
+            return False
+
+        manager = self.intraday_manager
+        specs = getattr(manager, "contract_specs", {}).get(symbol, {})
+        try:
+            lot_size = int(specs.get("lot_size") or position.get("lot_size") or 0)
+            entry_quantity = int(
+                position.get("entry_quantity", position.get("quantity", 0))
+            )
+            remaining_quantity = int(position["quantity"])
+        except (TypeError, ValueError, OverflowError):
+            logger.exception("[%s] Cannot calculate whole-lot partial quantity", symbol)
+            return False
+        if (
+            lot_size <= 0
+            or entry_quantity <= 0
+            or entry_quantity % lot_size
+            or remaining_quantity <= 0
+            or remaining_quantity % lot_size
+        ):
+            logger.error(
+                "[%s] Partial profit skipped because quantity is not whole lots "
+                "(entry=%s remaining=%s lot_size=%s)",
+                symbol,
+                entry_quantity,
+                remaining_quantity,
+                lot_size,
+            )
+            return False
+
+        lots = entry_quantity // lot_size
+        partial_lots = math.floor(lots * fraction)
+        if partial_lots == 0:
+            fields = {
+                "partial_status": "single-lot-ineligible",
+                "partial_ineligible_single_lot": True,
+                "partial_profit_r": trigger_r,
+                "partial_profit_fraction": fraction,
+            }
+            trade = self.trade_journal.get_open_trade(
+                symbol, str(position["direction"])
+            )
+            attributions = list((trade or {}).get("paper_change_attributions") or [])
+            if "partial_profit_v2" not in attributions:
+                attributions.append("partial_profit_v2")
+            active_attributions = list(
+                (trade or {}).get("active_paper_change_attributions")
+                or attributions
+            )
+            if "partial_profit_v2" not in active_attributions:
+                active_attributions.append("partial_profit_v2")
+            feature_values = dict((trade or {}).get("entry_feature_values") or {})
+            feature_reasons = dict(
+                (trade or {}).get("entry_feature_null_reasons") or {}
+            )
+            feature_values["partial_status"] = "single-lot-ineligible"
+            feature_reasons.pop("partial_status", None)
+            fields.update(
+                {
+                    "paper_change_attributions": attributions,
+                    "active_paper_change_attributions": active_attributions,
+                    "entry_feature_values": feature_values,
+                    "entry_feature_null_reasons": feature_reasons,
+                }
+            )
+            if not self.trade_journal.update_open_trade(
+                symbol, fields, str(position["direction"])
+            ):
+                logger.error(
+                    "[%s] Could not persist single-lot partial ineligibility", symbol
+                )
+                return False
+            position.update(fields)
+            return False
+
+        partial_quantity = partial_lots * lot_size
+        remainder_quantity = remaining_quantity - partial_quantity
+        if (
+            partial_quantity <= 0
+            or remainder_quantity <= 0
+            or remainder_quantity % lot_size
+            or partial_quantity > remaining_quantity
+        ):
+            logger.error(
+                "[%s] Partial profit rejected to preserve whole-lot quantity",
+                symbol,
+            )
+            return False
+
+        timestamp = quote_metrics["timestamp"]
+        if timestamp is None:
+            logger.error("[%s] Valid partial-profit quote has no timestamp", symbol)
+            return False
+        multiplier = float(specs.get("multiplier", 1.0))
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            logger.error("[%s] Partial-profit contract multiplier is invalid", symbol)
+            return False
+        gross_pnl = (bid - entry) * partial_quantity * multiplier
+        total_risk = risk * entry_quantity * multiplier
+        if not all(math.isfinite(value) for value in (gross_pnl, total_risk)) or total_risk <= 0:
+            logger.error("[%s] Partial-profit P&L or initial risk is invalid", symbol)
+            return False
+        r_contribution = gross_pnl / total_risk
+        leg = {
+            "leg_type": "partial",
+            "reason": "PARTIAL_PROFIT",
+            "time": timestamp.isoformat(),
+            "quantity": partial_quantity,
+            "lots": partial_lots,
+            "remaining_quantity_after": remainder_quantity,
+            "bid": bid,
+            "ask": quote_metrics.get("ask"),
+            "fill": bid,
+            "gross_pnl_rupees": gross_pnl,
+            "r_contribution": r_contribution,
+        }
+        trade = self.trade_journal.get_open_trade(
+            symbol, str(position["direction"])
+        )
+        if not isinstance(trade, dict):
+            logger.error("[%s] Cannot execute partial without an open journal trade", symbol)
+            return False
+        existing_legs = list(trade.get("exit_legs") or [])
+        if any(leg.get("leg_type") == "partial" for leg in existing_legs):
+            logger.error("[%s] Duplicate partial leg found; refusing another sale", symbol)
+            position["partial_exit_done"] = True
+            position["partial_status"] = "executed"
+            return False
+        exit_legs = [*existing_legs, leg]
+        attributions = list(trade.get("paper_change_attributions") or [])
+        if "partial_profit_v2" not in attributions:
+            attributions.append("partial_profit_v2")
+        active_attributions = list(
+            trade.get("active_paper_change_attributions") or attributions
+        )
+        if "partial_profit_v2" not in active_attributions:
+            active_attributions.append("partial_profit_v2")
+        entry_feature_values = dict(trade.get("entry_feature_values") or {})
+        entry_feature_null_reasons = dict(
+            trade.get("entry_feature_null_reasons") or {}
+        )
+        entry_feature_values["partial_status"] = "executed"
+        entry_feature_null_reasons.pop("partial_status", None)
+        fields = {
+            "entry_quantity": entry_quantity,
+            "quantity": entry_quantity,
+            "remaining_quantity": remainder_quantity,
+            "partial_quantity": partial_quantity,
+            "partial_pnl_rupees": gross_pnl,
+            "partial_exit_done": True,
+            "partial_status": "executed",
+            "partial_ineligible_single_lot": False,
+            "partial_profit_r": trigger_r,
+            "partial_profit_fraction": fraction,
+            "exit_legs": exit_legs,
+            "paper_change_attributions": attributions,
+            "active_paper_change_attributions": active_attributions,
+            "entry_feature_values": entry_feature_values,
+            "entry_feature_null_reasons": entry_feature_null_reasons,
+        }
+        if not self.trade_journal.update_open_trade(
+            symbol, fields, str(position["direction"])
+        ):
+            logger.error("[%s] Could not persist partial-profit leg", symbol)
+            return False
+
+        position.update(fields)
+        position["quantity"] = remainder_quantity
+        position["remaining_quantity"] = remainder_quantity
+        position["exit_legs"] = exit_legs
+        manager.record_partial_realized_pnl(gross_pnl)
+        partial_alert = {
+            "message": (
+                f"Partial exit: {symbol} sold {partial_quantity} units "
+                f"({partial_lots} whole lots) at bid {bid:.2f}; "
+                f"gross P&L {gross_pnl:.2f}."
+            ),
+            "trade_id": trade.get("telegram_trade_id"),
+        }
+        if not self.telegram_notifier.send_trade_alert(
+            partial_alert, trade_id=trade.get("telegram_trade_id")
+        ):
+            logger.warning("[%s] Partial-exit Telegram message was not queued", symbol)
+        logger.info(
+            "[%s] Partial profit executed: qty=%d lots=%d fill=%.2f gross_pnl=%.2f",
+            symbol,
+            partial_quantity,
+            partial_lots,
+            bid,
+            gross_pnl,
+        )
+        return True
+
     def _check_position_exit(self, symbol: str, price: float) -> Optional[str]:
         position = self.intraday_manager.active_positions.get(symbol)
         if not position:
@@ -6972,6 +7339,21 @@ class KiteTradingBot:
             if not self._publish_target_update(symbol, position, trailing_stop):
                 self._close_position(symbol, price, "TRAILING_STOP_UPDATE_FAILED")
                 return "TRAILING_STOP_UPDATE_FAILED"
+
+        partial_executed = self._maybe_execute_partial_profit(
+            symbol, position, quote_metrics
+        )
+        if partial_executed and position.get("profit_lock_enabled"):
+            entry_price = float(position["entry_price"])
+            risk_distance = float(position["initial_risk_distance"])
+            lock_stop = entry_price + float(position["profit_lock_r"]) * risk_distance
+            previous_lock = position.get("profit_lock_stop")
+            position["profit_lock_stop"] = (
+                lock_stop
+                if previous_lock is None
+                else max(float(previous_lock), lock_stop)
+            )
+            self._persist_paper_option_exit_state(symbol, position)
 
         if position["direction"] == "BUY":
             stop_price = (
@@ -7616,7 +7998,21 @@ class KiteTradingBot:
                 if direction == "BUY"
                 else entry_price - float(price)
             )
-            if realized_points <= 0:
+            multiplier = float(
+                self.intraday_manager.contract_specs.get(symbol, {}).get(
+                    "multiplier", 1.0
+                )
+            )
+            remaining_quantity = int(
+                position.get("quantity", 0) if position else trade.get("quantity", 1)
+            )
+            partial_pnl = float(
+                position.get("partial_pnl_rupees", 0.0) if position else 0.0
+            )
+            if (
+                realized_points * remaining_quantity * multiplier + partial_pnl
+                <= 0
+            ):
                 reason = "MANUAL_EXIT"
         closed_at = datetime.now(IST)
         journal_pnl = self.trade_journal.close_trade(
@@ -7632,12 +8028,80 @@ class KiteTradingBot:
             return False
 
         pnl = exit_info["pnl_rupees"] if exit_info else journal_pnl
+        partial_executed = bool(position and position.get("partial_exit_done"))
+        partial_pnl = float(
+            position.get("partial_pnl_rupees", 0.0)
+            if partial_executed
+            else 0.0
+        )
+        exit_legs = list(position.get("exit_legs") or []) if position else []
+        trade_risk = None
+        weighted_exit_price = float(price)
+        if partial_executed and exit_info is not None:
+            pnl += partial_pnl
+            entry_quantity = int(
+                position.get("entry_quantity", position.get("quantity", 0))
+            )
+            final_quantity = int(exit_info["quantity"])
+            multiplier = float(
+                self.intraday_manager.contract_specs.get(symbol, {}).get(
+                    "multiplier", 1.0
+                )
+            )
+            total_risk = (
+                float(position["initial_risk_distance"])
+                * entry_quantity
+                * multiplier
+            )
+            if total_risk <= 0 or not math.isfinite(total_risk):
+                raise RuntimeError(
+                    f"Partial trade {symbol} has invalid initial risk for R accounting"
+                )
+            final_leg = {
+                "leg_type": "final",
+                "reason": reason,
+                "time": closed_at.isoformat(),
+                "quantity": final_quantity,
+                "lots": final_quantity
+                // max(
+                    int(
+                        self.intraday_manager.contract_specs.get(symbol, {}).get(
+                            "lot_size"
+                        )
+                        or 1
+                    ),
+                    1,
+                ),
+                "bid": quote_metrics["bid"],
+                "ask": quote_metrics["ask"],
+                "fill": float(price),
+                "gross_pnl_rupees": float(exit_info["pnl_rupees"]),
+                "r_contribution": float(exit_info["pnl_rupees"]) / total_risk,
+            }
+            exit_legs.append(final_leg)
+            position["exit_legs"] = exit_legs
+            weighted_exit_price = (
+                sum(
+                    float(leg["fill"]) * int(leg["quantity"])
+                    for leg in exit_legs
+                )
+                / entry_quantity
+            )
+            trade_risk = total_risk
         if exit_info is not None or trade is not None:
             if pnl is None:
                 raise RuntimeError(
                     f"Closed trade {symbol} has no realized P&L for daily risk tracking"
                 )
-            self.intraday_manager.record_trade_close(symbol, reason, float(pnl))
+            if partial_executed:
+                self.intraday_manager.record_trade_close_after_partial(
+                    symbol,
+                    reason,
+                    float(pnl),
+                    partial_pnl,
+                )
+            else:
+                self.intraday_manager.record_trade_close(symbol, reason, float(pnl))
             self._activate_daily_loss_shutdown()
         if exit_info:
             is_ema_reentry = bool((trade or {}).get("is_ema_reentry"))
@@ -7649,12 +8113,52 @@ class KiteTradingBot:
                 and bool((trade or {}).get("trade_id"))
             )
             exit_annotation = {
-                "pnl": exit_info["pnl_rupees"],
-                "pnl_points": exit_info["pnl_points"],
-                "pnl_rupees": exit_info["pnl_rupees"],
+                "pnl": pnl,
+                "pnl_points": (
+                    pnl
+                    / (
+                        int(position.get("entry_quantity", exit_info["quantity"]))
+                        * float(
+                            self.intraday_manager.contract_specs.get(
+                                symbol, {}
+                            ).get("multiplier", 1.0)
+                        )
+                    )
+                    if partial_executed
+                    else exit_info["pnl_points"]
+                ),
+                "pnl_rupees": pnl,
+                "exit_price": weighted_exit_price,
                 "duration_seconds": exit_info["duration"],
                 "holding_time_seconds": exit_info["duration"],
-                "quantity": exit_info["quantity"],
+                "quantity": (
+                    int(position.get("entry_quantity", exit_info["quantity"]))
+                    if partial_executed
+                    else exit_info["quantity"]
+                ),
+                "entry_quantity": (
+                    int(position.get("entry_quantity", exit_info["quantity"]))
+                    if partial_executed
+                    else exit_info["quantity"]
+                ),
+                "remaining_quantity": 0,
+                "partial_status": (
+                    position.get("partial_status", "not-triggered")
+                    if position
+                    else "not-triggered"
+                ),
+                "partial_exit_done": partial_executed,
+                "partial_ineligible_single_lot": bool(
+                    position and position.get("partial_ineligible_single_lot")
+                ),
+                "partial_quantity": (
+                    int(position.get("partial_quantity", 0))
+                    if position
+                    else 0
+                ),
+                "partial_pnl_rupees": partial_pnl,
+                "exit_legs": exit_legs,
+                "r_multiple": pnl / trade_risk if trade_risk else None,
                 "target_stage": position.get("target_stage", 0) if position else 0,
                 "milestone_reached_pct": (
                     position.get("milestone_reached_pct", 0.0) if position else 0.0
@@ -7721,6 +8225,7 @@ class KiteTradingBot:
                         "runner_gap_v2",
                         "profit_lock_v2",
                         "trail_close_confirm_v2",
+                        "partial_profit_v2",
                     )
                     if self._paper_change_enabled(flag)
                 ],
@@ -7730,6 +8235,10 @@ class KiteTradingBot:
                         "profit_lock_r": position.get("profit_lock_r"),
                         "trail_close_confirm": position.get(
                             "trail_close_confirm_enabled"
+                        ),
+                        "partial_profit_r": position.get("partial_profit_r"),
+                        "partial_profit_fraction": position.get(
+                            "partial_profit_fraction"
                         ),
                     }
                     if position
@@ -9401,6 +9910,7 @@ class KiteTradingBot:
                         "runner_gap_v2",
                         "profit_lock_v2",
                         "trail_close_confirm_v2",
+                        "partial_profit_v2",
                     )
                     if self._paper_change_enabled(flag)
                 ]
@@ -9409,6 +9919,12 @@ class KiteTradingBot:
                     "profit_lock_r": entry_position.get("profit_lock_r"),
                     "trail_close_confirm": entry_position.get(
                         "trail_close_confirm_enabled"
+                    ),
+                    "partial_profit_r": self.config.get(
+                        "partial_profit_r", 0.5
+                    ),
+                    "partial_profit_fraction": self.config.get(
+                        "partial_profit_fraction", 0.5
                     ),
                 }
             if staged_option_targets:
@@ -9953,6 +10469,7 @@ class KiteTradingBot:
                                 "runner_gap_v2",
                                 "profit_lock_v2",
                                 "trail_close_confirm_v2",
+                                "partial_profit_v2",
                             )
                             if self._paper_change_enabled(flag)
                         ],
@@ -9971,6 +10488,12 @@ class KiteTradingBot:
                                 self.intraday_manager.active_positions[symbol].get(
                                     "trail_close_confirm_enabled"
                                 )
+                            ),
+                            "partial_profit_r": self.config.get(
+                                "partial_profit_r", 0.5
+                            ),
+                            "partial_profit_fraction": self.config.get(
+                                "partial_profit_fraction", 0.5
                             ),
                         },
                     }

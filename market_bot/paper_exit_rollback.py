@@ -14,6 +14,7 @@ EXIT_FLAGS = (
     "runner_gap_v2",
     "profit_lock_v2",
     "trail_close_confirm_v2",
+    "partial_profit_v2",
 )
 
 
@@ -181,8 +182,104 @@ def _counterfactual_delta_r(
     return float(old.r_multiple) - float(new.r_multiple), None
 
 
+def _partial_counterfactual_delta_r(
+    trade: dict[str, Any], candle_root: Path
+) -> tuple[float | None, str | None]:
+    contract_id = str(trade.get("contract_id") or "")
+    entry_time = _parse_time(trade.get("entry_time") or trade.get("timestamp"))
+    if not contract_id.startswith("NFO:") or entry_time is None:
+        return None, "missing exact contract_id or entry time"
+    try:
+        from tools.replay_exit_policies import (
+            load_market_rows,
+            parse_datetime,
+            simulate_policy,
+        )
+    except ImportError as exc:
+        return None, f"offline replay unavailable: {exc}"
+
+    day_dir = candle_root / entry_time.date().isoformat()
+    candles = load_market_rows(day_dir, contract_id, "candles")
+    quotes = load_market_rows(day_dir, contract_id, "quotes")
+    if not candles or not quotes:
+        return None, "missing exact-contract candles or quotes"
+    try:
+        quantity = int(trade.get("entry_quantity", trade.get("quantity", 0)))
+        lot_size = int(trade.get("lot_size", 0))
+        fraction = float(
+            _dict_value(trade.get("paper_exit_parameters")).get(
+                "partial_profit_fraction", 0.5
+            )
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None, "invalid whole-lot partial sizing metadata"
+    if quantity <= 0 or lot_size <= 0 or quantity % lot_size:
+        return None, "entry quantity is not a whole number of lots"
+    partial_lots = math.floor((quantity // lot_size) * fraction)
+    if partial_lots <= 0 or partial_lots >= quantity // lot_size:
+        return None, "trade has no eligible whole-lot partial quantity"
+    partial_fraction = partial_lots * lot_size / quantity
+
+    replay_trade = dict(trade)
+    replay_trade["_entry_time_parsed"] = parse_datetime(entry_time.isoformat())
+    if replay_trade["_entry_time_parsed"] is None:
+        return None, "invalid replay entry time"
+    params = _dict_value(trade.get("paper_exit_parameters"))
+    runner_gap = _number(params.get("runner_gap_r"))
+    if runner_gap is None:
+        runner_gap = 1.5 if "runner_gap_v2" in _trade_flags(trade) else 1.0
+    lock_r = _number(params.get("profit_lock_r"))
+    if lock_r is None:
+        lock_r = 0.15 if "profit_lock_v2" in _trade_flags(trade) else None
+    close_confirm = "trail_close_confirm_v2" in _trade_flags(trade)
+    args = Namespace(
+        slippage=0.01,
+        brokerage_per_order=20.0,
+        stt_rate=0.001,
+        exchange_rate=0.0003503,
+        sebi_rate=0.000001,
+        stamp_rate=0.00003,
+        gst_rate=0.18,
+    )
+    old = simulate_policy(
+        replay_trade,
+        candles,
+        quotes,
+        args,
+        "partial_profit_v2_old",
+        runner_gap=runner_gap,
+        profit_lock_r=lock_r,
+        close_confirm=close_confirm,
+    )
+    new = simulate_policy(
+        replay_trade,
+        candles,
+        quotes,
+        args,
+        "partial_profit_v2_new",
+        runner_gap=runner_gap,
+        partial_fraction=partial_fraction,
+        partial_r=0.5,
+        profit_lock_r=lock_r,
+        close_confirm=close_confirm,
+    )
+    if (
+        not old.complete
+        or not new.complete
+        or old.r_multiple is None
+        or new.r_multiple is None
+    ):
+        return None, (
+            f"incomplete paired replay (old={old.note or old.exit_reason}; "
+            f"new={new.note or new.exit_reason})"
+        )
+    return float(old.r_multiple) - float(new.r_multiple), None
+
+
 def evaluate_paper_exit_rollbacks(
-    trades: list[dict[str, Any]], candle_root: Path
+    trades: list[dict[str, Any]],
+    candle_root: Path,
+    daily_loss_limit: float = 6000.0,
 ) -> dict[str, dict[str, Any]]:
     closed = [
         trade for trade in trades
@@ -200,6 +297,165 @@ def evaluate_paper_exit_rollbacks(
         )
         reasons: list[str] = []
         events: list[str] = []
+        if flag == "partial_profit_v2":
+            executed = [
+                trade for trade in tagged
+                if trade.get("partial_status") == "executed"
+                or bool(trade.get("partial_exit_done"))
+            ]
+            invalid_records = []
+            daily_partial_pnl: dict[str, float] = {}
+            for trade in executed:
+                trade_id = str(trade.get("trade_id") or "unknown")
+                entry_quantity = _number(
+                    trade.get("entry_quantity", trade.get("quantity"))
+                )
+                lot_size = _number(trade.get("lot_size"))
+                raw_legs = trade.get("exit_legs")
+                if isinstance(raw_legs, str):
+                    try:
+                        raw_legs = json.loads(raw_legs)
+                    except json.JSONDecodeError:
+                        raw_legs = []
+                if not isinstance(raw_legs, list):
+                    raw_legs = []
+                partial_legs = [
+                    leg for leg in raw_legs
+                    if isinstance(leg, dict) and leg.get("leg_type") == "partial"
+                ]
+                final_legs = [
+                    leg for leg in raw_legs
+                    if isinstance(leg, dict) and leg.get("leg_type") == "final"
+                ]
+                if len(partial_legs) != 1:
+                    invalid_records.append(
+                        f"{trade_id} has {len(partial_legs)} partial legs"
+                    )
+                if len(final_legs) != 1:
+                    invalid_records.append(
+                        f"{trade_id} has {len(final_legs)} final legs"
+                    )
+                if entry_quantity is None or lot_size is None or lot_size <= 0:
+                    invalid_records.append(f"{trade_id} has invalid lot metadata")
+                    continue
+                if partial_legs and final_legs:
+                    partial_leg = partial_legs[0]
+                    final_leg = final_legs[0]
+                    partial_quantity = _number(partial_leg.get("quantity"))
+                    final_quantity = _number(final_leg.get("quantity"))
+                    remaining_after = _number(
+                        partial_leg.get("remaining_quantity_after")
+                    )
+                    if (
+                        partial_quantity is None
+                        or final_quantity is None
+                        or partial_quantity + final_quantity != entry_quantity
+                    ):
+                        invalid_records.append(
+                            f"{trade_id} violates entry/exit quantity conservation"
+                        )
+                    if (
+                        remaining_after is None
+                        or remaining_after <= 0
+                        or remaining_after % lot_size
+                        or partial_quantity is None
+                        or partial_quantity % lot_size
+                        or final_quantity is None
+                        or final_quantity % lot_size
+                    ):
+                        invalid_records.append(
+                            f"{trade_id} has a non-positive or fractional-lot remainder"
+                        )
+                    leg_pnl = sum(
+                        _number(leg.get("gross_pnl_rupees")) or 0.0
+                        for leg in (partial_leg, final_leg)
+                    )
+                    trade_pnl = _number(
+                        trade.get("pnl_rupees", trade.get("pnl"))
+                    )
+                    if trade_pnl is None or abs(leg_pnl - trade_pnl) > 0.01:
+                        invalid_records.append(
+                            f"{trade_id} leg P&L does not sum to trade P&L"
+                        )
+            for trade in tagged:
+                session = _trade_session(trade)
+                pnl = _trade_pnl(trade)
+                if session and pnl is not None:
+                    daily_partial_pnl[session] = (
+                        daily_partial_pnl.get(session, 0.0) + pnl
+                    )
+            duplicate_legs = [
+                str(trade.get("trade_id") or "unknown")
+                for trade in executed
+                if sum(
+                    isinstance(leg, dict) and leg.get("leg_type") == "partial"
+                    for leg in (
+                        trade.get("exit_legs")
+                        if isinstance(trade.get("exit_legs"), list)
+                        else []
+                    )
+                )
+                > 1
+            ]
+            if invalid_records:
+                reasons.append(
+                    "partial accounting validation failed: "
+                    + "; ".join(invalid_records[:3])
+                )
+            if duplicate_legs:
+                reasons.append(
+                    "duplicate partial legs found for "
+                    + ", ".join(duplicate_legs[:3])
+                )
+            loss_days = [
+                (session, pnl)
+                for session, pnl in daily_partial_pnl.items()
+                if pnl <= -abs(float(daily_loss_limit))
+            ]
+            if loss_days:
+                session, pnl = sorted(loss_days)[0]
+                reasons.append(
+                    f"tagged partial-trade daily loss reached "
+                    f"INR {daily_loss_limit:.2f} on {session} (P&L {pnl:.2f})"
+                )
+            events.append(
+                f"executed={len(executed)} "
+                f"accounting_errors={len(invalid_records)} "
+                f"duplicate_partials={len(duplicate_legs)} "
+                f"days_at_daily_loss_limit={len(loss_days)}"
+            )
+
+            comparison_count = 0
+            old_better_count = 0
+            comparison_missing = 0
+            if len(executed) >= 10:
+                for trade in executed[:10]:
+                    delta_r, _ = _partial_counterfactual_delta_r(
+                        trade, candle_root
+                    )
+                    if delta_r is None:
+                        comparison_missing += 1
+                        continue
+                    comparison_count += 1
+                    if delta_r > 0.5:
+                        old_better_count += 1
+            if len(executed) >= 10 and old_better_count > 3:
+                reasons.append(
+                    "partial-off rule would have exited more than 0.5R better "
+                    f"in {old_better_count} of the first ten eligible trades"
+                )
+            events.append(
+                f"first_ten_partial_off_better={old_better_count} "
+                f"paired={comparison_count}/10 missing={comparison_missing} "
+                f"eligible={len(executed)}/10"
+            )
+            summaries[flag] = {
+                "tagged_trades": len(tagged),
+                "rollback_reasons": reasons,
+                "checks": events,
+                "rollback_required": bool(reasons),
+            }
+            continue
         if flag == "runner_gap_v2":
             trade_sessions = sorted(
                 {session for trade in closed if (session := _trade_session(trade))}

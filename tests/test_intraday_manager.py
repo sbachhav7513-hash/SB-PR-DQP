@@ -9,7 +9,10 @@ import pytest
 from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.bar_builder import Bar
 from market_bot.engine import SupportResistanceReversal
-from market_bot.intraday_manager import IntradayManager
+from market_bot.intraday_manager import (
+    PAPER_OPTION_ADAPTIVE_EXIT,
+    IntradayManager,
+)
 from market_bot.kite_main import KiteTradingBot
 from market_bot.kite_provider import Tick
 from market_bot.trade_journal import (
@@ -90,6 +93,307 @@ def test_paper_bid_excursions_record_signed_r_and_tick_times():
     assert position["mae_r"] == pytest.approx(-0.5)
     assert position["mae_time"] == (start + timedelta(minutes=1)).isoformat()
     assert bot.trade_journal.update_open_trade.call_count == 2
+
+
+def _partial_profit_test_bot(
+    tmp_path,
+    *,
+    lots=2,
+    dynamic=True,
+    profit_lock=True,
+    close_confirm=False,
+):
+    symbol = "NIFTY_CE"
+    lot_size = 50
+    quantity = lots * lot_size
+    now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(microsecond=0)
+    manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss_pct=10.0,
+    )
+    manager.contract_specs[symbol] = {"lot_size": lot_size, "multiplier": 1.0}
+    manager.register_position(
+        symbol,
+        "BUY",
+        quantity,
+        100.0,
+        90.0,
+        140.0,
+        trailing_enabled=True,
+        exit_strategy=PAPER_OPTION_ADAPTIVE_EXIT if dynamic else None,
+        adaptive_breakeven_r=0.5,
+        adaptive_trail_activation_r=1.0,
+        adaptive_trail_gap_r=1.0,
+        adaptive_runner_activation_r=2.0,
+        adaptive_runner_gap_r=1.5,
+        profit_lock_enabled=profit_lock,
+        profit_lock_r=0.15,
+        trail_close_confirm_enabled=close_confirm,
+    )
+    journal = TradeJournal(str(tmp_path / "trades.jsonl"))
+    trade_id = journal.log_trade(
+        {
+            "ticker": symbol,
+            "action": "BUY",
+            "entry": 100.0,
+            "stop_loss": 90.0,
+            "take_profit": 140.0,
+            "quantity": quantity,
+            "entry_quantity": quantity,
+            "remaining_quantity": quantity,
+            "lot_size": lot_size,
+            "lots": lots,
+            "entry_time": now.isoformat(),
+            "timestamp": now.isoformat(),
+            "partial_status": "not-triggered",
+            "partial_exit_done": False,
+            "partial_quantity": 0,
+            "partial_pnl_rupees": 0.0,
+            "exit_legs": [],
+            "paper_exit_flags_at_entry": ["partial_profit_v2"],
+            "paper_change_attributions": [],
+            "entry_feature_values": {"partial_status": "not-triggered"},
+            "entry_feature_null_reasons": {},
+        }
+    )
+    manager.active_positions[symbol]["telegram_trade_id"] = trade_id
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "partial_profit_v2": True,
+        "partial_profit_r": 0.5,
+        "partial_profit_fraction": 0.5,
+        "profit_lock_v2": profit_lock,
+        "runner_gap_v2": True,
+        "trail_close_confirm_v2": close_confirm,
+        "option_quote_max_age_seconds": 60,
+        "option_quote_validated_stops_enabled": True,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.intraday_manager = manager
+    bot.trade_journal = journal
+    bot.option_quote_cache = {}
+    bot.latest_prices = {symbol: 100.0}
+    bot.telegram_notifier = Mock()
+    bot.telegram_notifier.send_trade_alert.return_value = True
+    bot.telegram_notifier.format_close.return_value = {"message": "final exit"}
+    bot.telegram_notifier.build_message.return_value = "final exit"
+    bot.kite_stream = SimpleNamespace(contract_symbols={symbol: symbol})
+    bot.stop_reentry_journal = None
+    bot._persist_current_live_risk_state = Mock()
+    bot._activate_daily_loss_shutdown = Mock()
+    bot._ema_reentry_enabled = lambda: False
+    bot._options_enabled = lambda: True
+    return bot, symbol, now
+
+
+def _set_partial_quote(bot, symbol, now, bid, ask=None):
+    ask = bid + 0.2 if ask is None else ask
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).replace(microsecond=0)
+    bot.option_quote_cache[symbol] = {
+        "timestamp": timestamp,
+        "bid": bid,
+        "ask": ask,
+        "last_price": (bid + ask) / 2,
+    }
+    bot.latest_prices[symbol] = (bid + ask) / 2
+
+
+def test_partial_profit_sells_floor_of_whole_lots_and_is_idempotent(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(tmp_path, lots=3, dynamic=False)
+    _set_partial_quote(bot, symbol, now, 105.0)
+
+    assert bot._check_position_exit(symbol, 105.1) is None
+    position = bot.intraday_manager.active_positions[symbol]
+    trade = bot.trade_journal.get_open_trade(symbol, "BUY")
+    assert position["quantity"] == 100
+    assert position["entry_quantity"] == 150
+    assert trade["partial_quantity"] == 50
+    assert trade["remaining_quantity"] == 100
+    assert trade["partial_status"] == "executed"
+    assert len(trade["exit_legs"]) == 1
+    assert trade["exit_legs"][0]["lots"] == 1
+    assert trade["exit_legs"][0]["fill"] == 105.0
+    assert "partial_profit_v2" in trade["paper_change_attributions"]
+    assert bot.telegram_notifier.send_trade_alert.call_count == 1
+
+    assert bot._maybe_execute_partial_profit(
+        symbol, position, bot._option_quote_metrics(bot.option_quote_cache[symbol])
+    ) is False
+    assert len(bot.trade_journal.get_open_trade(symbol, "BUY")["exit_legs"]) == 1
+
+
+def test_single_lot_partial_is_ineligible_and_does_not_change_position(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(tmp_path, lots=1, dynamic=False)
+    _set_partial_quote(bot, symbol, now, 105.0)
+
+    assert bot._check_position_exit(symbol, 105.1) is None
+    position = bot.intraday_manager.active_positions[symbol]
+    trade = bot.trade_journal.get_open_trade(symbol, "BUY")
+    assert position["quantity"] == 50
+    assert trade["partial_status"] == "single-lot-ineligible"
+    assert trade["partial_ineligible_single_lot"] is True
+    assert trade["partial_quantity"] == 0
+    assert trade["exit_legs"] == []
+    assert "partial_profit_v2" in trade["paper_change_attributions"]
+    assert bot.telegram_notifier.send_trade_alert.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("paper_enabled", "live_enabled", "flag_enabled"),
+    [(False, False, True), (True, True, True), (True, False, False)],
+)
+def test_partial_profit_is_flag_gated_to_paper(
+    tmp_path, paper_enabled, live_enabled, flag_enabled
+):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=2, dynamic=False
+    )
+    bot.paper_trading_enabled = paper_enabled
+    bot.live_orders_enabled = live_enabled
+    bot.config["partial_profit_v2"] = flag_enabled
+    _set_partial_quote(bot, symbol, now, 105.0)
+
+    assert bot._check_position_exit(symbol, 105.1) is None
+    assert bot.intraday_manager.active_positions[symbol]["quantity"] == 100
+    trade = bot.trade_journal.get_open_trade(symbol, "BUY")
+    assert trade["exit_legs"] == []
+    assert trade["partial_status"] == "not-triggered"
+    assert bot.telegram_notifier.send_trade_alert.call_count == 0
+
+
+def test_partial_profit_arms_lock_and_trade_accounting_uses_total_pnl(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(tmp_path, lots=2)
+    _set_partial_quote(bot, symbol, now, 105.0)
+
+    assert bot._check_position_exit(symbol, 104.0) is None
+    position = bot.intraday_manager.active_positions[symbol]
+    assert position["quantity"] == 50
+    assert position["profit_lock_stop"] == pytest.approx(101.5)
+
+    _set_partial_quote(bot, symbol, now + timedelta(minutes=1), 99.0)
+    assert bot._check_position_exit(symbol, 99.1) == "PROFIT_LOCK"
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["status"] == "closed"
+    assert trade["quantity"] == 100
+    assert trade["remaining_quantity"] == 0
+    assert [leg["leg_type"] for leg in trade["exit_legs"]] == ["partial", "final"]
+    assert sum(leg["gross_pnl_rupees"] for leg in trade["exit_legs"]) == pytest.approx(
+        trade["pnl_rupees"]
+    )
+    assert trade["pnl_rupees"] == pytest.approx(200.0)
+    assert trade["exit_price"] == pytest.approx(102.0)
+    assert trade["r_multiple"] == pytest.approx(0.2)
+    assert trade["exit_legs"][0]["r_contribution"] + trade["exit_legs"][1][
+        "r_contribution"
+    ] == pytest.approx(trade["r_multiple"])
+    assert "partial_profit_v2" in trade["paper_exit_flags_at_exit"]
+    assert bot.intraday_manager.symbol_performance[symbol]["trades"] == 1
+    assert bot.intraday_manager.symbol_performance[symbol]["wins"] == 1
+    assert bot.intraday_manager.daily_pnl == pytest.approx(200.0)
+    assert bot.telegram_notifier.send_trade_alert.call_count == 2
+
+
+def test_partial_remainder_uses_runner_and_close_confirmation(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=2, close_confirm=True
+    )
+    _set_partial_quote(bot, symbol, now, 105.0)
+    assert bot._check_position_exit(symbol, 105.1) is None
+    position = bot.intraday_manager.active_positions[symbol]
+    assert position["quantity"] == 50
+
+    runner_time = now + timedelta(minutes=1)
+    _set_partial_quote(bot, symbol, runner_time, 121.0)
+    assert bot._check_position_exit(symbol, 121.1) is None
+    assert position["adaptive_exit_mode"] == "runner"
+    assert position["quantity"] == 50
+    assert position["trailing_stop"] == pytest.approx(106.1)
+
+    bot._confirm_option_trailing_close(
+        symbol, Bar(runner_time + timedelta(minutes=1), 106, 107, 104, 105, 100)
+    )
+    _set_partial_quote(bot, symbol, runner_time + timedelta(minutes=1), 105.0)
+    assert bot._check_position_exit(symbol, 105.1) == "TRAILING_STOP"
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["status"] == "closed"
+    assert trade["quantity"] == 100
+    assert trade["exit_legs"][1]["quantity"] == 50
+    assert trade["pnl_rupees"] == pytest.approx(500.0)
+    assert bot.intraday_manager.symbol_performance[symbol]["trades"] == 1
+
+
+def test_partial_remainder_stop_and_forced_eod_close_are_aggregated(tmp_path):
+    stop_bot, symbol, now = _partial_profit_test_bot(
+        tmp_path / "stop", lots=2, dynamic=False
+    )
+    _set_partial_quote(stop_bot, symbol, now, 105.0)
+    assert stop_bot._check_position_exit(symbol, 105.1) is None
+    _set_partial_quote(stop_bot, symbol, now + timedelta(minutes=1), 90.0)
+    assert stop_bot._check_position_exit(symbol, 90.1) == "STOP_LOSS"
+    [stop_trade] = stop_bot.trade_journal.read_trades()
+    assert stop_trade["pnl_rupees"] == pytest.approx(-250.0)
+    assert stop_bot.intraday_manager.symbol_performance[symbol]["trades"] == 1
+
+    eod_bot, symbol, eod_now = _partial_profit_test_bot(
+        tmp_path / "eod", lots=2, dynamic=False
+    )
+    _set_partial_quote(eod_bot, symbol, eod_now, 105.0)
+    assert eod_bot._check_position_exit(symbol, 105.1) is None
+    _set_partial_quote(
+        eod_bot, symbol, eod_now + timedelta(minutes=1), 103.0
+    )
+    eod_bot._handle_market_close_exit()
+    [eod_trade] = eod_bot.trade_journal.read_trades()
+    assert eod_trade["reason"] == "MARKET_CLOSE_FORCED_EXIT"
+    assert eod_trade["pnl_rupees"] == pytest.approx(400.0)
+    assert eod_bot.intraday_manager.symbol_performance[symbol]["trades"] == 1
+
+
+def test_partial_state_restores_remainder_and_prevents_repeated_sell(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(tmp_path, lots=3, dynamic=False)
+    _set_partial_quote(bot, symbol, now, 105.0)
+    assert bot._check_position_exit(symbol, 105.1) is None
+    [trade] = bot.trade_journal.read_trades()
+
+    restored = object.__new__(KiteTradingBot)
+    restored.config = {"strong_signal_score": 80}
+    restored.intraday_manager = IntradayManager(
+        account_size=100_000,
+        risk_per_trade_pct=1.0,
+        daily_max_loss_pct=10.0,
+    )
+    restored.intraday_manager.contract_specs[symbol] = {
+        "lot_size": 50,
+        "multiplier": 1.0,
+    }
+    restored.trade_journal = bot.trade_journal
+    restored._restore_paper_positions([trade])
+    restored.option_quote_cache = {}
+    restored.latest_prices = {symbol: 100.0}
+    restored.paper_trading_enabled = True
+    restored.live_orders_enabled = False
+    restored.config.update(
+        {
+            "partial_profit_v2": True,
+            "partial_profit_r": 0.5,
+            "partial_profit_fraction": 0.5,
+        }
+    )
+    restored.telegram_notifier = Mock()
+    _set_partial_quote(restored, symbol, now + timedelta(minutes=1), 106.0)
+
+    position = restored.intraday_manager.active_positions[symbol]
+    assert position["quantity"] == 100
+    assert position["entry_quantity"] == 150
+    assert position["partial_exit_done"] is True
+    assert restored._maybe_execute_partial_profit(
+        symbol,
+        position,
+        restored._option_quote_metrics(restored.option_quote_cache[symbol]),
+    ) is False
+    assert len(restored.trade_journal.get_open_trade(symbol, "BUY")["exit_legs"]) == 1
 
 
 def test_position_size_skips_when_one_lot_exceeds_risk_budget():
@@ -2049,6 +2353,40 @@ def test_one_r_shadow_runner_records_quote_fills_costs_and_actual_exit(tmp_path)
     assert compared["actual_net_pnl_estimate_rupees"] == pytest.approx(1034.2375)
     restored = PaperShadowExitJournal(str(tmp_path / "shadow.jsonl"))
     assert restored.latest["tcs-trade"]["status"] == "closed"
+
+    bot.intraday_manager.contract_specs = {"TCS_CE": {"multiplier": 1.0}}
+    bot.option_quote_cache["TCS_CE"] = {"bid": 109.9, "ask": 110.0}
+    bot.paper_shadow_exit_journal.start(
+        {"trade_id": "partial-shadow", "ticker": "TCS_CE"}
+    )
+    bot._record_paper_shadow_actual_exit(
+        {
+            "trade_id": "partial-shadow",
+            "ticker": "TCS_CE",
+            "action": "BUY",
+            "entry": 100.0,
+            "quantity": 100,
+            "entry_quantity": 100,
+            "remaining_quantity": 50,
+            "paper_entry_ask": 100.1,
+            "paper_entry_quote_is_fresh": True,
+            "exit_legs": [
+                {
+                    "leg_type": "partial",
+                    "quantity": 50,
+                    "fill": 105.0,
+                    "bid": 105.0,
+                    "gross_pnl_rupees": 250.0,
+                }
+            ],
+        },
+        109.9,
+        "PROFIT_LOCK",
+    )
+    partial_actual = bot.paper_shadow_exit_journal.latest["partial-shadow"]
+    assert partial_actual["actual_gross_pnl_rupees"] == pytest.approx(745.0)
+    assert partial_actual["actual_exit_price"] == pytest.approx(107.45)
+    assert partial_actual["actual_bid_ask_gross_pnl_rupees"] == pytest.approx(735.0)
 
 
 def test_live_entry_aborts_when_fill_slippage_exceeds_risk_cap():

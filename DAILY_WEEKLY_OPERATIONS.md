@@ -36,6 +36,11 @@ policy to its prior behavior:
   entry (or below entry for a short premium position).
 - `trail_close_confirm_v2`: require the option's one-minute candle to close
   beyond the trailing/runner level, then exit at the next available valid bid.
+- `partial_profit_v2`: once a valid bid reaches +0.5R, sell 50% of the
+  position in whole lots. A single-lot trade is unchanged and is recorded as
+  ineligible; for three lots, one lot is sold. The initial stop remains in
+  place until the existing 0.5R profit-lock update arms on that tick. A partial
+  and its final remainder exit are recorded as legs of one trade.
 
 Index options (`NIFTY`, `BANKNIFTY`) and stock options can be configured
 independently under `paper_exit_tiers.index_options` and
@@ -64,6 +69,12 @@ and prints the reason. Review the matching row in `daily_review.md` and confirm
 the reported flag and evidence before restarting. For a manual rollback, set
 only the selected flag to `false` in the active runtime's `kite_config.json`;
 leave the tier parameters and all other flags unchanged.
+
+To roll back only the partial exit, set `"partial_profit_v2": false` in the
+active PAPER `kite_config.json` and restart the PAPER process. Leave
+`partial_profit_r` and `partial_profit_fraction` unchanged; disabling the flag
+restores full-position exits without changing the existing stop, lock, runner,
+or close-confirmation settings.
 
 To apply the rollback, stop the PAPER process, verify the flag remains false,
 then start PAPER again and verify the next trade's

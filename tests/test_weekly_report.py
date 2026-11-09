@@ -408,6 +408,40 @@ def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_
     assert recovery["stop_within_5m"] == 1
 
 
+def test_weekly_report_counts_partial_trade_once_using_aggregate_pnl(tmp_path):
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    trade = {
+        "trade_id": "partial-trade",
+        "timestamp": timestamp,
+        "entry_time": timestamp,
+        "closed_at": timestamp,
+        "ticker": "NIFTY_CE",
+        "action": "BUY",
+        "status": "closed",
+        "quantity": 100,
+        "entry_quantity": 100,
+        "partial_status": "executed",
+        "partial_exit_done": True,
+        "pnl": 200.0,
+        "pnl_rupees": 200.0,
+        "exit_legs": [
+            {"leg_type": "partial", "quantity": 50, "gross_pnl_rupees": 250.0},
+            {"leg_type": "final", "quantity": 50, "gross_pnl_rupees": -50.0},
+        ],
+    }
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps(trade) + "\n", encoding="utf-8"
+    )
+    (tmp_path / "decision_log.jsonl").write_text("", encoding="utf-8")
+
+    report = build_weekly_report(str(tmp_path))
+
+    assert report["closed_trades"] == 1
+    assert report["winning_trades"] == 1
+    assert report["losing_trades"] == 0
+    assert report["performance_by_symbol"]["NIFTY_CE"]["total_pnl"] == 200.0
+
+
 def test_daily_capture_window_and_trade_columns_include_exit_telemetry(tmp_path):
     day = datetime(2026, 10, 28, 9, 15, tzinfo=ZoneInfo("Asia/Kolkata")).date()
     trade = {

@@ -1800,6 +1800,7 @@ def write_daily_review(
         "time_of_day_bucket",
         "active_paper_change_flags",
         "paper_change_attributions",
+        "partial_status",
         "mfe_r",
         "mfe_time",
         "mae_r",
@@ -1847,6 +1848,7 @@ def write_daily_review(
                 f"risk/cap={values.get('risk_amount', 'N/A')}/"
                 f"{values.get('risk_cap', 'N/A')}; "
                 f"bucket={values.get('time_of_day_bucket', 'N/A')}; "
+                f"partial={values.get('partial_status', 'N/A')}; "
                 f"MFE/MAE={values.get('mfe_r', 'N/A')}@"
                 f"{values.get('mfe_time', 'N/A')}/"
                 f"{values.get('mae_r', 'N/A')}@{values.get('mae_time', 'N/A')}"

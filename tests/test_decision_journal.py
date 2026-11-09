@@ -89,6 +89,19 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
             "mfe_time": timestamp,
             "mae_r": -0.2,
             "mae_time": timestamp,
+            "entry_quantity": 100,
+            "remaining_quantity": 0,
+            "partial_status": "executed",
+            "partial_exit_done": True,
+            "partial_quantity": 50,
+            "partial_pnl_rupees": 250.0,
+            "partial_profit_r": 0.5,
+            "partial_profit_fraction": 0.5,
+            "exit_legs": [
+                {"leg_type": "partial", "quantity": 50},
+                {"leg_type": "final", "quantity": 50},
+            ],
+            "r_multiple": 0.2,
             "git_sha": "payload-sha",
             "git_dirty": True,
         }
@@ -116,6 +129,9 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
         "prior_30m_option_move_pct"
     ] == "insufficient_pre_signal_option_history"
     assert parquet_record["mae_r"] == "-0.2"
+    assert parquet_record["partial_status"] == "executed"
+    assert json.loads(parquet_record["exit_legs"])[0]["quantity"] == 50
+    assert parquet_record["r_multiple"] == "0.2"
 
 
 def test_bot_trade_exits_always_record_exit_reason(tmp_path):
