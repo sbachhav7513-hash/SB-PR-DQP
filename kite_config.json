@@ -3,6 +3,16 @@
   "kite_access_token": null,
   "trading_mode": "intraday_options",
   "mode": "PAPER",
+  "paper_charge_model": {
+    "brokerage_mode": "flat",
+    "brokerage_flat_inr": 20.0,
+    "brokerage_percentage_rate": 0.0003,
+    "stt_sell_rate": 0.0015,
+    "exchange_rate": 0.0003553,
+    "sebi_rate": 0.000001,
+    "stamp_buy_rate": 0.00003,
+    "gst_rate": 0.18
+  },
   "capture_all_evaluated_contracts": true,
   "strategy_config_version": "v2",
   "entry_mode": "confirmed",
