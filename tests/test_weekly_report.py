@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from market_bot.trade_journal import PaperTradingRecorder
+from market_bot.trade_journal import PaperTradingRecorder, TradeJournal
 from market_bot.weekly_report import (
     _daily_record_columns,
     _option_capture_window_status,
@@ -10,6 +10,7 @@ from market_bot.weekly_report import (
     summarize_best_setup_windows,
     write_daily_review,
     write_weekly_report,
+    write_weekly_review,
 )
 
 
@@ -322,6 +323,99 @@ def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
     assert "- Confirmed trades: 2" in review
     assert "- Gross recorded P&L: 5.00" in review
     assert "- After-cost P&L: 2.00" in review
+
+
+def test_daily_and_weekly_reviews_group_modeled_fees_net_pnl_and_r(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(microsecond=0)
+    trade = {
+        "trade_id": "costed-trade",
+        "timestamp": now.isoformat(),
+        "closed_at": now.isoformat(),
+        "ticker": "NIFTY_CE",
+        "action": "BUY",
+        "status": "closed",
+        "pnl_rupees": 100.0,
+        "gross_pnl_rupees": 100.0,
+        "fees": {
+            "brokerage": 40.0,
+            "stt": 1.0,
+            "total_fees": 10.0,
+            "fee_model_status": "modeled",
+        },
+        "fees_rupees": 10.0,
+        "fee_model_status": "modeled",
+        "after_cost_pnl": 90.0,
+        "net_pnl": 90.0,
+        "tier": "A",
+        "exit_trigger": "bot stop",
+        "r_multiple": 1.5,
+        "manual_exit_events": [
+            {"event": "set", "text": "/exitat 4 110", "chat_id": "101"}
+        ],
+    }
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps(trade) + "\n", encoding="utf-8"
+    )
+
+    daily_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+    daily_review = daily_path.read_text(encoding="utf-8")
+    weekly_report = build_weekly_report(
+        str(tmp_path),
+        days=7,
+        paper_data_dir=str(tmp_path / "paper"),
+    )
+    weekly_path = write_weekly_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        days=7,
+        report=weekly_report,
+        output_path=tmp_path / "weekly.md",
+    )
+    weekly_review = weekly_path.read_text(encoding="utf-8")
+
+    assert "- Gross P&L: 100.00" in daily_review
+    assert "- Modeled fees: 10.00 (1/1 trades)" in daily_review
+    assert "Net P&L (gross minus modeled fees; no slippage): 90.00" in daily_review
+    assert "- Human command affected at least one trade: yes" in daily_review
+    assert "| CE/PE | CE | 1 | 100.00 | 10.00 (1/1) | 90.00" in daily_review
+    assert "| tier | A | 1 | 100.00 | 10.00 (1/1) | 90.00" in weekly_review
+    assert "| exit_trigger | bot stop | 1 | 100.00 | 10.00 (1/1) | 90.00" in weekly_review
+    assert weekly_report["cost_performance"]["CE/PE"]["CE"]["average_r"] == 1.5
+    assert weekly_report["human_command_affected_trade"] is True
+
+
+def test_daily_review_marks_successful_human_command_from_command_archive(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(microsecond=0)
+    journal = TradeJournal(
+        str(tmp_path / "trades.jsonl"),
+        paper_data_dir=str(tmp_path / "paper"),
+    )
+    journal.log_command(
+        {
+            "chat_id": "101",
+            "user_id": "202",
+            "text": "/exitat 42 110",
+            "update_id": 42,
+            "message_timestamp": now.timestamp(),
+            "response": "Trade #42: manual exit trigger set from none to 110.00.",
+        }
+    )
+
+    review_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+
+    assert "- Human command affected at least one trade: yes" in (
+        review_path.read_text(encoding="utf-8")
+    )
 
 
 def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_path):

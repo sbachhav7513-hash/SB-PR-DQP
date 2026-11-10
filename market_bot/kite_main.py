@@ -58,6 +58,7 @@ from .strategy_config import (
     resolve_execution_mode,
     strategy_config_hash,
 )
+from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
 from .stop_reentry_journal import StopReentryJournal
 from .telegram_notifier import TelegramNotifier
@@ -2774,6 +2775,76 @@ class KiteTradingBot:
             raise RuntimeError(
                 f"Failed to persist stale paper position recovery for {symbol}"
             )
+        remaining_quantity = int(
+            trade.get("remaining_quantity", trade.get("quantity", 0))
+        )
+        entry_quantity = int(
+            trade.get("entry_quantity", trade.get("quantity", remaining_quantity))
+        )
+        multiplier = float(
+            self.intraday_manager.contract_specs.get(symbol, {}).get(
+                "multiplier", 1.0
+            )
+        )
+        partial_pnl = float(trade.get("partial_pnl_rupees", 0.0) or 0.0)
+        direction_sign = 1.0 if direction == "BUY" else -1.0
+        gross_pnl = (
+            (exit_price - entry_price)
+            * direction_sign
+            * remaining_quantity
+            * multiplier
+            + partial_pnl
+        )
+        exit_legs = list(trade.get("exit_legs") or [])
+        if exit_legs:
+            exit_legs.append(
+                {
+                    "leg_type": "final",
+                    "reason": reason,
+                    "time": closed_at,
+                    "quantity": remaining_quantity,
+                    "fill": exit_price,
+                    "gross_pnl_rupees": (
+                        (exit_price - entry_price)
+                        * direction_sign
+                        * remaining_quantity
+                        * multiplier
+                    ),
+                }
+            )
+        fee_record = calculate_trade_fees(
+            {
+                **trade,
+                "action": direction,
+                "entry_quantity": entry_quantity,
+                "quantity": entry_quantity,
+                "exit_legs": exit_legs,
+                "exit_price": exit_price,
+                "exit_quantity": remaining_quantity,
+            },
+            self.config,
+        )
+        fees_rupees = fee_record["total_fees"]
+        self.trade_journal.annotate_trade(
+            symbol,
+            {
+                "gross_pnl_rupees": gross_pnl,
+                "fees": fee_record,
+                "fees_rupees": fees_rupees,
+                "fee_model_status": "modeled",
+                "after_cost_pnl": round(gross_pnl - fees_rupees, 2),
+                "net_pnl": round(gross_pnl - fees_rupees, 2),
+                "exit_legs": exit_legs,
+                "exit_trigger": "paper recovery",
+                "exit_trigger_set_time": datetime.fromisoformat(
+                    closed_at.replace("Z", "+00:00")
+                ).astimezone(timezone.utc).isoformat(timespec="seconds"),
+                "exit_trigger_set_sender": "BOT",
+                "exit_command": None,
+                "manual_exit_events": trade.get("manual_exit_events") or [],
+            },
+            direction,
+        )
 
     def _persist_risk_state(self, positions: list[dict], orders: list[dict]) -> None:
         target_date = datetime.now(IST).date().isoformat()
@@ -8584,7 +8655,11 @@ class KiteTradingBot:
             if partial_executed
             else 0.0
         )
-        exit_legs = list(position.get("exit_legs") or []) if position else []
+        exit_legs = list(
+            (position or {}).get("exit_legs")
+            or (trade or {}).get("exit_legs")
+            or []
+        )
         trade_risk = None
         weighted_exit_price = float(price)
         if partial_executed and exit_info is not None:
@@ -8638,6 +8713,48 @@ class KiteTradingBot:
                 / entry_quantity
             )
             trade_risk = total_risk
+        else:
+            entry_quantity = int(
+                (position or {}).get("entry_quantity")
+                or (trade or {}).get("entry_quantity")
+                or (trade or {}).get("quantity")
+                or 0
+            )
+        fee_record = None
+        if trade is not None:
+            fee_trade = {
+                **trade,
+                "action": action or trade.get("action"),
+                "entry_quantity": entry_quantity,
+                "quantity": entry_quantity,
+                "exit_legs": exit_legs,
+                "exit_price": weighted_exit_price,
+                "exit_quantity": (
+                    int(exit_info["quantity"])
+                    if exit_info is not None and not partial_executed
+                    else entry_quantity
+                ),
+            }
+            fee_record = calculate_trade_fees(
+                fee_trade, getattr(self, "config", None)
+            )
+        fees_rupees = fee_record["total_fees"] if fee_record else None
+        cost_fields = {
+            "gross_pnl_rupees": float(pnl) if pnl is not None else None,
+            "fees": fee_record,
+            "fees_rupees": fees_rupees,
+            "fee_model_status": "modeled" if fee_record else None,
+            "after_cost_pnl": (
+                round(float(pnl) - fees_rupees, 2)
+                if pnl is not None and fees_rupees is not None
+                else None
+            ),
+            "net_pnl": (
+                round(float(pnl) - fees_rupees, 2)
+                if pnl is not None and fees_rupees is not None
+                else None
+            ),
+        }
         if exit_info is not None or trade is not None:
             if pnl is None:
                 raise RuntimeError(
@@ -8663,6 +8780,7 @@ class KiteTradingBot:
                 and bool((trade or {}).get("trade_id"))
             )
             exit_annotation = {
+                **cost_fields,
                 "pnl": pnl,
                 "pnl_points": (
                     pnl
@@ -8957,7 +9075,7 @@ class KiteTradingBot:
         elif trade is not None:
             self.trade_journal.annotate_trade(
                 symbol,
-                exit_audit_fields,
+                {**exit_audit_fields, **cost_fields},
                 action,
             )
         if reason in {"STOP_LOSS", "TRAILING_STOP"} and (

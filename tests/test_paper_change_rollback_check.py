@@ -25,7 +25,10 @@ def test_rollback_disables_only_underperforming_paper_change_at_threshold(tmp_pa
                     "trade_id": f"added-{index}",
                     "paper_change_attributions": ["option_candle_momentum"],
                     "status": "closed",
+                    "action": "BUY",
                     "quantity": 65,
+                    "entry": 100,
+                    "exit_price": 99,
                     "pnl_rupees": -10,
                     "entry_fill_source": "best_ask",
                 }
@@ -111,10 +114,11 @@ def test_removal_only_change_reports_candle_estimate_without_rollback(tmp_path, 
     assert "rollback=report_only" in output
 
 
-def test_zerodha_costs_include_both_sides_slippage_and_order_fees():
+def test_modeled_charges_include_both_executed_orders_without_slippage():
     net = _net_pnl_rupees(
         {
             "status": "closed",
+            "action": "BUY",
             "quantity": 10,
             "entry": 100,
             "exit_price": 110,
@@ -122,8 +126,7 @@ def test_zerodha_costs_include_both_sides_slippage_and_order_fees():
         }
     )
 
-    assert net is not None
-    assert net < 100 - 40 - 1
+    assert net == 50.24
 
 
 def test_banknifty_stop_rule_disables_flag_on_two_consecutive_losses(tmp_path):
@@ -142,6 +145,7 @@ def test_banknifty_stop_rule_disables_flag_on_two_consecutive_losses(tmp_path):
                     "ticker": "BANKNIFTY_CE",
                     "paper_change_flags": ["banknifty_caps_v2"],
                     "status": "closed",
+                    "action": "BUY",
                     "quantity": 1,
                     "entry": 100,
                     "exit_price": 99,
@@ -177,9 +181,10 @@ def test_banknifty_stop_rule_disables_flag_on_single_loss_over_2500(tmp_path):
                 "ticker": "BANKNIFTY_CE",
                 "paper_change_flags": ["banknifty_caps_v2"],
                 "status": "closed",
+                "action": "BUY",
                 "quantity": 30,
                 "entry": 100,
-                "exit_price": 0,
+                "exit_price": 1,
                 "pnl_rupees": -3000,
                 "timestamp": "2026-10-30T10:00:00+05:30",
             }
@@ -214,6 +219,7 @@ def test_capital_based_risk_rolls_back_on_daily_loss_and_reports_investment(
                     "paper_change_flags": ["capital_based_risk_v2"],
                     "paper_change_attributions": ["capital_based_risk_v2"],
                     "status": "closed",
+                    "action": "BUY",
                     "timestamp": f"2026-10-30T10:{index:02d}:00+05:30",
                     "quantity": 130,
                     "lots": 2,
@@ -262,6 +268,7 @@ def test_capital_based_risk_rolls_back_on_single_trade_loss_over_risk_multiple(
                 "ticker": "NIFTY_CE",
                 "paper_change_flags": ["capital_based_risk_v2"],
                 "status": "closed",
+                "action": "BUY",
                 "timestamp": "2026-10-30T10:00:00+05:30",
                 "quantity": 65,
                 "lots": 1,
@@ -298,6 +305,7 @@ def test_capital_based_risk_rolls_back_when_daily_loss_limit_is_hit(tmp_path):
                     "ticker": "NIFTY_CE",
                     "paper_change_flags": ["capital_based_risk_v2"],
                     "status": "closed",
+                    "action": "BUY",
                     "timestamp": f"2026-10-30T10:{index:02d}:00+05:30",
                     "quantity": 1,
                     "entry": 100,

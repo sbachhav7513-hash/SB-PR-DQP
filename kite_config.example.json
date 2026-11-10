@@ -11,6 +11,16 @@
   "stop_quote_bad_tick_drop_pct": 0.15,
   "stop_quote_bad_tick_lookback_seconds": 2.0,
   "stop_quote_bad_tick_confirm_seconds": 3.0,
+  "paper_charge_model": {
+    "brokerage_mode": "flat",
+    "brokerage_flat_inr": 20.0,
+    "brokerage_percentage_rate": 0.0003,
+    "stt_sell_rate": 0.0015,
+    "exchange_rate": 0.0003553,
+    "sebi_rate": 0.000001,
+    "stamp_buy_rate": 0.00003,
+    "gst_rate": 0.18
+  },
   "stop_reentry_enabled": true,
   "stop_reentry_cooldown_minutes": 15,
   "stop_reentry_min_score": 75,

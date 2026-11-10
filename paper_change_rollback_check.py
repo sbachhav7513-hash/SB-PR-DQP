@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from market_bot.paper_costs import calculate_trade_fees, resolve_charge_model
 from market_bot.paper_exit_rollback import EXIT_FLAGS, evaluate_paper_exit_rollbacks
 
 
@@ -32,13 +33,6 @@ REMOVAL_ONLY_KEY = "premium_floor_v2"
 CAPITAL_BASED_RISK_KEY = "capital_based_risk_v2"
 ROLLBACK_TRADES = 15
 ROLLBACK_SESSIONS = 5
-BROKERAGE_PER_ORDER_INR = 20.0
-STT_SELL_RATE = 0.0015
-NSE_FO_TRANSACTION_RATE = 0.0003553
-SEBI_TURNOVER_RATE = 0.000001
-STAMP_DUTY_BUY_RATE = 0.00003
-GST_RATE = 0.18
-SLIPPAGE_PER_UNIT_PER_SIDE_INR = 0.05
 
 
 def _read_jsonl(path: Path):
@@ -130,41 +124,20 @@ def _gross_pnl_rupees(trade: dict[str, Any]) -> float | None:
     return pnl * quantity_value
 
 
-def _net_pnl_rupees(trade: dict[str, Any]) -> float | None:
+def _net_pnl_rupees(
+    trade: dict[str, Any], config: dict[str, Any] | None = None
+) -> float | None:
     gross = _gross_pnl_rupees(trade)
     if gross is None:
-        gross = _finite_amount(trade.get("after_cost_pnl", trade.get("net_pnl")))
-    if gross is None:
-        return None
+        recorded_net = trade.get("net_pnl")
+        if recorded_net in (None, ""):
+            recorded_net = trade.get("after_cost_pnl")
+        return _finite_amount(recorded_net)
     try:
-        quantity = abs(float(trade.get("quantity", 0)))
-    except (TypeError, ValueError, OverflowError):
+        fees = calculate_trade_fees(trade, config)
+    except ValueError:
         return None
-    if not math.isfinite(quantity) or quantity <= 0:
-        return None
-
-    entry = _finite_amount(trade.get("entry"))
-    exit_price = _finite_amount(
-        trade.get(
-            "exit_price",
-            trade.get("paper_exit_ltp", trade.get("last_price")),
-        )
-    )
-    if entry is None or exit_price is None or entry < 0 or exit_price < 0:
-        brokerage = BROKERAGE_PER_ORDER_INR * 2
-        transaction = sebi = stt = stamp = 0.0
-    else:
-        buy_turnover = entry * quantity
-        sell_turnover = exit_price * quantity
-        turnover = buy_turnover + sell_turnover
-        brokerage = BROKERAGE_PER_ORDER_INR * 2
-        transaction = turnover * NSE_FO_TRANSACTION_RATE
-        sebi = turnover * SEBI_TURNOVER_RATE
-        stt = sell_turnover * STT_SELL_RATE
-        stamp = buy_turnover * STAMP_DUTY_BUY_RATE
-    gst = GST_RATE * (brokerage + transaction + sebi)
-    slippage = SLIPPAGE_PER_UNIT_PER_SIDE_INR * quantity * 2
-    return gross - brokerage - transaction - sebi - stt - stamp - gst - slippage
+    return gross - fees["total_fees"]
 
 
 def _profit_factor(values: list[float]) -> float:
@@ -289,10 +262,12 @@ def _removed_trade_estimate(
     net = _net_pnl_rupees(
         {
             "pnl_rupees": gross,
+            "action": "BUY",
             "quantity": quantity,
             "entry": entry,
             "exit_price": exit_price,
-        }
+        },
+        config,
     )
     return {
         "status": "estimated",
@@ -332,7 +307,10 @@ def _removed_decisions(
     return list(removed.values())
 
 
-def _banknifty_stop_reason(trades: dict[str, dict[str, Any]]) -> str | None:
+def _banknifty_stop_reason(
+    trades: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
+) -> str | None:
     banknifty = [
         row
         for row in trades.values()
@@ -345,7 +323,7 @@ def _banknifty_stop_reason(trades: dict[str, dict[str, Any]]) -> str | None:
     )
     consecutive_losses = 0
     for row in banknifty:
-        net = _net_pnl_rupees(row)
+        net = _net_pnl_rupees(row, config)
         if net is None:
             consecutive_losses = 0
             continue
@@ -399,11 +377,12 @@ def _trade_lots(trade: dict[str, Any]) -> float | None:
 
 
 def _capital_based_stop_reason(
-    trades: dict[str, dict[str, Any]]
+    trades: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
 ) -> str | None:
     daily_losses: dict[str, float] = {}
     for row in _capital_risk_trades(trades):
-        pnl = _net_pnl_rupees(row)
+        pnl = _net_pnl_rupees(row, config)
         if pnl is None:
             continue
         risk = _trade_risk_amount(row)
@@ -432,7 +411,8 @@ def _capital_based_stop_reason(
 
 
 def _print_capital_based_daily_summary(
-    trades: dict[str, dict[str, Any]]
+    trades: dict[str, dict[str, Any]],
+    config: dict[str, Any] | None = None,
 ) -> None:
     daily: dict[str, list[dict[str, Any]]] = {}
     for row in _capital_risk_trades(trades):
@@ -453,7 +433,7 @@ def _print_capital_based_daily_summary(
         pnl_values = [
             amount
             for row in rows
-            if (amount := _net_pnl_rupees(row)) is not None
+            if (amount := _net_pnl_rupees(row, config)) is not None
         ]
         lots = [
             f"{row.get('trade_id', 'unknown')}:{lot_count:g}"
@@ -505,9 +485,7 @@ def run_check(
     changes: list[tuple[str, str]] = []
     print(
         "PAPER change daily summary "
-        "(cost model: Zerodha NSE F&O; brokerage INR 20/order, STT 0.15% sell, "
-        "NSE transaction 0.03553%, SEBI INR 10/crore, stamp 0.003% buy, "
-        f"GST 18%, slippage INR {SLIPPAGE_PER_UNIT_PER_SIDE_INR:.2f}/unit/side)"
+        f"(modeled fees; no slippage; charge model={resolve_charge_model(config)})"
     )
     for key in CHANGE_KEYS:
         attributed = [
@@ -518,7 +496,7 @@ def run_check(
         net_values = [
             net
             for row in attributed
-            if (net := _net_pnl_rupees(row)) is not None
+            if (net := _net_pnl_rupees(row, config)) is not None
         ]
         missing = len(attributed) - len(net_values)
         total_net = sum(net_values)
@@ -529,7 +507,7 @@ def run_check(
             (
                 (net, str(row.get("trade_id", "")))
                 for row in attributed
-                if (net := _net_pnl_rupees(row)) is not None
+                if (net := _net_pnl_rupees(row, config)) is not None
             ),
             default=None,
         )
@@ -556,13 +534,13 @@ def run_check(
             continue
         if key == CAPITAL_BASED_RISK_KEY:
             if bool(config.get(key, True)):
-                stop_reason = _capital_based_stop_reason(trades)
+                stop_reason = _capital_based_stop_reason(trades, config)
                 if stop_reason:
                     config[key] = False
                     changes.append((key, stop_reason))
             continue
         if key == "banknifty_caps_v2" and bool(config.get(key, True)):
-            stop_reason = _banknifty_stop_reason(trades)
+            stop_reason = _banknifty_stop_reason(trades, config)
             if stop_reason:
                 config[key] = False
                 changes.append((key, stop_reason))
@@ -579,7 +557,7 @@ def run_check(
                 (key, "rollback threshold reached and net P/L < 0 or PF < 1.0")
             )
 
-    _print_capital_based_daily_summary(trades)
+    _print_capital_based_daily_summary(trades, config)
     exit_rollbacks = evaluate_paper_exit_rollbacks(
         list(trades.values()), candle_root
     )

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .paper_costs import resolve_charge_model
+
 
 IST = ZoneInfo("Asia/Kolkata")
 EXIT_FLAGS = (
@@ -17,6 +19,21 @@ EXIT_FLAGS = (
     "partial_profit_v2",
     "stop_quote_validation_v2",
 )
+
+
+def _replay_cost_args() -> Namespace:
+    model = resolve_charge_model()
+    return Namespace(
+        slippage=0.01,
+        brokerage_per_order=model["brokerage_flat_inr"],
+        brokerage_mode=model["brokerage_mode"],
+        brokerage_percentage_rate=model["brokerage_percentage_rate"],
+        stt_rate=model["stt_sell_rate"],
+        exchange_rate=model["exchange_rate"],
+        sebi_rate=model["sebi_rate"],
+        stamp_rate=model["stamp_buy_rate"],
+        gst_rate=model["gst_rate"],
+    )
 
 
 def _number(value: Any) -> float | None:
@@ -140,15 +157,7 @@ def _counterfactual_delta_r(
     if lock_r is None:
         lock_r = 0.15
     close_confirm = "trail_close_confirm_v2" in _trade_flags(trade)
-    args = Namespace(
-        slippage=0.01,
-        brokerage_per_order=20.0,
-        stt_rate=0.001,
-        exchange_rate=0.0003503,
-        sebi_rate=0.000001,
-        stamp_rate=0.00003,
-        gst_rate=0.18,
-    )
+    args = _replay_cost_args()
     old_settings = {
         "runner_gap": runner_gap,
         "profit_lock_r": None if flag == "profit_lock_v2" else lock_r,
@@ -233,15 +242,7 @@ def _partial_counterfactual_delta_r(
     if lock_r is None:
         lock_r = 0.15 if "profit_lock_v2" in _trade_flags(trade) else None
     close_confirm = "trail_close_confirm_v2" in _trade_flags(trade)
-    args = Namespace(
-        slippage=0.01,
-        brokerage_per_order=20.0,
-        stt_rate=0.001,
-        exchange_rate=0.0003503,
-        sebi_rate=0.000001,
-        stamp_rate=0.00003,
-        gst_rate=0.18,
-    )
+    args = _replay_cost_args()
     old = simulate_policy(
         replay_trade,
         candles,

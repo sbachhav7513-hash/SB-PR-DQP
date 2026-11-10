@@ -14,6 +14,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from market_bot.paper_costs import resolve_charge_model
+
 try:
     from . import replay_exit_policies as replay
 except ImportError:
@@ -49,14 +51,17 @@ SCENARIOS: dict[str, dict[str, Any]] = {
 
 
 def _cost_args(slippage: float) -> Namespace:
+    model = resolve_charge_model()
     return Namespace(
         slippage=slippage,
-        brokerage_per_order=20.0,
-        stt_rate=0.001,
-        exchange_rate=0.0003503,
-        sebi_rate=0.000001,
-        stamp_rate=0.00003,
-        gst_rate=0.18,
+        brokerage_per_order=model["brokerage_flat_inr"],
+        brokerage_mode=model["brokerage_mode"],
+        brokerage_percentage_rate=model["brokerage_percentage_rate"],
+        stt_rate=model["stt_sell_rate"],
+        exchange_rate=model["exchange_rate"],
+        sebi_rate=model["sebi_rate"],
+        stamp_rate=model["stamp_buy_rate"],
+        gst_rate=model["gst_rate"],
     )
 
 
@@ -118,7 +123,7 @@ def build_report(root: Path, start: date, end: date) -> str:
         "",
         f"Closed exact-contract rows: {len(trades)}; rows without contract IDs excluded: {excluded_without_contract}.",
         "Only trades with archived option candles can be simulated; paired comparisons include only complete baseline and scenario replays.",
-        "Flat costs use 1% adverse slippage per side. Measured half-spread uses each contract's mean valid half-spread/midpoint rate. Brokerage, STT, exchange, SEBI, stamp duty, and GST use the constants in `replay_exit_policies.py`.",
+        "Flat costs use 1% adverse slippage per side. Measured half-spread uses each contract's mean valid half-spread/midpoint rate. Brokerage, STT, exchange, SEBI, stamp duty, and GST use the shared modeled paper charge calculator.",
         "This is an offline counterfactual. It does not change flag defaults or production behavior.",
         "",
         "| Scenario | Cost model | Paired N | Net change vs legacy P1 (₹) | Without best paired trade (₹) | Best paired trade |",

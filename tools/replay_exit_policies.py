@@ -24,6 +24,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from market_bot.paper_costs import (
+    DEFAULT_CHARGE_MODEL,
+    calculate_order_fees,
+)
+
 
 IST = ZoneInfo("Asia/Kolkata")
 EXIT_FRACTIONS = (0.33, 0.50, 0.66)
@@ -334,20 +339,37 @@ def compute_costs(
     sebi_rate: float,
     stamp_rate: float,
     gst_rate: float,
+    brokerage_mode: str = "flat",
+    brokerage_percentage_rate: float = DEFAULT_CHARGE_MODEL[
+        "brokerage_percentage_rate"
+    ],
 ) -> float:
     buy_turnover = entry * quantity
-    sell_turnover = sum(price * qty for price, qty in exits)
-    turnover = buy_turnover + sell_turnover
     slip_cost = buy_turnover * slippage + sum(
         price * qty * slippage for price, qty in exits
     )
-    brokerage = brokerage_per_order * (1 + len(exits))
-    stt = sell_turnover * stt_rate
-    exchange = turnover * exchange_rate
-    sebi = turnover * sebi_rate
-    stamp = buy_turnover * stamp_rate
-    gst = (brokerage + exchange + sebi) * gst_rate
-    return slip_cost + brokerage + stt + exchange + sebi + stamp + gst
+    fees = calculate_order_fees(
+        [
+            {"side": "BUY", "price": entry, "quantity": quantity},
+            *(
+                {"side": "SELL", "price": price, "quantity": qty}
+                for price, qty in exits
+            ),
+        ],
+        {
+            "paper_charge_model": {
+                "brokerage_mode": brokerage_mode,
+                "brokerage_flat_inr": brokerage_per_order,
+                "brokerage_percentage_rate": brokerage_percentage_rate,
+                "stt_sell_rate": stt_rate,
+                "exchange_rate": exchange_rate,
+                "sebi_rate": sebi_rate,
+                "stamp_buy_rate": stamp_rate,
+                "gst_rate": gst_rate,
+            }
+        },
+    )
+    return slip_cost + fees["total_fees"]
 
 
 def make_replay(
@@ -373,6 +395,12 @@ def make_replay(
         costs_args.sebi_rate,
         costs_args.stamp_rate,
         costs_args.gst_rate,
+        getattr(costs_args, "brokerage_mode", "flat"),
+        getattr(
+            costs_args,
+            "brokerage_percentage_rate",
+            DEFAULT_CHARGE_MODEL["brokerage_percentage_rate"],
+        ),
     )
     net = gross - costs
     return Replay(
@@ -1018,7 +1046,7 @@ def render_report(
         "- R is the initial option premium risk: `(entry premium - original stop) * quantity`. The original stop is always retained.",
         "- P1 moves the stop to entry after +0.5R; a runner activates at +2R and trails the high watermark by 1R. P2 changes only that trailing gap. P3 adds one partial at +1R; P4 is the conditional +0.5R partial for trades whose P1 path reaches +0.5R but stays below +1R before P1 exits, then breakeven for the remainder.",
         "- Thresholds use exact-contract option candle highs/lows; exits fill at the nearest sampled bid in the stop-trigger minute when available, otherwise at the following candle open (or a later sampled bid if no next candle exists). No candle high/low is used as a fill. Since sampled quote cadence can be sparse, stop-minute bid timing is approximate; a same-candle stop takes priority over a partial/target event.",
-        f"- Costs: {args.slippage:.2%} adverse slippage on the entry and each exit fill; brokerage ₹{args.brokerage_per_order:.2f} per order; STT {args.stt_rate:.3%} on sell turnover; exchange {args.exchange_rate:.4%}; SEBI {args.sebi_rate:.5%}; stamp duty {args.stamp_rate:.3%} on buy turnover; GST {args.gst_rate:.0%} on brokerage/exchange/SEBI. Rates are configurable estimates, not broker-confirmed charges.",
+        f"- Costs: {args.slippage:.2%} adverse slippage on the entry and each exit fill; modeled brokerage mode {args.brokerage_mode} (flat ₹{args.brokerage_per_order:.2f}, percentage {args.brokerage_percentage_rate:.3%}); modeled STT {args.stt_rate:.3%} on sell turnover; modeled exchange {args.exchange_rate:.4%}; modeled SEBI {args.sebi_rate:.5%}; modeled stamp duty {args.stamp_rate:.3%} on buy turnover; modeled GST {args.gst_rate:.0%} on brokerage/exchange/SEBI. Charge rates come from the shared paper charge model defaults unless overridden.",
         "- P0 is recorded gross P&L and records manual exits separately; its net figure is a cost-adjusted estimate, not the paper journal's reported P&L.",
         "- Partial percentages are theoretical unit splits. These trades are generally one lot; 33/50/66% reductions may not be exchange-valid lot quantities.",
         "",
@@ -1532,12 +1560,26 @@ def make_parser() -> argparse.ArgumentParser:
         default=Path("reports/EXIT_POLICY_REPLAY_2026-10-28_to_2026-11-06.md"),
     )
     parser.add_argument("--slippage", type=float, default=0.01, help="Adverse fraction per side; default 0.01")
-    parser.add_argument("--brokerage-per-order", type=float, default=20.0)
-    parser.add_argument("--stt-rate", type=float, default=0.001)
-    parser.add_argument("--exchange-rate", type=float, default=0.0003503)
-    parser.add_argument("--sebi-rate", type=float, default=0.000001)
-    parser.add_argument("--stamp-rate", type=float, default=0.00003)
-    parser.add_argument("--gst-rate", type=float, default=0.18)
+    parser.add_argument(
+        "--brokerage-mode",
+        choices=("flat", "min_flat_percentage"),
+        default=DEFAULT_CHARGE_MODEL["brokerage_mode"],
+    )
+    parser.add_argument(
+        "--brokerage-per-order",
+        type=float,
+        default=DEFAULT_CHARGE_MODEL["brokerage_flat_inr"],
+    )
+    parser.add_argument(
+        "--brokerage-percentage-rate",
+        type=float,
+        default=DEFAULT_CHARGE_MODEL["brokerage_percentage_rate"],
+    )
+    parser.add_argument("--stt-rate", type=float, default=DEFAULT_CHARGE_MODEL["stt_sell_rate"])
+    parser.add_argument("--exchange-rate", type=float, default=DEFAULT_CHARGE_MODEL["exchange_rate"])
+    parser.add_argument("--sebi-rate", type=float, default=DEFAULT_CHARGE_MODEL["sebi_rate"])
+    parser.add_argument("--stamp-rate", type=float, default=DEFAULT_CHARGE_MODEL["stamp_buy_rate"])
+    parser.add_argument("--gst-rate", type=float, default=DEFAULT_CHARGE_MODEL["gst_rate"])
     return parser
 
 
@@ -1546,7 +1588,14 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--start must be on or before --end")
     if args.slippage < 0 or args.brokerage_per_order < 0 or any(
         getattr(args, key) < 0
-        for key in ("stt_rate", "exchange_rate", "sebi_rate", "stamp_rate", "gst_rate")
+        for key in (
+            "brokerage_percentage_rate",
+            "stt_rate",
+            "exchange_rate",
+            "sebi_rate",
+            "stamp_rate",
+            "gst_rate",
+        )
     ):
         raise ValueError("Cost and slippage parameters must be non-negative")
     root = args.root.resolve()

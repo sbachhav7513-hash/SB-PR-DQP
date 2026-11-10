@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import csv
 import gzip
 from collections import defaultdict
@@ -101,6 +102,220 @@ def _recorded_trade_pnl(trade: Dict[str, Any]) -> float:
     if value in (None, ""):
         value = trade.get("pnl", trade.get("profit", 0))
     return _number(value)
+
+
+def _optional_finite_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _trade_fee_total(trade: Dict[str, Any]) -> float | None:
+    fees = trade.get("fees")
+    if isinstance(fees, str):
+        try:
+            fees = json.loads(fees)
+        except json.JSONDecodeError:
+            fees = None
+    if isinstance(fees, dict):
+        total = _optional_finite_number(fees.get("total_fees"))
+        if total is not None:
+            return total
+    return _optional_finite_number(trade.get("fees_rupees"))
+
+
+def _trade_cost_values(trade: Dict[str, Any]) -> tuple[float, float | None, float | None]:
+    gross = _optional_finite_number(trade.get("gross_pnl_rupees"))
+    if gross is None:
+        gross = _recorded_trade_pnl(trade)
+    fees = _trade_fee_total(trade)
+    net_value = trade.get("net_pnl")
+    if net_value in (None, ""):
+        net_value = trade.get("after_cost_pnl")
+    net = _optional_finite_number(net_value)
+    if net is None and fees is not None:
+        net = gross - fees
+    return gross, fees, net
+
+
+def _option_leg(trade: Dict[str, Any]) -> str:
+    leg = str(trade.get("option_leg") or "").upper()
+    if leg in {"CE", "PE"}:
+        return leg
+    ticker = str(trade.get("ticker") or trade.get("symbol") or "").upper()
+    if ticker.endswith(("_CE", "CE")):
+        return "CE"
+    if ticker.endswith(("_PE", "PE")):
+        return "PE"
+    return "UNKNOWN"
+
+
+def _cost_performance(trades: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    dimensions: Dict[str, Dict[str, Any]] = {
+        "tier": {},
+        "CE/PE": {},
+        "exit_trigger": {},
+    }
+    for trade in trades:
+        gross, fees, net = _trade_cost_values(trade)
+        risk_multiple = _optional_finite_number(trade.get("r_multiple"))
+        labels = {
+            "tier": str(trade.get("tier") or "UNKNOWN"),
+            "CE/PE": _option_leg(trade),
+            "exit_trigger": str(
+                trade.get("exit_trigger") or trade.get("reason") or "UNKNOWN"
+            ),
+        }
+        for dimension, label in labels.items():
+            row = dimensions[dimension].setdefault(
+                label,
+                {
+                    "trades": 0,
+                    "gross_pnl": 0.0,
+                    "fees_sum": 0.0,
+                    "fee_coverage": 0,
+                    "net_pnl_sum": 0.0,
+                    "net_coverage": 0,
+                    "r_sum": 0.0,
+                    "r_coverage": 0,
+                },
+            )
+            row["trades"] += 1
+            row["gross_pnl"] += gross
+            if fees is not None:
+                row["fees_sum"] += fees
+                row["fee_coverage"] += 1
+            if net is not None:
+                row["net_pnl_sum"] += net
+                row["net_coverage"] += 1
+            if risk_multiple is not None:
+                row["r_sum"] += risk_multiple
+                row["r_coverage"] += 1
+    for rows in dimensions.values():
+        for row in rows.values():
+            row["gross_pnl"] = round(row["gross_pnl"], 2)
+            row["modeled_fees"] = (
+                round(row.pop("fees_sum"), 2)
+                if row["fee_coverage"]
+                else None
+            )
+            if not row["fee_coverage"]:
+                row.pop("fees_sum")
+            row["net_pnl"] = (
+                round(row.pop("net_pnl_sum"), 2)
+                if row["net_coverage"]
+                else None
+            )
+            if not row["net_coverage"]:
+                row.pop("net_pnl_sum")
+            row["total_r"] = (
+                round(row.pop("r_sum"), 3)
+                if row["r_coverage"]
+                else None
+            )
+            if not row["r_coverage"]:
+                row.pop("r_sum")
+            row["average_r"] = (
+                round(row["total_r"] / row["r_coverage"], 3)
+                if row["r_coverage"]
+                else None
+            )
+    return dimensions
+
+
+def _human_command_affected(trades: List[Dict[str, Any]]) -> bool:
+    for trade in trades:
+        if _flag(trade.get("manual_exit")) or trade.get("exit_command"):
+            return True
+        events = trade.get("manual_exit_events")
+        if isinstance(events, str):
+            try:
+                events = json.loads(events)
+            except json.JSONDecodeError:
+                events = []
+        if isinstance(events, list) and events:
+            return True
+    return False
+
+
+def _command_affected_trade(command: Dict[str, Any]) -> bool:
+    text = str(command.get("text") or "").strip().lower()
+    name = text.split(maxsplit=1)[0] if text else ""
+    if name not in {"/exit", "/exitat", "/cancel", "/sl", "/be", "/target"}:
+        return False
+    result = str(command.get("response") or "").lower()
+    return bool(result) and not any(
+        marker in result
+        for marker in ("usage:", "could not", "failed", "disabled", "not found")
+    )
+
+
+def _cost_totals(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    fee_values = [
+        fees
+        for trade in trades
+        if (fees := _trade_fee_total(trade)) is not None
+    ]
+    net_values = [
+        net
+        for trade in trades
+        if (net := _trade_cost_values(trade)[2]) is not None
+    ]
+    return {
+        "gross_pnl": round(
+            sum(_trade_cost_values(trade)[0] for trade in trades), 2
+        ),
+        "modeled_fees": round(sum(fee_values), 2) if fee_values else None,
+        "net_pnl": round(sum(net_values), 2) if net_values else None,
+        "fee_coverage": len(fee_values),
+        "net_coverage": len(net_values),
+        "trades": len(trades),
+    }
+
+
+def _cost_performance_lines(
+    performance: Dict[str, Dict[str, Any]]
+) -> List[str]:
+    lines = [
+        "| Dimension | Group | Trades | Gross P&L | Modeled fees | Net P&L | R total | Average R |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for dimension, groups in performance.items():
+        for label, values in sorted(groups.items()):
+            fees = (
+                f"{values['modeled_fees']:.2f} "
+                f"({values['fee_coverage']}/{values['trades']})"
+                if values["modeled_fees"] is not None
+                else "N/A"
+            )
+            net = (
+                f"{values['net_pnl']:.2f} "
+                f"({values['net_coverage']}/{values['trades']})"
+                if values["net_pnl"] is not None
+                else "N/A"
+            )
+            total_r = (
+                f"{values['total_r']:.3f}"
+                if values["total_r"] is not None
+                else "N/A"
+            )
+            average_r = (
+                f"{values['average_r']:.3f}"
+                if values["average_r"] is not None
+                else "N/A"
+            )
+            lines.append(
+                f"| {dimension} | {label.replace('|', '/')} | "
+                f"{values['trades']} | {values['gross_pnl']:.2f} | "
+                f"{fees} | {net} | {total_r} | {average_r} |"
+            )
+    if len(lines) == 2:
+        lines.append("| No closed trades | - | 0 | 0.00 | N/A | N/A | N/A | N/A |")
+    return lines
 
 
 def _learning_feedback(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -756,6 +971,9 @@ def build_weekly_report(
         days,
         [
             "trade_id", "timestamp", "ticker", "action", "status", "pnl", "pnl_rupees",
+            "gross_pnl_rupees", "fees", "fees_rupees", "fee_model_status",
+            "after_cost_pnl", "net_pnl", "r_multiple", "tier", "exit_trigger",
+            "manual_exit", "manual_exit_events", "exit_command",
             "strategy_variant", "exit_strategy", "reason", "exit_reason_category",
             "quantity", "entry", "exit_price", "paper_entry_bid",
             "paper_entry_ask", "paper_exit_ltp", "paper_exit_bid",
@@ -902,6 +1120,9 @@ def build_weekly_report(
             trades, "strategy_variant"
         ),
         "performance_by_exit_reason": _performance_by_key(trades, "reason"),
+        "cost_totals": _cost_totals(trades),
+        "cost_performance": _cost_performance(trades),
+        "human_command_affected_trade": _human_command_affected(trades),
         "ema_reentry_summary": _ema_reentry_summary(trade_records, decisions),
         "option_exit_comparison": _option_exit_comparison(trade_records, days),
         "quote_cost_coverage": _quote_cost_coverage(trades),
@@ -914,7 +1135,10 @@ def build_weekly_report(
             "suppressed_entries": news_suppressed_entries,
         },
         "best_observed_profiles": profiles[:5],
-        "pnl_basis": "Recorded paper P&L; brokerage, taxes, and slippage are not deducted.",
+        "pnl_basis": (
+            "Gross recorded P&L; modeled brokerage, taxes, and fees are reported "
+            "separately. Net P&L is gross less modeled fees; no slippage is deducted."
+        ),
         "learning_feedback": learning_feedback,
         "recommendation": learning_feedback["recommendation"],
     }
@@ -1074,7 +1298,11 @@ def _date_records(
 
 
 def _record_matches_date(record: Dict[str, Any], target_date) -> bool:
-    timestamp_raw = record.get("timestamp")
+    timestamp_raw = (
+        record.get("timestamp")
+        or record.get("message_time")
+        or record.get("logged_at")
+    )
     if not timestamp_raw:
         return False
     try:
@@ -1092,6 +1320,9 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
     if parquet_name == "trades.parquet":
         return [
             "trade_id", "timestamp", "status", "pnl", "pnl_rupees", "reason",
+            "gross_pnl_rupees", "fees", "fees_rupees", "fee_model_status",
+            "net_pnl", "after_cost_pnl", "r_multiple", "tier", "exit_trigger",
+            "exit_command", "manual_exit", "manual_exit_events",
             "contract_id", "entry_time", "closed_at",
             "exit_reason_category", "ticker", "action", "score",
             "strategy_variant", "is_ema_reentry", "original_trade_id",
@@ -1100,15 +1331,15 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "entry_mode", "route", "signal_time", "signal_close",
             "confirmation_candle_time", "confirmation_close",
             "confirmation_result", "confirmation_delay_seconds",
-            "signal_premium", "order_premium", "after_cost_pnl", "net_pnl",
+            "signal_premium", "order_premium",
             "entry_quote_bid", "entry_quote_ask", "entry_quote_ltp",
             "entry_quote_timestamp", "fill_premium", "fill_bid", "fill_ask",
             "fill_ltp", "fill_quote_age_seconds", "fill_percent_change_from_signal",
             "fill_rule", "entry_regime", "entry_pivot_count",
             "support_reclaim_result", "support_distance_pct",
             "signal_to_entry_delay_seconds", "holding_time_seconds",
-            "manual_exit", "manual_exit_reason", "paper_change_flags_at_entry",
-            "signal_uid", "order_time", "tier", "entry_feature_values",
+            "manual_exit_reason", "paper_change_flags_at_entry",
+            "signal_uid", "order_time", "entry_feature_values",
             "entry_feature_null_reasons", "mfe_r", "mfe_time", "mae_r",
             "mae_time",
             "paper_change_flags_at_exit", "paper_exit_flags_at_entry",
@@ -1116,6 +1347,11 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "exit_trigger_price",
             "exit_trigger_source", "initial_stop_loss", "initial_risk_per_unit",
             "planned_risk_rupees",
+        ]
+    if parquet_name == "commands.parquet":
+        return [
+            "chat_id", "user_id", "text", "update_id",
+            "message_timestamp", "message_time", "logged_at", "response",
         ]
     return [
         "timestamp", "signal", "outcome", "score", "reasons",
@@ -1318,12 +1554,20 @@ def write_daily_summary(
     stop_reentry = summarize_stop_events(
         paper_data_dir, target_date, warn_missing=True
     )
+    cost_totals = _cost_totals(trades)
     values = {
         "date": target_date.isoformat(),
         "closed_trades": len(trades),
         "winning_trades": sum(1 for pnl in pnls if pnl > 0),
         "losing_trades": sum(1 for pnl in pnls if pnl <= 0),
         "total_pnl": round(sum(pnls), 2),
+        "gross_pnl_rupees": cost_totals["gross_pnl"],
+        "modeled_fees_rupees": cost_totals["modeled_fees"],
+        "net_pnl_rupees": cost_totals["net_pnl"],
+        "modeled_fee_coverage": cost_totals["fee_coverage"],
+        "net_pnl_coverage": cost_totals["net_coverage"],
+        "human_command_affected_trade": _human_command_affected(trades),
+        "cost_performance": _cost_performance(trades),
         "average_pnl": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
         "decisions_recorded": len(decisions),
         "buy_signals": sum(1 for item in decisions if item.get("signal") == "BUY"),
@@ -1490,6 +1734,12 @@ def write_daily_review(
         "decisions.parquet",
         target_date,
     )
+    commands = _date_records(
+        Path(data_dir) / "commands.jsonl",
+        Path(paper_data_dir),
+        "commands.parquet",
+        target_date,
+    )
     stop_reentry = summarize_stop_events(
         paper_data_dir, target_date, warn_missing=False
     )
@@ -1584,6 +1834,11 @@ def write_daily_review(
         )
 
     win_rate = wins / len(trades) * 100 if trades else 0.0
+    cost_totals = _cost_totals(trades)
+    cost_performance = _cost_performance(trades)
+    human_command_affected = _human_command_affected(trades) or any(
+        _command_affected_trade(command) for command in commands
+    )
     ema_reentries = [
         trade for trade in trades if _flag(trade.get("is_ema_reentry"))
     ]
@@ -1608,9 +1863,30 @@ def write_daily_review(
         "## Results",
         f"- Closed trades: {len(trades)}",
         f"- Wins / losses / breakeven: {wins} / {losses} / {breakeven}",
-        f"- Recorded P&L before unmodeled trading costs: {sum(pnls):.2f}",
+        f"- Gross recorded P&L before modeled fees: {sum(pnls):.2f}",
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
+        "",
+        "## Modeled Fees and Net Performance",
+        f"- Gross P&L: {cost_totals['gross_pnl']:.2f}",
+        (
+            f"- Modeled fees: {cost_totals['modeled_fees']:.2f} "
+            f"({cost_totals['fee_coverage']}/{cost_totals['trades']} trades)"
+            if cost_totals["modeled_fees"] is not None
+            else f"- Modeled fees: unavailable (0/{cost_totals['trades']} trades)"
+        ),
+        (
+            f"- Net P&L (gross minus modeled fees; no slippage): "
+            f"{cost_totals['net_pnl']:.2f} "
+            f"({cost_totals['net_coverage']}/{cost_totals['trades']} trades)"
+            if cost_totals["net_pnl"] is not None
+            else f"- Net P&L: unavailable (0/{cost_totals['trades']} trades)"
+        ),
+        f"- Human command affected at least one trade: "
+        f"{'yes' if human_command_affected else 'no'}",
+        "- All fee figures are modeled from the configured paper charge model.",
+        "",
+        *_cost_performance_lines(cost_performance),
         "",
         "## One-Candle Entry Confirmation",
         f"- Signals generated: {entry_confirmation['signals_generated']}",
@@ -2085,6 +2361,18 @@ def write_weekly_review(
     """Write a human-readable review with evidence-based improvement prompts."""
     report = report or build_weekly_report(data_dir, days, paper_data_dir)
     ema_reentry_summary = report["ema_reentry_summary"]
+    cost_totals = report.get("cost_totals") or {
+        "gross_pnl": report.get("total_pnl", 0.0),
+        "modeled_fees": None,
+        "net_pnl": None,
+        "fee_coverage": 0,
+        "net_coverage": 0,
+        "trades": report.get("closed_trades", 0),
+    }
+    cost_performance = report.get(
+        "cost_performance",
+        {"tier": {}, "CE/PE": {}, "exit_trigger": {}},
+    )
     now = datetime.now()
     destination = (
         Path(output_path)
@@ -2139,7 +2427,7 @@ def write_weekly_review(
         "",
         "## Observed Results",
         f"- Closed trades: {report['closed_trades']}",
-        f"- Recorded P&L before unmodeled trading costs: {report['total_pnl']:.2f}",
+        f"- Gross recorded P&L before modeled fees: {report['total_pnl']:.2f}",
         f"- Recorded expectancy before costs: "
         f"{report['total_pnl'] / report['closed_trades']:.2f} per trade"
         if report["closed_trades"]
@@ -2155,7 +2443,27 @@ def write_weekly_review(
         f"({report['learning_feedback']['closed_trades']}/"
         f"{report['learning_feedback']['minimum_closed_trades_for_screening']} trades)",
         f"- Feedback: {report['learning_feedback']['recommendation']}",
-        "- Recorded paper P&L does not deduct brokerage, taxes, or slippage.",
+        "",
+        "## Modeled Fees and Net Performance",
+        f"- Gross P&L: {cost_totals['gross_pnl']:.2f}",
+        (
+            f"- Modeled fees: {cost_totals['modeled_fees']:.2f} "
+            f"({cost_totals['fee_coverage']}/{cost_totals['trades']} trades)"
+            if cost_totals["modeled_fees"] is not None
+            else f"- Modeled fees: unavailable (0/{cost_totals['trades']} trades)"
+        ),
+        (
+            f"- Net P&L (gross minus modeled fees; no slippage): "
+            f"{cost_totals['net_pnl']:.2f} "
+            f"({cost_totals['net_coverage']}/{cost_totals['trades']} trades)"
+            if cost_totals["net_pnl"] is not None
+            else f"- Net P&L: unavailable (0/{cost_totals['trades']} trades)"
+        ),
+        f"- Human command affected at least one trade: "
+        f"{'yes' if report.get('human_command_affected_trade', False) else 'no'}",
+        "- All fee figures are modeled from the configured paper charge model.",
+        "",
+        *_cost_performance_lines(cost_performance),
         "",
         "## Option Exit Strategy Comparison",
         "| Strategy | Entries | Entries/day | Closed trades | Average recorded P&L/closed trade | Total recorded P&L |",
