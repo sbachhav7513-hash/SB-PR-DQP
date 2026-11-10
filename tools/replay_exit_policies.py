@@ -3,7 +3,8 @@
 
 This utility is intentionally isolated from the live trading and exit code.
 It reads paper trade Parquet files and archived option candles/quotes, then
-writes a Markdown report. It never writes to the paper session or bot config.
+writes a Markdown report under the system temporary directory. It never writes
+to the paper session or bot config.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import json
 import math
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -28,6 +30,7 @@ from market_bot.paper_costs import (
     DEFAULT_CHARGE_MODEL,
     calculate_order_fees,
 )
+from market_bot.runtime_safety import require_temporary_path
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -1557,7 +1560,9 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("reports/EXIT_POLICY_REPLAY_2026-10-28_to_2026-11-06.md"),
+        default=Path(tempfile.gettempdir())
+        / "EXIT_POLICY_REPLAY_2026-10-28_to_2026-11-06.md",
+        help="Markdown report destination; must be inside the system temp directory.",
     )
     parser.add_argument("--slippage", type=float, default=0.01, help="Adverse fraction per side; default 0.01")
     parser.add_argument(
@@ -1740,7 +1745,10 @@ def run(args: argparse.Namespace) -> int:
         trades, market, capture_index, contexts, max_rs,
         p4_eligible_ids, replays, args, excluded_without_contract
     )
-    output = args.output if args.output.is_absolute() else root / args.output
+    output = require_temporary_path(
+        args.output if args.output.is_absolute() else root / args.output,
+        purpose="Replay report",
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     print(f"Report written: {output}")

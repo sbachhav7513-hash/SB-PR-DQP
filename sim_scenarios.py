@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+from market_bot.runtime_safety import require_temporary_path
 
 
 ROOT = Path(__file__).resolve().parent
@@ -345,20 +347,19 @@ def main() -> int:
     parser.add_argument(
         "--sim-dir",
         default=None,
-        help="Output directory (defaults to sim/scenarios/<timestamp>).",
+        help="Temporary output directory (defaults to a unique system temp directory).",
     )
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
     if not config_path.is_file():
         parser.error(f"Configuration file not found: {config_path}")
-    run_dir = (
-        Path(args.sim_dir).resolve()
-        if args.sim_dir
-        else ROOT
-        / "sim"
-        / "scenarios"
-        / datetime.now().strftime("%Y%m%d_%H%M%S")
-    )
+    try:
+        run_dir = require_temporary_path(
+            args.sim_dir or tempfile.mkdtemp(prefix="kite-scenarios-"),
+            purpose="Scenario output directory",
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     run_dir.mkdir(parents=True, exist_ok=True)
 
     values = {

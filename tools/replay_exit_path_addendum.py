@@ -10,12 +10,15 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import tempfile
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from market_bot.runtime_safety import require_temporary_path
 
 import replay_exit_policies as replay
 
@@ -1116,7 +1119,10 @@ def run(args: argparse.Namespace) -> int:
             print(f"- {failure}", file=sys.stderr)
         return 2
     report = make_report(root, trades, market, paths, capture_index, replays, contexts)
-    output = args.output if args.output.is_absolute() else root / args.output
+    output = require_temporary_path(
+        args.output if args.output.is_absolute() else root / args.output,
+        purpose="Replay addendum report",
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     print(f"Report written: {output}")
@@ -1128,7 +1134,12 @@ def run(args: argparse.Namespace) -> int:
 def make_parser() -> argparse.ArgumentParser:
     parser = replay.make_parser()
     parser.description = __doc__
-    parser.set_defaults(start=START, end=END, output=Path("reports/EXIT_POLICY_PATH_ADDENDUM_2026-10-28_to_2026-11-06.md"))
+    parser.set_defaults(
+        start=START,
+        end=END,
+        output=Path(tempfile.gettempdir())
+        / "EXIT_POLICY_PATH_ADDENDUM_2026-10-28_to_2026-11-06.md",
+    )
     return parser
 
 

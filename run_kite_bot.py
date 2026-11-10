@@ -3,6 +3,7 @@
 import argparse
 import getpass
 import json
+import logging
 import os
 import sys
 import threading
@@ -21,6 +22,30 @@ REDIRECT_HOST = "127.0.0.1"
 REDIRECT_PORT = 8000
 
 load_local_environment()
+
+
+def configure_file_logging() -> Path:
+    sim_mode = os.getenv("BOT_SIM_MODE", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    log_path = (
+        Path(os.getenv("BOT_SIM_DIR", "sim")) / "kite_bot.log"
+        if sim_mode
+        else Path("kite_bot.log")
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(levelname)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_path, mode="a", encoding="utf-8"),
+        ],
+        force=True,
+    )
+    return log_path
 
 
 def has_valid_access_token(config_path: Path) -> bool:
@@ -171,6 +196,7 @@ def main() -> None:
                 "with run_kite_bot.py, then restart the service."
             )
         authorize(args.config, open_browser=args.open_browser)
+    configure_file_logging()
     KiteTradingBot(str(args.config)).run()
 
 

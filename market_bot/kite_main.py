@@ -82,29 +82,32 @@ from .weekly_report import (
 )
 
 
-_sim_logging_enabled = os.getenv("BOT_SIM_MODE", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
-log_path = (
-    Path(os.getenv("BOT_SIM_DIR", "sim")) / "kite_bot.log"
-    if _sim_logging_enabled
-    else Path("kite_bot.log")
-)
-log_path.parent.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_path, mode="a", encoding="utf-8"),
-    ],
-)
 logger = logging.getLogger(__name__)
 WEEKLY_REPORT_TIME_BUDGET_SECONDS = 120.0
 WEEKLY_REPORT_MEMORY_BUDGET_BYTES = 600 * 1024 * 1024
 DEFAULT_OPTION_PREMIUM_STOP_PCT = 0.10
+
+
+def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
+    defaults = {
+        "partial_profit_v2": True,
+        "entry_feature_logging_v2": True,
+        "stop_quote_validation_v2": True,
+        "runner_gap_v2": True,
+        "profit_lock_v2": True,
+        "trail_close_confirm_v2": True,
+        "option_quote_validated_stops_enabled": False,
+    }
+    configured_flags = {
+        key: bool(config.get(key, default)) for key, default in defaults.items()
+    }
+    logger.info(
+        "Runtime flags: mode=%s %s",
+        mode,
+        " ".join(
+            f"{key}={value}" for key, value in configured_flags.items()
+        ),
+    )
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -1724,6 +1727,7 @@ class KiteTradingBot:
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
         if self.simulation_mode:
             self.mode = "PAPER"
+        _log_runtime_flags(self.config, self.mode)
         self.config_hash = strategy_config_hash(self.config)
         self.git_identity = log_startup_identity(self.config_hash)
         if (

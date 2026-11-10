@@ -12,6 +12,7 @@ import sys
 from argparse import Namespace
 from datetime import date
 from pathlib import Path
+from market_bot.runtime_safety import require_temporary_path
 from typing import Any
 
 from market_bot.paper_costs import resolve_charge_model
@@ -160,7 +161,11 @@ def make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--start", type=date.fromisoformat, default=replay.DEFAULT_START)
     parser.add_argument("--end", type=date.fromisoformat, default=replay.DEFAULT_END)
-    parser.add_argument("--output", type=Path, help="Write Markdown report to this path")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write Markdown report inside the system temporary directory.",
+    )
     return parser
 
 
@@ -171,7 +176,10 @@ def main() -> int:
         if args.output is None:
             sys.stdout.buffer.write(report.encode("utf-8"))
         else:
-            output = args.output if args.output.is_absolute() else args.root / args.output
+            output = require_temporary_path(
+                args.output if args.output.is_absolute() else args.root / args.output,
+                purpose="Replay effects report",
+            )
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(report, encoding="utf-8")
             print(f"Report written: {output}")

@@ -15,14 +15,22 @@ paper_trading_data/
         ├── day_DD/
         │   ├── trades.parquet
         │   ├── decisions.parquet
-        │   ├── daily_summary.parquet
-        │   └── daily_review.md
+        │       ├── commands.parquet
+        │       ├── daily_summary.parquet
+        │       └── daily_review.md
         └── weekly_review_YYYY_MM_DD.md
 ```
 
 The Parquet files use Snappy compression. `trades.parquet` contains the ticker, direction, quantity, entry, exit, stop-loss, take-profit, score, exit reason, point P&L, rupee P&L, and duration. `decisions.parquet` contains the signal, score, reasons, bar data, and available history, and is suitable for transferring large daily decision archives. After market close, the bot writes `daily_summary.parquet` and `daily_review.md`; the review reports closed-trade results, signal/outcome counts, HOLD reason mentions, filter rejections, and shadow-candidate rejections. Its learning-feedback section highlights repeated losing exit groups as review hypotheses, shows whether the 10-closed-trade minimum screening sample is met, and explicitly prevents automatic strategy/config changes. The weekly JSON and Markdown reviews use the same sample gate; low-sample “best profiles” are not promoted as recommendations. On Friday, the bot creates the broader Markdown review in that week's folder.
 
-Paper journal P&L is the recorded simulated result and does not deduct brokerage, taxes, or slippage. Use realistic non-zero costs in historical replay before considering a strategy change. The 10-trade threshold is only a minimum screen, not evidence of a durable edge; patterns in the reports are descriptive, not causal, and the feedback layer never changes trading or live-order settings.
+The journal and reviews report gross PAPER P&L, separately itemized modeled fees,
+and net P&L (gross less fees; no slippage deduction). Reviews label modeled
+charges explicitly; replace rates only through the charge-model configuration
+when verified contract-note rates are available. Use realistic non-zero costs
+in historical replay before considering a strategy change. The 10-trade
+threshold is only a minimum screen, not evidence of a durable edge; patterns in
+the reports are descriptive, not causal, and the feedback layer never changes
+trading or live-order settings.
 
 ### PAPER option exit experiments
 
@@ -41,6 +49,11 @@ policy to its prior behavior:
   ineligible; for three lots, one lot is sold. The initial stop remains in
   place until the existing 0.5R profit-lock update arms on that tick. A partial
   and its final remainder exit are recorded as legs of one trade.
+- `stop_quote_validation_v2`: for PAPER protective exits, accept fresh quotes
+  with a positive bid and a coherent book even if LTP is outside the spread;
+  fill at bid. The bad-tick guard requires a confirming quote after a sudden
+  bid drop. Set this flag to `false` and restart the PAPER process to restore
+  the previous protective-exit quote validation.
 
 `entry_feature_logging_v2` defaults to `true` in PAPER mode. It enables only
 observational entry-feature assembly and bid-based MFE/MAE tracking; setting it
@@ -81,6 +94,11 @@ active PAPER `kite_config.json` and restart the PAPER process. Leave
 `partial_profit_r` and `partial_profit_fraction` unchanged; disabling the flag
 restores full-position exits without changing the existing stop, lock, runner,
 or close-confirmation settings.
+
+To roll back only the protective quote validation, stop the PAPER process,
+set `"stop_quote_validation_v2": false` in its active `kite_config.json`, and
+restart PAPER. Confirm the next startup log shows
+`stop_quote_validation_v2=False`. This does not change entry quote validation.
 
 To apply the rollback, stop the PAPER process, verify the flag remains false,
 then start PAPER again and verify the next trade's
