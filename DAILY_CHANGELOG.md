@@ -41,7 +41,7 @@ Outcome / follow-up / rollback:
   - `config_changelog.md` (modified in a follow-up local commit): Record the config hash associated with the new default.
   - `DAILY_CHANGELOG.md` (modified): Record this work and its validation.
 - Validation and result: `python -m pytest -q` passed (524 passed, 1 skipped); `git diff --check` passed; both edited JSON configs parsed. Original 5 ms callback probe ran 30/30 on both HEAD and `30f19dc` with no sample below 5 ms (HEAD 7.758–16.021 ms; baseline 5.932–23.116 ms). The robust 20 ms probe also ran 30/30 on both (HEAD minimum 20.305 ms; baseline minimum 19.926 ms). `timeit` over 10,000 synthetic calls measured feature assembly at 282.423 µs/call (2,824.228 ms total) and bid excursion tracking at 11.222 µs/call (112.220 ms total), medians of five runs. These methods are absent at `30f19dc`, so they add 11.222 µs for each active-position tick and 282.423 µs on an entry-evaluation tick (293.645 µs if both occur on one tick).
-- Outcome / follow-up / rollback: No changes to entries, filters, thresholds, the 10% stop, existing flag defaults, LIVE, or BACKTEST. Local commit only; no deploy.
+- Outcome / follow-up / rollback: Implementation/config commit `c99096504a1c4a46ede5850619b40b2202e629e3`; new config hash `1d470caee4dd73b7ac8f168c3da673d076ad181e83b2db63a72559e33f6eab1c` recorded in `config_changelog.md`. No changes to entries, filters, thresholds, the 10% stop, existing flag defaults, LIVE, or BACKTEST. Local commits only; no push or deploy.
 
 ### 2026-11-06
 
