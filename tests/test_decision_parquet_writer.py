@@ -122,11 +122,11 @@ def test_tick_callback_duration_is_measured_and_reported(caplog):
     bot._telegram_execution_lock = None
     bot._tick_duration_lock = threading.Lock()
     bot._tick_duration_samples = deque(maxlen=10)
-    bot._on_tick_serialized = lambda tick: time.sleep(0.005)
+    bot._on_tick_serialized = lambda tick: time.sleep(0.020)
 
     bot._on_tick(None)
 
-    assert bot._tick_duration_samples[0] >= 0.005
+    assert bot._tick_duration_samples[0] >= 0.015
     with caplog.at_level(logging.INFO):
         bot._log_persistence_telemetry()
     assert "tick_callback_p95_ms=" in caplog.text

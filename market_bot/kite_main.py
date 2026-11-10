@@ -1692,6 +1692,9 @@ class KiteTradingBot:
         self._tick_duration_lock = threading.Lock()
         self._tick_duration_samples = deque(maxlen=10000)
         self._last_telemetry_at = time.monotonic()
+        self._feature_observation_error_counts = {}
+        self._feature_observation_warning_times = {}
+        self._feature_observation_error_lock = threading.Lock()
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
         self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
@@ -1712,6 +1715,7 @@ class KiteTradingBot:
             raise ValueError("entry_mode must be immediate or confirmed")
         self.config.setdefault("capture_all_evaluated_contracts", True)
         self.config.setdefault("option_premium_rising_momentum_v2", True)
+        self.config.setdefault("entry_feature_logging_v2", True)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.simulation_mode and self.mode == "LIVE":
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
@@ -3292,6 +3296,68 @@ class KiteTradingBot:
         leg = "CE" if symbol.endswith("_CE") else "PE"
         return f"{symbol}|{leg}|{signal_time.isoformat()}"
 
+    def _entry_feature_logging_enabled(self) -> bool:
+        return (
+            bool(getattr(self, "paper_trading_enabled", False))
+            and not bool(getattr(self, "live_orders_enabled", False))
+            and getattr(
+                self,
+                "mode",
+                "PAPER"
+                if getattr(self, "paper_trading_enabled", False)
+                else None,
+            )
+            == "PAPER"
+            and not bool(getattr(self, "simulation_mode", False))
+            and bool(
+                (getattr(self, "config", {}) or {}).get(
+                    "entry_feature_logging_v2", True
+                )
+            )
+        )
+
+    def _record_feature_observation_error(
+        self, call_site: str, error: Exception, symbol: Optional[str] = None
+    ) -> None:
+        lock = getattr(self, "_feature_observation_error_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._feature_observation_error_lock = lock
+        now = time.monotonic()
+        with lock:
+            counts = getattr(self, "_feature_observation_error_counts", None)
+            if counts is None:
+                counts = {}
+                self._feature_observation_error_counts = counts
+            counts[call_site] = counts.get(call_site, 0) + 1
+            warning_times = getattr(
+                self, "_feature_observation_warning_times", None
+            )
+            if warning_times is None:
+                warning_times = {}
+                self._feature_observation_warning_times = warning_times
+            if now - warning_times.get(call_site, float("-inf")) >= 60.0:
+                warning_times[call_site] = now
+                logger.warning(
+                    "Entry feature observation failed call_site=%s symbol=%s "
+                    "null_reason=feature_error exception=%s",
+                    call_site,
+                    symbol or "unknown",
+                    type(error).__name__,
+                )
+
+    def _new_signal_uid(self) -> tuple[str, Optional[str]]:
+        try:
+            return uuid4().hex, None
+        except Exception as error:
+            self._record_feature_observation_error(
+                "signal_uid_generation", error
+            )
+            return (
+                f"fallback-{time.time_ns():x}-{threading.get_ident():x}",
+                type(error).__name__,
+            )
+
     def _entry_feature_snapshot(
         self,
         symbol: str,
@@ -3399,25 +3465,31 @@ class KiteTradingBot:
             )
         else:
             rsi_state = None
+        adx_error_reason = None
         try:
             adx_value = calculate_adx(history)
-        except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
-            logger.exception(
-                "[%s] Could not calculate entry-feature ADX", symbol
+        except Exception as error:
+            self._record_feature_observation_error(
+                "feature_adx", error, symbol
             )
             adx_value = None
+            adx_error_reason = f"feature_error:{type(error).__name__}"
 
         option_moves = {30: None, 60: None}
         option_history = []
+        option_history_error_reason = None
         if symbol.endswith(("_CE", "_PE")):
             token = (self.config.get("instrument_tokens", {}) or {}).get(symbol)
             builder = getattr(self, "bar_builder", None)
             if token is not None and builder is not None:
                 try:
                     option_history = builder.get_bars(int(token), limit=61)
-                except (AttributeError, TypeError, ValueError, OverflowError):
-                    logger.exception(
-                        "[%s] Could not read pre-signal option candles", symbol
+                except Exception as error:
+                    self._record_feature_observation_error(
+                        "feature_option_history", error, symbol
+                    )
+                    option_history_error_reason = (
+                        f"feature_error:{type(error).__name__}"
                     )
             if option_bar is not None and (
                 not option_history
@@ -3499,7 +3571,11 @@ class KiteTradingBot:
         add("macd_state", macd_state, "insufficient_history")
         add("rsi_value", rsi_value, "insufficient_history")
         add("rsi_state", rsi_state, "insufficient_history")
-        add("adx_value", adx_value, "insufficient_history")
+        add(
+            "adx_value",
+            adx_value,
+            adx_error_reason or "insufficient_history",
+        )
         add(
             "adx_state",
             "above_threshold"
@@ -3508,7 +3584,7 @@ class KiteTradingBot:
             else "below_threshold"
             if adx_value is not None
             else None,
-            "insufficient_history",
+            adx_error_reason or "insufficient_history",
         )
         add("option_candle_body_ratio", body_ratio, "no_option_candle")
         add("option_candle_body_ratio_threshold", body_threshold, "not_applicable")
@@ -3527,7 +3603,8 @@ class KiteTradingBot:
             add(
                 f"prior_{minutes}m_option_move_pct",
                 option_moves[minutes],
-                "insufficient_pre_signal_option_history",
+                option_history_error_reason
+                or "insufficient_pre_signal_option_history",
             )
         add("signal_id", signal_id, "not_applicable" if not is_option else "signal_id_unavailable")
         add("signal_uid", signal_uid)
@@ -3584,6 +3661,65 @@ class KiteTradingBot:
         option_bar: Optional[Bar],
         strategy_variant: Optional[str],
         gate_measurements: Optional[dict] = None,
+    ) -> dict:
+        signal_uid, uid_error_class = self._new_signal_uid()
+        try:
+            return self._entry_signal_telemetry_impl(
+                symbol,
+                signal,
+                score,
+                signal_bars,
+                history,
+                option_bar,
+                strategy_variant,
+                gate_measurements,
+                _signal_uid=signal_uid,
+                _uid_error_class=uid_error_class,
+            )
+        except Exception as error:
+            self._record_feature_observation_error(
+                "entry_signal_telemetry", error, symbol
+            )
+            reason = f"feature_error:{type(error).__name__}"
+            error_reasons = {"feature_error": reason}
+            if uid_error_class is not None:
+                error_reasons["signal_uid_generation"] = (
+                    f"feature_error:{uid_error_class}"
+                )
+            measurements = (
+                gate_measurements
+                if isinstance(gate_measurements, dict)
+                else {}
+            )
+            return {
+                "signal_id": None,
+                "signal_uid": signal_uid,
+                "signal_premium": measurements.get(
+                    "signal_premium", measurements.get("ltp")
+                ),
+                "signal_bid": measurements.get("bid"),
+                "signal_ask": measurements.get("ask"),
+                "signal_ltp": measurements.get("ltp"),
+                "signal_quote_age_seconds": measurements.get(
+                    "quote_age_seconds"
+                ),
+                "entry_feature_values": {},
+                "entry_feature_null_reasons": error_reasons,
+            }
+
+    def _entry_signal_telemetry_impl(
+        self,
+        symbol: str,
+        signal: str,
+        score: int,
+        signal_bars: list[Bar],
+        history: list[dict],
+        option_bar: Optional[Bar],
+        strategy_variant: Optional[str],
+        gate_measurements: Optional[dict] = None,
+        *,
+        _signal_uid: str,
+        _uid_error_class: Optional[str],
     ) -> dict:
         if gate_measurements is None:
             gate_measurements = self._decision_gate_measurements(
@@ -3663,6 +3799,7 @@ class KiteTradingBot:
         atr_pct = gate_measurements.get(
             "atr_pct", gate_measurements.get("volatility_pct")
         )
+        telemetry_error_reasons = {}
         if atr_pct is None and len(history) >= 14:
             try:
                 close = float(history[-1]["close"])
@@ -3671,35 +3808,50 @@ class KiteTradingBot:
                     candidate = atr / close * 100
                     if math.isfinite(candidate):
                         atr_pct = candidate
-            except (
-                IndexError,
-                KeyError,
-                TypeError,
-                ValueError,
-                OverflowError,
-                ZeroDivisionError,
-            ):
-                logger.exception("Could not calculate entry ATR telemetry for %s", symbol)
-        signal_uid = uuid4().hex
-        entry_feature_values, entry_feature_null_reasons = (
-            self._entry_feature_snapshot(
-                symbol,
-                signal,
-                signal_bars,
-                history,
-                option_bar,
-                strategy_variant,
-                gate_measurements,
-                signal_id=signal_id,
-                signal_uid=signal_uid,
-                signal_premium=gate_measurements.get(
-                    "signal_premium", gate_measurements.get("ltp")
-                ),
-                body_ratio=momentum_body_ratio,
-                body_threshold=body_ratio_threshold,
-                direction_rule=direction_rule,
+            except Exception as error:
+                self._record_feature_observation_error(
+                    "entry_atr", error, symbol
+                )
+                telemetry_error_reasons["atr_pct"] = (
+                    f"feature_error:{type(error).__name__}"
+                )
+        signal_uid = _signal_uid
+        entry_feature_values = {}
+        entry_feature_null_reasons = {}
+        if self._entry_feature_logging_enabled():
+            try:
+                (
+                    entry_feature_values,
+                    entry_feature_null_reasons,
+                ) = self._entry_feature_snapshot(
+                    symbol,
+                    signal,
+                    signal_bars,
+                    history,
+                    option_bar,
+                    strategy_variant,
+                    gate_measurements,
+                    signal_id=signal_id,
+                    signal_uid=signal_uid,
+                    signal_premium=gate_measurements.get(
+                        "signal_premium", gate_measurements.get("ltp")
+                    ),
+                    body_ratio=momentum_body_ratio,
+                    body_threshold=body_ratio_threshold,
+                    direction_rule=direction_rule,
+                )
+            except Exception as error:
+                self._record_feature_observation_error(
+                    "feature_assembly", error, symbol
+                )
+                entry_feature_null_reasons = {
+                    "feature_error": f"feature_error:{type(error).__name__}"
+                }
+        if _uid_error_class is not None:
+            entry_feature_null_reasons["signal_uid_generation"] = (
+                f"feature_error:{_uid_error_class}"
             )
-        )
+        entry_feature_null_reasons.update(telemetry_error_reasons)
         snapshots = getattr(self, "_pending_entry_feature_snapshots", None)
         if snapshots is None:
             snapshots = {}
@@ -3917,7 +4069,10 @@ class KiteTradingBot:
         ):
             pending_snapshot["values"] = values
             pending_snapshot["null_reasons"] = null_reasons
-        position = getattr(manager, "active_positions", {}).get(symbol)
+        positions = getattr(manager, "active_positions", {})
+        position = (
+            positions.get(symbol) if isinstance(positions, dict) else None
+        )
         if position is not None:
             position["entry_feature_values"] = values
             position["entry_feature_null_reasons"] = null_reasons
@@ -3937,6 +4092,58 @@ class KiteTradingBot:
             position["mfe_time"] = alert["mfe_time"]
             position["mae_r"] = 0.0
             position["mae_time"] = alert["mae_time"]
+
+    def _finalize_entry_feature_snapshot_fail_open(
+        self, alert: dict, symbol: str, entry_time: datetime
+    ) -> None:
+        try:
+            self._finalize_entry_feature_snapshot(alert, symbol, entry_time)
+        except Exception as error:
+            self._record_feature_observation_error(
+                "entry_feature_finalization", error, symbol
+            )
+            reason = f"feature_error:{type(error).__name__}"
+            alert["entry_feature_values"] = {}
+            alert["entry_feature_null_reasons"] = {"feature_error": reason}
+            alert.setdefault("partial_status", "not-triggered")
+            alert.setdefault("partial_exit_done", False)
+            alert.setdefault("partial_ineligible_single_lot", False)
+            alert.setdefault("partial_quantity", 0)
+            alert.setdefault("partial_pnl_rupees", 0.0)
+            alert.setdefault(
+                "partial_profit_r",
+                (getattr(self, "config", {}) or {}).get(
+                    "partial_profit_r", 0.5
+                ),
+            )
+            alert.setdefault(
+                "partial_profit_fraction",
+                (getattr(self, "config", {}) or {}).get(
+                    "partial_profit_fraction", 0.5
+                ),
+            )
+            alert.setdefault("entry_quantity", alert.get("quantity", 0))
+            alert.setdefault(
+                "remaining_quantity", alert.get("quantity", 0)
+            )
+            alert.setdefault("mfe_r", 0.0)
+            alert.setdefault("mfe_time", entry_time.isoformat())
+            alert.setdefault("mae_r", 0.0)
+            alert.setdefault("mae_time", entry_time.isoformat())
+            manager = getattr(self, "intraday_manager", None)
+            positions = getattr(manager, "active_positions", {})
+            position = (
+                positions.get(symbol) if isinstance(positions, dict) else None
+            )
+            if isinstance(position, dict):
+                position["entry_feature_values"] = {}
+                position["entry_feature_null_reasons"] = {
+                    "feature_error": reason
+                }
+                position["mfe_r"] = alert["mfe_r"]
+                position["mfe_time"] = alert["mfe_time"]
+                position["mae_r"] = alert["mae_r"]
+                position["mae_time"] = alert["mae_time"]
 
     @staticmethod
     def _entry_time_bucket(entry_time: datetime) -> str:
@@ -6038,6 +6245,29 @@ class KiteTradingBot:
         }
 
     def _record_bid_excursions(self, symbol: str, tick: Tick) -> None:
+        if not self._entry_feature_logging_enabled():
+            return
+        try:
+            self._record_bid_excursions_impl(symbol, tick)
+        except Exception as error:
+            self._record_feature_observation_error(
+                "bid_excursions", error, symbol
+            )
+            manager = getattr(self, "intraday_manager", None)
+            positions = getattr(manager, "active_positions", {})
+            position = (
+                positions.get(symbol) if isinstance(positions, dict) else None
+            )
+            if isinstance(position, dict):
+                reasons = dict(
+                    position.get("entry_feature_null_reasons") or {}
+                )
+                reasons["feature_error"] = (
+                    f"feature_error:{type(error).__name__}"
+                )
+                position["entry_feature_null_reasons"] = reasons
+
+    def _record_bid_excursions_impl(self, symbol: str, tick: Tick) -> None:
         if not getattr(self, "paper_trading_enabled", False) or getattr(
             self, "live_orders_enabled", False
         ):
@@ -6052,24 +6282,20 @@ class KiteTradingBot:
         metrics = self._option_quote_metrics(quote, now=tick_time)
         if not metrics["valid"] or metrics["bid"] is None:
             return
-        try:
-            entry = float(position["entry_price"])
-            risk = float(position["initial_risk_distance"])
-            bid = float(metrics["bid"])
-            if (
-                not all(math.isfinite(value) for value in (entry, risk, bid))
-                or risk <= 0
-            ):
-                return
-            direction = str(position["direction"]).upper()
-            observed_r = (
-                (bid - entry) / risk
-                if direction == "BUY"
-                else (entry - bid) / risk
-            )
-        except (KeyError, TypeError, ValueError, OverflowError):
-            logger.exception("[%s] Could not calculate bid-based MFE/MAE", symbol)
+        entry = float(position["entry_price"])
+        risk = float(position["initial_risk_distance"])
+        bid = float(metrics["bid"])
+        if (
+            not all(math.isfinite(value) for value in (entry, risk, bid))
+            or risk <= 0
+        ):
             return
+        direction = str(position["direction"]).upper()
+        observed_r = (
+            (bid - entry) / risk
+            if direction == "BUY"
+            else (entry - bid) / risk
+        )
 
         updates = {}
         if observed_r > float(position.get("mfe_r", 0.0)):
@@ -6613,6 +6839,19 @@ class KiteTradingBot:
             }
         )
         shadow = getattr(self, "paper_shadow_exit_journal", None)
+        trade_recorder = getattr(
+            getattr(self, "trade_journal", None), "paper_recorder", None
+        )
+        feature_error_counts = getattr(
+            self, "_feature_observation_error_counts", {}
+        )
+        feature_observation_errors = sum(feature_error_counts.values())
+        trade_feature_errors = (
+            trade_recorder.feature_telemetry()["trade_feature_write_errors"]
+            if trade_recorder is not None
+            and hasattr(trade_recorder, "feature_telemetry")
+            else 0
+        )
         option_writer = getattr(self, "option_capture_writer", None)
         telegram = getattr(self, "telegram_notifier", None)
         telegram_stats = (
@@ -6652,6 +6891,7 @@ class KiteTradingBot:
             "rejected_write_failures=%d option_capture_queue_depth=%d "
             "option_capture_last_flush_rows=%d option_capture_last_flush_ms=%.3f "
             "option_capture_dropped_rows=%d shadow_latest=%d option_capture_sizes=%s "
+            "feature_observation_errors=%d paper_trade_feature_write_errors=%d "
             "telegram_queue_depth=%d telegram_sent=%d telegram_failed=%d "
             "telegram_dropped=%d telegram_last_success=%s",
             decision["queue_depth"],
@@ -6675,6 +6915,8 @@ class KiteTradingBot:
             option_stats["dropped_rows"],
             len(getattr(shadow, "latest", {})),
             json.dumps(option_sizes, sort_keys=True),
+            feature_observation_errors,
+            trade_feature_errors,
             telegram_stats["queue_depth"],
             telegram_stats["sent"],
             telegram_stats["failed"],
@@ -8978,19 +9220,43 @@ class KiteTradingBot:
                 self._register_option_signal_capture(
                     symbol, signal_time, signal=signal
                 )
-        feature_snapshots = getattr(
-            self, "_pending_entry_feature_snapshots", {}
-        )
-        feature_snapshot = feature_snapshots.pop(symbol, None)
-        signal_uid = (
-            feature_snapshot.get("signal_uid")
-            if isinstance(feature_snapshot, dict)
-            else None
-        )
-        if signal_uid is None and signal in {"BUY", "SELL"}:
-            signal_uid = uuid4().hex
-        if feature_snapshot is not None:
-            signal_id = signal_id or feature_snapshot["values"].get("signal_id")
+        feature_snapshot = None
+        signal_uid = None
+        feature_values = {}
+        feature_null_reasons = {}
+        try:
+            feature_snapshots = getattr(
+                self, "_pending_entry_feature_snapshots", {}
+            )
+            feature_snapshot = feature_snapshots.pop(symbol, None)
+            signal_uid = (
+                feature_snapshot.get("signal_uid")
+                if isinstance(feature_snapshot, dict)
+                else None
+            )
+            if signal_uid is None and signal in {"BUY", "SELL"}:
+                signal_uid, uid_error_class = self._new_signal_uid()
+                if uid_error_class is not None:
+                    feature_null_reasons["signal_uid_generation"] = (
+                        f"feature_error:{uid_error_class}"
+                    )
+            if feature_snapshot is not None:
+                feature_values = feature_snapshot.get("values", {})
+                feature_null_reasons.update(
+                    feature_snapshot.get("null_reasons", {})
+                )
+                signal_id = signal_id or feature_values.get("signal_id")
+        except Exception as error:
+            self._record_feature_observation_error(
+                "rejected_signal_features", error, symbol
+            )
+            feature_snapshot = None
+            feature_values = {}
+            feature_null_reasons = {
+                "feature_error": f"feature_error:{type(error).__name__}"
+            }
+            if signal_uid is None and signal in {"BUY", "SELL"}:
+                signal_uid, _ = self._new_signal_uid()
         reasons = list(market_score.reasons) if market_score else []
         if not reasons:
             reasons = [outcome]
@@ -9046,16 +9312,8 @@ class KiteTradingBot:
                 ),
                 "signal_id": signal_id,
                 "signal_uid": signal_uid,
-                "entry_feature_values": (
-                    feature_snapshot.get("values", {})
-                    if feature_snapshot
-                    else {}
-                ),
-                "entry_feature_null_reasons": (
-                    feature_snapshot.get("null_reasons", {})
-                    if feature_snapshot
-                    else {}
-                ),
+                "entry_feature_values": feature_values,
+                "entry_feature_null_reasons": feature_null_reasons,
                 "strike": contract_metadata.get("strike"),
                 "expiry": contract_metadata.get("expiry"),
                 "lot_size": contract_metadata.get("lot_size"),
@@ -10021,7 +10279,7 @@ class KiteTradingBot:
             alert["order_time"] = alert.get(
                 "order_time", entry_timestamp.isoformat(timespec="seconds")
             )
-            self._finalize_entry_feature_snapshot(
+            self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, entry_timestamp
             )
             telegram_trade_id = self.trade_journal.log_trade(alert)
@@ -10501,7 +10759,7 @@ class KiteTradingBot:
             alert["order_time"] = alert.get(
                 "order_time", sell_entry_timestamp.isoformat(timespec="seconds")
             )
-            self._finalize_entry_feature_snapshot(
+            self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, sell_entry_timestamp
             )
             telegram_trade_id = self.trade_journal.log_trade(alert)

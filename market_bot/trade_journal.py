@@ -395,6 +395,9 @@ class PaperTradingRecorder:
         self._decision_writer_cpu_ms = 0.0
         self._decision_touched_days: set[Path] = set()
         self._decision_sequences: Dict[tuple[Path, int], int] = {}
+        self._trade_feature_write_errors = 0
+        self._trade_feature_write_warning_at = float("-inf")
+        self._trade_feature_write_lock = threading.Lock()
 
     def _stamp_identity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = dict(payload)
@@ -403,6 +406,24 @@ class PaperTradingRecorder:
         entry["git_sha"] = self.git_sha
         entry["git_dirty"] = self.git_dirty
         return entry
+
+    def _record_trade_feature_write_error(self, error: Exception) -> None:
+        with self._trade_feature_write_lock:
+            self._trade_feature_write_errors += 1
+            now = time_module.monotonic()
+            if now - self._trade_feature_write_warning_at >= 60.0:
+                self._trade_feature_write_warning_at = now
+                logger.warning(
+                    "Paper trade feature serialization failed "
+                    "null_reason=feature_error exception=%s",
+                    type(error).__name__,
+                )
+
+    def feature_telemetry(self) -> Dict[str, int]:
+        with self._trade_feature_write_lock:
+            return {
+                "trade_feature_write_errors": self._trade_feature_write_errors
+            }
 
     @staticmethod
     def _event_datetime(value: Any) -> datetime:
@@ -820,19 +841,61 @@ class PaperTradingRecorder:
         rows = self._read_parquet(path)
         trade_id = str(entry.get("trade_id", ""))
         updated = False
+
+        feature_columns = {
+            "signal_uid",
+            "entry_feature_values",
+            "entry_feature_null_reasons",
+            "mfe_r",
+            "mfe_time",
+            "mae_r",
+            "mae_time",
+        }
+
+        def serialize_row() -> Dict[str, Any]:
+            row = {
+                column: self._parquet_value(entry.get(column))
+                for column in self.TRADE_COLUMNS
+                if column not in feature_columns
+            }
+            feature_errors = {}
+            for column in feature_columns:
+                try:
+                    row[column] = self._parquet_value(entry.get(column))
+                except Exception as error:
+                    self._record_trade_feature_write_error(error)
+                    feature_errors[column] = type(error).__name__
+                    row[column] = ""
+            if feature_errors:
+                existing_reasons = entry.get("entry_feature_null_reasons")
+                reasons = (
+                    dict(existing_reasons)
+                    if isinstance(existing_reasons, dict)
+                    else {}
+                )
+                reasons["feature_error"] = (
+                    "feature_error:"
+                    + ",".join(sorted(set(feature_errors.values())))
+                )
+                reasons.update(
+                    {
+                        column: f"feature_error:{error_class}"
+                        for column, error_class in feature_errors.items()
+                    }
+                )
+                row["entry_feature_null_reasons"] = json.dumps(
+                    reasons, default=str, separators=(",", ":")
+                )
+            return row
+
+        serialized_row = serialize_row()
         for index, row in enumerate(rows):
             if trade_id and row.get("trade_id") == trade_id:
-                rows[index] = {
-                    column: self._parquet_value(entry.get(column))
-                    for column in self.TRADE_COLUMNS
-                }
+                rows[index] = serialized_row
                 updated = True
                 break
         if not updated:
-            rows.append({
-                column: self._parquet_value(entry.get(column))
-                for column in self.TRADE_COLUMNS
-            })
+            rows.append(serialized_row)
         self._write_parquet(path, rows, self.TRADE_COLUMNS)
 
 

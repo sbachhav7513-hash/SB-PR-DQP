@@ -32,6 +32,7 @@
   "profit_lock_v2": true,
   "trail_close_confirm_v2": true,
   "partial_profit_v2": true,
+  "entry_feature_logging_v2": true,
   "partial_profit_r": 0.5,
   "partial_profit_fraction": 0.5,
   "paper_exit_tiers": {

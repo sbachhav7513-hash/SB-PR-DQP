@@ -25,6 +25,24 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-11-10
+
+#### DLY-2026-11-10-01
+
+- Reason: Make PAPER entry-feature telemetry fail-open and rate-limited, add a PAPER-only feature logging kill switch, and verify mixed-schema reporting and callback timing.
+- Related prior entries checked: Reviewed the latest daily change entries and compared callback timing with `30f19dc`; the `perf_counter` measurement and 5 ms test were already present at that baseline.
+- Files:
+  - `market_bot/kite_main.py` (modified): Add fail-open feature assembly, UID generation, finalization and bid-excursion boundaries, PAPER-only flag gating, and telemetry counters.
+  - `market_bot/trade_journal.py` (modified): Make feature-field serialization fail-open and count/rate-limit warnings.
+  - `kite_config.json` and `kite_config.example.json` (modified): Set new `entry_feature_logging_v2` default to `true`.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the new PAPER-only kill switch.
+  - `tests/test_observational_fail_open.py` (added): Cover injected feature, bid-excursion, journal serialization, UID, and kill-switch failures.
+  - `tests/test_decision_parquet_writer.py` and `tests/test_reporting_resource_safety.py` (modified): Add robust callback timing and mixed-schema report regressions.
+  - `config_changelog.md` (modified in a follow-up local commit): Record the config hash associated with the new default.
+  - `DAILY_CHANGELOG.md` (modified): Record this work and its validation.
+- Validation and result: `python -m pytest -q` passed (524 passed, 1 skipped); `git diff --check` passed; both edited JSON configs parsed. Original 5 ms callback probe ran 30/30 on both HEAD and `30f19dc` with no sample below 5 ms (HEAD 7.758–16.021 ms; baseline 5.932–23.116 ms). The robust 20 ms probe also ran 30/30 on both (HEAD minimum 20.305 ms; baseline minimum 19.926 ms). `timeit` over 10,000 synthetic calls measured feature assembly at 282.423 µs/call (2,824.228 ms total) and bid excursion tracking at 11.222 µs/call (112.220 ms total), medians of five runs. These methods are absent at `30f19dc`, so they add 11.222 µs for each active-position tick and 282.423 µs on an entry-evaluation tick (293.645 µs if both occur on one tick).
+- Outcome / follow-up / rollback: No changes to entries, filters, thresholds, the 10% stop, existing flag defaults, LIVE, or BACKTEST. Local commit only; no deploy.
+
 ### 2026-11-06
 
 #### DLY-2026-11-06-01

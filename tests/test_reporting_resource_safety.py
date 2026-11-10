@@ -6,12 +6,13 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, time as datetime_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
+from fastparquet import write as write_parquet
 
 import market_bot.kite_main as kite_main
 import market_bot.reporting_metrics as reporting_metrics
@@ -75,6 +76,72 @@ def test_daily_reports_read_only_target_day_with_projected_columns(
     values = dict(zip(summary["metric"], summary["value"]))
     assert values["decisions_recorded"] == "1"
 
+
+def test_daily_and_weekly_reports_read_mixed_trade_parquet_schemas(
+    tmp_path,
+):
+    paper_root = tmp_path / "paper_trading_data"
+    old_date = date.today() - timedelta(days=2)
+    new_date = date.today() - timedelta(days=1)
+    old_timestamp = datetime.combine(
+        old_date, datetime_time(10), tzinfo=IST
+    ).isoformat()
+    new_timestamp = datetime.combine(
+        new_date, datetime_time(10), tzinfo=IST
+    ).isoformat()
+    old_day = (
+        paper_root
+        / old_date.strftime("%Y-%m")
+        / f"week_{old_date.isocalendar().week:02d}"
+        / f"day_{old_date.day:02d}"
+    )
+    old_day.mkdir(parents=True)
+    old_frame = pd.DataFrame(
+        [
+            {
+                "trade_id": "old-schema-trade",
+                "timestamp": old_timestamp,
+                "ticker": "NIFTY",
+                "action": "BUY",
+                "status": "closed",
+                "pnl": 10.0,
+            }
+        ]
+    )
+    write_parquet(
+        str(old_day / "trades.parquet"), old_frame, compression="SNAPPY"
+    )
+
+    recorder = PaperTradingRecorder(str(paper_root))
+    recorder.record_trade(
+        {
+            "trade_id": "new-schema-trade",
+            "timestamp": new_timestamp,
+            "ticker": "NIFTY",
+            "action": "BUY",
+            "status": "closed",
+            "pnl": 20.0,
+            "signal_uid": "new-schema-uid",
+            "entry_feature_values": {"signal_uid": "new-schema-uid"},
+        }
+    )
+
+    old_daily = weekly_report.write_daily_summary(
+        str(tmp_path), str(paper_root), old_date
+    )
+    new_daily = weekly_report.write_daily_summary(
+        str(tmp_path), str(paper_root), new_date
+    )
+    weekly = weekly_report.build_weekly_report(
+        str(tmp_path), days=7, paper_data_dir=str(paper_root)
+    )
+    recorder.close_decisions(timeout=10)
+
+    for path in (old_daily, new_daily):
+        summary = pd.read_parquet(path, engine="fastparquet")
+        values = dict(zip(summary["metric"], summary["value"]))
+        assert values["closed_trades"] == "1"
+    assert weekly["closed_trades"] == 2
 
 def test_2026_11_04_content_matches_full_history_baseline(tmp_path, monkeypatch):
     source_day = (

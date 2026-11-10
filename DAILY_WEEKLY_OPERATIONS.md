@@ -42,6 +42,12 @@ policy to its prior behavior:
   place until the existing 0.5R profit-lock update arms on that tick. A partial
   and its final remainder exit are recorded as legs of one trade.
 
+`entry_feature_logging_v2` defaults to `true` in PAPER mode. It enables only
+observational entry-feature assembly and bid-based MFE/MAE tracking; setting it
+to `false` disables those writes without changing signal UID generation,
+entries, filters, exits, thresholds, or LIVE/BACKTEST behavior. Change only this
+key in the active PAPER config if feature telemetry needs to be disabled.
+
 Index options (`NIFTY`, `BANKNIFTY`) and stock options can be configured
 independently under `paper_exit_tiers.index_options` and
 `paper_exit_tiers.stock_options`, using `runner_gap_r` and `profit_lock_r`.
