@@ -216,6 +216,11 @@ class PaperTradingRecorder:
         "trail_close_confirmed",
         "trail_close_confirmation",
         "paper_exit_parameters",
+        "exit_trigger",
+        "exit_trigger_set_time",
+        "exit_trigger_set_sender",
+        "exit_command",
+        "manual_exit_events",
         "exit_trigger_price",
         "exit_trigger_source",
         "guarded_exit_quote_count",
@@ -318,6 +323,19 @@ class PaperTradingRecorder:
         "reentry_exit_price",
         "reentry_pnl",
         "reentry_outcome",
+    ]
+    COMMAND_COLUMNS = [
+        "chat_id",
+        "user_id",
+        "text",
+        "update_id",
+        "message_timestamp",
+        "message_time",
+        "logged_at",
+        "response",
+        "config_hash",
+        "git_sha",
+        "git_dirty",
     ]
     DECISION_COLUMNS = [
         "timestamp", "config_hash", "git_sha", "git_dirty",
@@ -466,9 +484,17 @@ class PaperTradingRecorder:
     ) -> List[Dict[str, Any]]:
         if not path.exists():
             return []
-        return pd.read_parquet(
-            path, engine="fastparquet", columns=columns
-        ).to_dict(orient="records")
+        if columns is None:
+            frame = pd.read_parquet(path, engine="fastparquet")
+        else:
+            try:
+                frame = pd.read_parquet(
+                    path, engine="fastparquet", columns=columns
+                )
+            except ValueError:
+                frame = pd.read_parquet(path, engine="fastparquet")
+                frame = frame.reindex(columns=columns, fill_value="")
+        return frame.to_dict(orient="records")
 
     @staticmethod
     def _write_parquet(path: Path, rows: List[Dict[str, Any]], columns: List[str]) -> None:
@@ -901,6 +927,33 @@ class PaperTradingRecorder:
         if not updated:
             rows.append(serialized_row)
         self._write_parquet(path, rows, self.TRADE_COLUMNS)
+
+    def record_command(self, payload: Dict[str, Any]) -> None:
+        entry = self._stamp_identity(payload)
+        timestamp = entry.get("message_time") or entry.get("logged_at")
+        if not timestamp:
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        path = self._day_path(timestamp, "commands.parquet")
+        rows = self._read_parquet(path, self.COMMAND_COLUMNS)
+        update_id = str(entry.get("update_id") or "")
+        chat_id = str(entry.get("chat_id") or "")
+        serialized_row = {
+            column: self._parquet_value(entry.get(column))
+            for column in self.COMMAND_COLUMNS
+        }
+        updated = False
+        if update_id:
+            for index, row in enumerate(rows):
+                if (
+                    str(row.get("update_id") or "") == update_id
+                    and str(row.get("chat_id") or "") == chat_id
+                ):
+                    rows[index] = serialized_row
+                    updated = True
+                    break
+        if not updated:
+            rows.append(serialized_row)
+        self._write_parquet(path, rows, self.COMMAND_COLUMNS)
 
 
 def _deduplicate_decision_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1985,6 +2038,7 @@ class TradeJournal:
         entry.setdefault("pnl", 0.0)
         entry.setdefault("exit_source", "BOT")
         entry.setdefault("exit_reason", None)
+        entry.setdefault("manual_exit_events", [])
         entry.setdefault("risk_modifications", [])
         entry.setdefault("trade_id", f"{entry['ticker']}-{entry['timestamp']}-{entry.get('action', 'UNKNOWN')}")
         if entry.get("telegram_trade_id") is None:
@@ -2040,12 +2094,21 @@ class TradeJournal:
 
     def log_command(self, command: Dict[str, Any]) -> None:
         path = self.path.with_name("commands.jsonl")
+        try:
+            message_time = datetime.fromtimestamp(
+                float(command.get("message_timestamp")), tz=timezone.utc
+            ).isoformat(timespec="seconds")
+        except (TypeError, ValueError, OverflowError, OSError):
+            message_time = None
         entry = {
             **command,
+            "message_time": message_time,
             "logged_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, default=str) + "\n")
+        if self.paper_recorder:
+            self.paper_recorder.record_command(entry)
 
     def get_open_trade(self, ticker: str, action: Optional[str] = None) -> Optional[Dict[str, Any]]:
         for trade in reversed(self.read_trades()):
@@ -2225,8 +2288,6 @@ class TradeJournal:
                 pnl = 0.0
 
             trade["pnl"] = pnl
-            if reason == "MANUAL_TARGET" and pnl <= 0:
-                reason = "MANUAL_EXIT"
             trade["exit_price"] = exit_price
             trade["status"] = "closed"
             trade["closed_at"] = (

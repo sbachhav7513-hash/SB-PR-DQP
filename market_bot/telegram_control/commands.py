@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 import time
 from typing import Any
@@ -266,6 +266,53 @@ def _current_price(bot, symbol: str) -> float | None:
     return price if math.isfinite(price) and price > 0 else None
 
 
+def _command_audit_record(
+    bot, fallback_text: str, chat_id: str | None
+) -> dict[str, Any]:
+    command = getattr(bot, "_current_telegram_command", None)
+    if command is not None:
+        message_timestamp = getattr(command, "message_timestamp", None)
+        try:
+            message_time = datetime.fromtimestamp(
+                float(message_timestamp), tz=timezone.utc
+            ).isoformat(timespec="seconds")
+        except (TypeError, ValueError, OverflowError, OSError):
+            message_time = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+        return {
+            "text": str(getattr(command, "text", fallback_text)),
+            "message_time": message_time,
+            "chat_id": str(getattr(command, "chat_id", chat_id) or ""),
+            "user_id": getattr(command, "user_id", None),
+        }
+    return {
+        "text": fallback_text,
+        "message_time": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+        "chat_id": str(chat_id or ""),
+        "user_id": None,
+    }
+
+
+def _manual_exit_event(
+    bot,
+    *,
+    event_type: str,
+    text: str,
+    chat_id: str | None,
+    old_price: float | None,
+    price: float | None,
+) -> dict[str, Any]:
+    return {
+        "event": event_type,
+        "old_price": old_price,
+        "price": price,
+        **_command_audit_record(bot, text, chat_id),
+    }
+
+
 def _is_live(bot) -> bool:
     return bool(
         getattr(bot, "live_orders_enabled", False)
@@ -380,12 +427,32 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
         if position.get("manual_exit_price") is None:
             return _trade_reply(trade_id, "has no manual exit trigger.")
         old_trigger = position["manual_exit_price"]
+        event = _manual_exit_event(
+            bot,
+            event_type="cleared",
+            text=f"/cancel {trade_id}",
+            chat_id=chat_id,
+            old_price=float(old_trigger),
+            price=None,
+        )
+        exit_events = list(
+            position.get("manual_exit_events")
+            or trade.get("manual_exit_events")
+            or []
+        )
+        exit_events.append(event)
         position["manual_exit_price"] = None
         if not bot.trade_journal.update_open_trade(
-            symbol, {"manual_exit_price": None}, direction
+            symbol,
+            {
+                "manual_exit_price": None,
+                "manual_exit_events": exit_events,
+            },
+            direction,
         ):
             position["manual_exit_price"] = old_trigger
             raise RuntimeError("Could not persist cancellation of the manual exit trigger.")
+        position["manual_exit_events"] = exit_events
         return _trade_reply(
             trade_id,
             f"manual exit trigger cleared (from {float(old_trigger):.2f} to none).",
@@ -416,15 +483,37 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
                 trade_id, f"Price must be above current LTP ({ltp:.2f}); use /exit instead."
             )
         old_trigger = position.get("manual_exit_price")
+        event = _manual_exit_event(
+            bot,
+            event_type="changed" if old_trigger is not None else "set",
+            text=f"/exitat {trade_id} {target:g}",
+            chat_id=chat_id,
+            old_price=(
+                float(old_trigger) if old_trigger is not None else None
+            ),
+            price=target,
+        )
+        exit_events = list(
+            position.get("manual_exit_events")
+            or trade.get("manual_exit_events")
+            or []
+        )
+        exit_events.append(event)
         position["manual_exit_price"] = target
         if not bot.trade_journal.update_open_trade(
-            symbol, {"manual_exit_price": target}, direction
+            symbol,
+            {
+                "manual_exit_price": target,
+                "manual_exit_events": exit_events,
+            },
+            direction,
         ):
             if old_trigger is None:
                 position.pop("manual_exit_price", None)
             else:
                 position["manual_exit_price"] = old_trigger
             return _trade_reply(trade_id, "Could not persist the manual exit trigger.")
+        position["manual_exit_events"] = exit_events
         old_text = f"{float(old_trigger):.2f}" if old_trigger is not None else "none"
         return _trade_reply(
             trade_id, f"manual exit trigger set from {old_text} to {target:.2f}."

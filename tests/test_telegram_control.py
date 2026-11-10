@@ -2,6 +2,7 @@ import queue
 import threading
 import time
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -364,7 +365,7 @@ def test_exitat_closes_at_or_above_price_and_journals_manual_target(tmp_path):
     assert trade["manual_exit_price"] is None
 
 
-def test_losing_manual_target_is_recorded_as_manual_exit(tmp_path):
+def test_losing_manual_target_keeps_its_trigger_label(tmp_path):
     bot, _, symbol, _ = _trade_bot(tmp_path)
     bot._close_position = lambda s, price, reason: _close_trade_for_test(
         bot, s, price, reason
@@ -373,11 +374,124 @@ def test_losing_manual_target_is_recorded_as_manual_exit(tmp_path):
     bot._close_position(symbol, 95.0, "MANUAL_TARGET")
 
     trade = bot.trade_journal.read_trades()[0]
-    assert trade["reason"] == "MANUAL_EXIT"
-    assert trade["exit_reason"] == "MANUAL_EXIT"
+    assert trade["reason"] == "MANUAL_TARGET"
+    assert trade["exit_reason"] == "MANUAL_TARGET"
     assert trade["manual_exit"] is True
     assert trade["exit_source"] == "MANUAL"
-    assert trade["manual_exit_reason"] == "MANUAL_EXIT"
+    assert trade["manual_exit_reason"] == "MANUAL_TARGET"
+
+
+def test_exitat_changes_are_linked_to_the_close_trigger(tmp_path):
+    bot, trade_id, _, position = _trade_bot(tmp_path)
+
+    process_telegram_command(bot, f"/exitat {trade_id} 105", chat_id="101")
+    process_telegram_command(bot, f"/exitat {trade_id} 110", chat_id="101")
+
+    trade = bot.trade_journal.read_trades()[0]
+    fields = KiteTradingBot._exit_audit_fields(
+        "MANUAL_TARGET",
+        position,
+        trade,
+        None,
+        datetime.now().astimezone(),
+    )
+
+    assert fields["exit_trigger"] == "human /exitat reached"
+    assert fields["exit_command"] == {
+        "text": f"/exitat {trade_id} 110",
+        "message_time": trade["manual_exit_events"][-1]["message_time"],
+        "chat_id": "101",
+    }
+    assert fields["exit_trigger_set_time"] == fields["exit_command"]["message_time"]
+    assert fields["exit_trigger_set_sender"] == "101"
+    assert [event["event"] for event in fields["manual_exit_events"]] == [
+        "set",
+        "changed",
+    ]
+
+
+def test_manual_exit_trigger_mapping_and_command_link():
+    command = TelegramCommand(
+        chat_id="101",
+        user_id="202",
+        text="/exit 7",
+        update_id=3,
+        message_timestamp=1790000000,
+    )
+
+    fields = KiteTradingBot._exit_audit_fields(
+        "MANUAL_EXIT",
+        None,
+        None,
+        command,
+        datetime.now().astimezone(),
+    )
+
+    assert fields["exit_trigger"] == "human /exit"
+    assert fields["exit_command"]["text"] == "/exit 7"
+    assert fields["exit_command"]["chat_id"] == "101"
+    assert fields["exit_trigger_set_sender"] == "101"
+    assert fields["exit_trigger_set_time"].endswith("+00:00")
+
+
+def test_paper_command_archive_includes_command_context(tmp_path):
+    journal = TradeJournal(
+        str(tmp_path / "trades.jsonl"),
+        paper_data_dir=str(tmp_path / "paper"),
+    )
+    journal.log_command(
+        {
+            "chat_id": "101",
+            "user_id": "202",
+            "text": "/exitat 7 110",
+            "update_id": 45,
+            "message_timestamp": 1790000000,
+            "response": "trigger set",
+        }
+    )
+
+    archive_path = next((tmp_path / "paper").rglob("commands.parquet"))
+    import pandas as pd
+
+    records = pd.read_parquet(archive_path, engine="fastparquet").to_dict(
+        orient="records"
+    )
+    assert len(records) == 1
+    assert records[0]["text"] == "/exitat 7 110"
+    assert records[0]["chat_id"] == "101"
+    assert records[0]["response"] == "trigger set"
+    assert records[0]["message_time"].endswith("+00:00")
+
+
+def test_paper_command_archive_adds_new_fields_to_existing_schema(tmp_path):
+    import pandas as pd
+
+    journal = TradeJournal(
+        str(tmp_path / "trades.jsonl"),
+        paper_data_dir=str(tmp_path / "paper"),
+    )
+    event_time = datetime.fromtimestamp(1790000000, tz=timezone.utc)
+    archive_path = journal.paper_recorder._day_path(event_time, "commands.parquet")
+    pd.DataFrame([{"chat_id": "old-chat", "text": "/status"}]).to_parquet(
+        archive_path, engine="fastparquet"
+    )
+
+    journal.log_command(
+        {
+            "chat_id": "101",
+            "text": "/help",
+            "update_id": 46,
+            "message_timestamp": 1790000000,
+            "response": "help",
+        }
+    )
+
+    records = pd.read_parquet(archive_path, engine="fastparquet").to_dict(
+        orient="records"
+    )
+    assert len(records) == 2
+    assert records[0]["text"] == "/status"
+    assert records[1]["text"] == "/help"
 
 
 def test_exitat_rejects_reached_target_and_cancel_clears_trigger(tmp_path):
@@ -391,11 +505,17 @@ def test_exitat_rejects_reached_target_and_cancel_clears_trigger(tmp_path):
     assert f"#{trade_id}" in trigger_reply
     assert "from none to 110.00" in trigger_reply
     bot.latest_prices.clear()
-    cancel_reply = process_telegram_command(bot, f"/cancel {trade_id}")
+    cancel_reply = process_telegram_command(
+        bot, f"/cancel {trade_id}", chat_id="101"
+    )
     assert "trigger cleared" in cancel_reply
     assert f"#{trade_id}" in cancel_reply
     assert "from 110.00 to none" in cancel_reply
     assert position["manual_exit_price"] is None
+    events = bot.trade_journal.read_trades()[0]["manual_exit_events"]
+    assert [event["event"] for event in events] == ["set", "cleared"]
+    assert events[-1]["text"] == f"/cancel {trade_id}"
+    assert events[-1]["chat_id"] == "101"
 
 
 def test_strategy_stop_and_target_changes_are_audited(tmp_path):

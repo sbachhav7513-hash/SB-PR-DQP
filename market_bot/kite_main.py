@@ -17,9 +17,9 @@ import threading
 import time
 from uuid import uuid4
 from collections import deque
-from datetime import datetime, time as time_type, timedelta
+from datetime import datetime, time as time_type, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from .accuracy_filters import AccuracyFilters
@@ -7348,6 +7348,7 @@ class KiteTradingBot:
             }:
                 deferred_commands.append(command)
                 continue
+            self._current_telegram_command = command
             try:
                 reply = process_telegram_command(
                     self, command.text, chat_id=command.chat_id
@@ -7358,6 +7359,8 @@ class KiteTradingBot:
                     command.update_id,
                 )
                 reply = "Command failed; the trading loop is continuing."
+            finally:
+                self._current_telegram_command = None
             journal = getattr(self, "trade_journal", None)
             log_command = getattr(journal, "log_command", None)
             if log_command is not None:
@@ -8554,31 +8557,14 @@ class KiteTradingBot:
             self, "live_orders_enabled", False
         ):
             self._record_paper_shadow_actual_exit(trade, price, reason)
-        if reason == "MANUAL_TARGET" and trade is not None:
-            entry_price = float(trade.get("entry", 0.0))
-            direction = str(trade.get("action", "")).upper()
-            realized_points = (
-                float(price) - entry_price
-                if direction == "BUY"
-                else entry_price - float(price)
-            )
-            multiplier = float(
-                self.intraday_manager.contract_specs.get(symbol, {}).get(
-                    "multiplier", 1.0
-                )
-            )
-            remaining_quantity = int(
-                position.get("quantity", 0) if position else trade.get("quantity", 1)
-            )
-            partial_pnl = float(
-                position.get("partial_pnl_rupees", 0.0) if position else 0.0
-            )
-            if (
-                realized_points * remaining_quantity * multiplier + partial_pnl
-                <= 0
-            ):
-                reason = "MANUAL_EXIT"
         closed_at = datetime.now(IST)
+        exit_audit_fields = self._exit_audit_fields(
+            reason,
+            position,
+            trade,
+            getattr(self, "_current_telegram_command", None),
+            closed_at,
+        )
         journal_pnl = self.trade_journal.close_trade(
             symbol,
             price,
@@ -8847,6 +8833,7 @@ class KiteTradingBot:
                     if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
                     else None
                 ),
+                **exit_audit_fields,
                 "order_time": (trade or {}).get("order_time"),
                 "tier": (trade or {}).get("tier"),
                 "signal_uid": (trade or {}).get("signal_uid"),
@@ -8967,6 +8954,12 @@ class KiteTradingBot:
                     },
                     outcome=state["outcome"].lower(),
                 )
+        elif trade is not None:
+            self.trade_journal.annotate_trade(
+                symbol,
+                exit_audit_fields,
+                action,
+            )
         if reason in {"STOP_LOSS", "TRAILING_STOP"} and (
             trade is not None or exit_info is not None
         ):
@@ -9040,7 +9033,9 @@ class KiteTradingBot:
             trading_symbol=trading_symbol,
             trade_id=(trade or {}).get("telegram_trade_id"),
             exit_source=(
-                "MANUAL" if reason == "MANUAL_EXIT" else "BOT"
+                "MANUAL"
+                if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+                else "BOT"
             ),
             exit_reason=reason,
         )
@@ -9049,6 +9044,93 @@ class KiteTradingBot:
             close_alert, trade_id=(trade or {}).get("telegram_trade_id")
         )
         return True
+
+    @staticmethod
+    def _exit_trigger_for_reason(reason: str) -> str:
+        if reason == "MANUAL_EXIT":
+            return "human /exit"
+        if reason == "MANUAL_TARGET":
+            return "human /exitat reached"
+        if reason == "STOP_LOSS":
+            return "bot stop"
+        if reason in {
+            "TRAILING_STOP",
+            "TRAILING_STOP_UPDATE_FAILED",
+            "TRAILING_STOP_UPDATE_FAILED_CLOSE",
+        }:
+            return "bot trail"
+        if reason == "PROFIT_LOCK":
+            return "profit lock"
+        if reason in {"MARKET_CLOSE_FORCED_EXIT", "SESSION_GAP_FORCED_EXIT"}:
+            return "forced EOD"
+        if reason == "feed_failure_exit":
+            return "feed failure"
+        return reason
+
+    @classmethod
+    def _exit_audit_fields(
+        cls,
+        reason: str,
+        position: Optional[dict],
+        trade: Optional[dict],
+        command: Any,
+        closed_at: datetime,
+    ) -> dict:
+        manual_exit_events = list(
+            (position or {}).get("manual_exit_events")
+            or (trade or {}).get("manual_exit_events")
+            or []
+        )
+        exit_command = None
+        if reason == "MANUAL_EXIT" and command is not None:
+            try:
+                message_time = datetime.fromtimestamp(
+                    float(command.message_timestamp), tz=timezone.utc
+                ).isoformat(timespec="seconds")
+            except (TypeError, ValueError, OverflowError, OSError):
+                message_time = closed_at.astimezone(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+            exit_command = {
+                "text": command.text,
+                "message_time": message_time,
+                "chat_id": str(command.chat_id or ""),
+            }
+        elif reason == "MANUAL_TARGET":
+            exit_command = next(
+                (
+                    {
+                        "text": event.get("text"),
+                        "message_time": event.get("message_time"),
+                        "chat_id": event.get("chat_id"),
+                    }
+                    for event in reversed(manual_exit_events)
+                    if event.get("event") in {"set", "changed"}
+                ),
+                None,
+            )
+        exit_trigger = cls._exit_trigger_for_reason(reason)
+        human_trigger = exit_trigger in {"human /exit", "human /exitat reached"}
+        return {
+            "exit_trigger": exit_trigger,
+            "exit_trigger_set_time": (
+                (exit_command or {}).get("message_time")
+                or closed_at.astimezone(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                if human_trigger
+                else closed_at.astimezone(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+            ),
+            "exit_trigger_set_sender": (
+                ((exit_command or {}).get("chat_id") or "UNKNOWN")
+                if human_trigger
+                else "BOT"
+            ),
+            "exit_command": exit_command,
+            "manual_exit_events": manual_exit_events,
+        }
 
     @staticmethod
     def _exit_reason_category(reason: str) -> str:
