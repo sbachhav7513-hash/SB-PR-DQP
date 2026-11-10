@@ -126,6 +126,7 @@ PAPER_CHANGE_KEYS = (
     "profit_lock_v2",
     "trail_close_confirm_v2",
     "partial_profit_v2",
+    "stop_quote_validation_v2",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -1716,6 +1717,7 @@ class KiteTradingBot:
         self.config.setdefault("capture_all_evaluated_contracts", True)
         self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.config.setdefault("entry_feature_logging_v2", True)
+        self.config.setdefault("stop_quote_validation_v2", True)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.simulation_mode and self.mode == "LIVE":
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
@@ -6239,10 +6241,247 @@ class KiteTradingBot:
             "ltp": ltp,
             "timestamp": timestamp,
             "age_seconds": age_seconds,
+            "max_age_seconds": max_age,
             "fresh": fresh,
             "in_spread": in_spread,
             "valid": fresh and in_spread,
         }
+
+    def _option_exit_quote_metrics(
+        self, quote: dict, now: Optional[datetime] = None
+    ) -> dict:
+        metrics = self._option_quote_metrics(quote, now=now)
+        if not metrics["fresh"]:
+            age = metrics["age_seconds"]
+            reason = (
+                "missing_quote_timestamp"
+                if metrics["timestamp"] is None
+                else "future_quote"
+                if age is not None and age < 0
+                else "stale_quote"
+            )
+        elif metrics["bid"] is None:
+            reason = "invalid_bid"
+        elif metrics["ask"] is None:
+            reason = "invalid_ask"
+        elif metrics["ask"] < metrics["bid"]:
+            reason = "crossed_book"
+        else:
+            reason = None
+        return {
+            **metrics,
+            "exit_valid": reason is None,
+            "rejection_reason": reason,
+        }
+
+    @staticmethod
+    def _active_option_exit_stop(position: dict) -> Optional[float]:
+        stops = [
+            KiteTradingBot._positive_quote_value(position.get(field))
+            for field in ("stop_loss", "profit_lock_stop", "trailing_stop")
+        ]
+        active_stops = [stop for stop in stops if stop is not None]
+        return max(active_stops) if active_stops else None
+
+    def _log_option_exit_quote(
+        self,
+        symbol: str,
+        position: dict,
+        metrics: dict,
+        reason: str,
+    ) -> None:
+        logger.warning(
+            "EXIT_QUOTE_REJECTED time=%s contract=%s bid=%s ask=%s ltp=%s "
+            "age_seconds=%s active_trade=%s stop=%s reason=%s",
+            (
+                metrics["timestamp"].isoformat()
+                if metrics["timestamp"] is not None
+                else None
+            ),
+            symbol,
+            metrics["bid"],
+            metrics["ask"],
+            metrics["ltp"],
+            metrics["age_seconds"],
+            position.get("trade_id") or position.get("telegram_trade_id"),
+            self._active_option_exit_stop(position),
+            reason,
+        )
+
+    def _guard_suspicious_option_exit_quote(
+        self,
+        symbol: str,
+        position: dict,
+        metrics: dict,
+        stop: Optional[float],
+        previous_bid: Optional[float],
+        previous_time: Optional[datetime],
+    ) -> bool:
+        bid = metrics["bid"]
+        timestamp = metrics["timestamp"]
+        if bid is None or timestamp is None or stop is None or bid > stop:
+            position.pop("pending_bad_tick_exit", None)
+            return False
+
+        config = getattr(self, "config", {}) or {}
+        try:
+            drop_pct = float(config.get("stop_quote_bad_tick_drop_pct", 0.15))
+            lookback = float(
+                config.get("stop_quote_bad_tick_lookback_seconds", 2.0)
+            )
+            confirm_window = float(
+                config.get("stop_quote_bad_tick_confirm_seconds", 3.0)
+            )
+        except (TypeError, ValueError, OverflowError):
+            logger.error(
+                "[%s] Invalid stop quote bad-tick configuration; "
+                "using safe defaults",
+                symbol,
+            )
+            drop_pct, lookback, confirm_window = 0.15, 2.0, 3.0
+        if (
+            not math.isfinite(drop_pct)
+            or not 0 < drop_pct < 1
+            or not math.isfinite(lookback)
+            or lookback <= 0
+            or not math.isfinite(confirm_window)
+            or confirm_window <= 0
+        ):
+            logger.error(
+                "[%s] Invalid stop quote bad-tick configuration; "
+                "using safe defaults",
+                symbol,
+            )
+            drop_pct, lookback, confirm_window = 0.15, 2.0, 3.0
+
+        pending = position.get("pending_bad_tick_exit")
+        bypass_bad_tick_check = False
+        if isinstance(pending, dict):
+            pending_time = self._journal_datetime(pending.get("timestamp"))
+            seconds_since_pending = (
+                (timestamp - pending_time).total_seconds()
+                if pending_time is not None
+                else None
+            )
+            if (
+                seconds_since_pending is not None
+                and 0 < seconds_since_pending <= confirm_window
+            ):
+                position.pop("pending_bad_tick_exit", None)
+                position["last_accepted_exit_bid"] = bid
+                position["last_accepted_exit_quote_time"] = timestamp.isoformat()
+                position["last_valid_bid"] = bid
+                logger.warning(
+                    "EXIT_QUOTE_GUARD_CONFIRMED time=%s contract=%s bid=%s "
+                    "ask=%s ltp=%s age_seconds=%s active_trade=%s stop=%s "
+                    "guarded_quotes=%s reason=consecutive_bids_below_stop",
+                    timestamp.isoformat(),
+                    symbol,
+                    bid,
+                    metrics["ask"],
+                    metrics["ltp"],
+                    metrics["age_seconds"],
+                    position.get("trade_id")
+                    or position.get("telegram_trade_id"),
+                    stop,
+                    position.get("guarded_exit_quote_count", 1),
+                )
+                return False
+            if seconds_since_pending is None or seconds_since_pending > confirm_window:
+                self._log_option_exit_quote(
+                    symbol,
+                    position,
+                    metrics,
+                    "bad_tick_confirmation_expired",
+                )
+                position.pop("pending_bad_tick_exit", None)
+                bypass_bad_tick_check = True
+            else:
+                position.pop("pending_bad_tick_exit", None)
+
+        if not bypass_bad_tick_check and previous_bid and previous_time:
+            elapsed = (timestamp - previous_time).total_seconds()
+            if (
+                0 <= elapsed <= lookback
+                and bid < previous_bid * (1.0 - drop_pct)
+            ):
+                position["pending_bad_tick_exit"] = {
+                    "bid": bid,
+                    "timestamp": timestamp.isoformat(),
+                    "stop": stop,
+                }
+                position["guarded_exit_quote_count"] = int(
+                    position.get("guarded_exit_quote_count", 0)
+                ) + 1
+                self._log_option_exit_quote(
+                    symbol, position, metrics, "suspicious_bid_drop"
+                )
+                return True
+
+        position["last_accepted_exit_bid"] = bid
+        position["last_accepted_exit_quote_time"] = timestamp.isoformat()
+        position["last_valid_bid"] = bid
+        return False
+
+    def _select_paper_option_exit_fill(
+        self,
+        symbol: str,
+        position: Optional[dict],
+        quote: dict,
+        price: float,
+        reason: str,
+    ) -> tuple[float, bool, bool, Optional[str]]:
+        quote_metrics = self._option_quote_metrics(quote)
+        paper_v2_enabled = (
+            position is not None
+            and self._quote_validated_long_option(symbol, position)
+            and self._paper_change_enabled("stop_quote_validation_v2")
+        )
+        exit_quote_metrics = (
+            self._option_exit_quote_metrics(quote)
+            if paper_v2_enabled
+            else quote_metrics
+        )
+        is_protective_exit = reason in {
+            "STOP_LOSS",
+            "PROFIT_LOCK",
+            "TRAILING_STOP",
+            "MARKET_CLOSE_FORCED_EXIT",
+        }
+        if (
+            reason != "feed_failure_exit"
+            and paper_v2_enabled
+            and is_protective_exit
+        ):
+            if exit_quote_metrics["exit_valid"]:
+                return exit_quote_metrics["bid"], True, False, None
+            rejection_reason = exit_quote_metrics["rejection_reason"]
+            self._log_option_exit_quote(
+                symbol, position, exit_quote_metrics, rejection_reason
+            )
+            if reason == "MARKET_CLOSE_FORCED_EXIT":
+                logger.error(
+                    "FORCED_EXIT_FALLBACK contract=%s active_trade=%s "
+                    "fallback_price=%s reason=%s",
+                    symbol,
+                    position.get("trade_id")
+                    or position.get("telegram_trade_id"),
+                    price,
+                    rejection_reason,
+                )
+                return price, False, True, rejection_reason
+            return price, False, False, exit_quote_metrics["rejection_reason"]
+        if (
+            reason != "feed_failure_exit"
+            and getattr(self, "config", {}).get(
+                "option_quote_validated_stops_enabled", False
+            )
+            and symbol.endswith(("_CE", "_PE"))
+            and quote_metrics["valid"]
+            and quote_metrics["bid"] is not None
+        ):
+            return quote_metrics["bid"], True, False, None
+        return price, False, False, None
 
     def _record_bid_excursions(self, symbol: str, tick: Tick) -> None:
         if not self._entry_feature_logging_enabled():
@@ -7423,12 +7662,34 @@ class KiteTradingBot:
         quote_validated_option = self._quote_validated_long_option(
             symbol, position
         )
+        paper_exit_quote_validation_v2 = (
+            quote_validated_option
+            and self._paper_change_enabled("stop_quote_validation_v2")
+        )
         quote_metrics = None
+        previous_exit_bid = None
+        previous_exit_quote_time = None
         if quote_validated_option:
-            quote_metrics = self._option_quote_metrics(
-                getattr(self, "option_quote_cache", {}).get(symbol, {})
+            quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+            quote_metrics = self._option_quote_metrics(quote)
+            exit_quote_metrics = (
+                self._option_exit_quote_metrics(quote)
+                if paper_exit_quote_validation_v2
+                else quote_metrics
             )
-            if not quote_metrics["valid"]:
+            quote_valid = (
+                exit_quote_metrics["exit_valid"]
+                if paper_exit_quote_validation_v2
+                else quote_metrics["valid"]
+            )
+            if not quote_valid:
+                if paper_exit_quote_validation_v2:
+                    self._log_option_exit_quote(
+                        symbol,
+                        position,
+                        exit_quote_metrics,
+                        exit_quote_metrics["rejection_reason"],
+                    )
                 bid = quote_metrics["bid"]
                 stop_loss = self._positive_quote_value(position.get("stop_loss"))
                 trailing_level = (
@@ -7486,8 +7747,20 @@ class KiteTradingBot:
                 position["stale_stop_trigger_checks"] = 0
                 return None
 
+            previous_exit_bid = self._positive_quote_value(
+                position.get("last_accepted_exit_bid")
+            )
+            previous_exit_quote_time = self._journal_datetime(
+                position.get("last_accepted_exit_quote_time")
+            )
             position["stale_stop_trigger_checks"] = 0
             position["last_valid_bid"] = quote_metrics["bid"]
+            position["last_accepted_exit_bid"] = quote_metrics["bid"]
+            position["last_accepted_exit_quote_time"] = (
+                quote_metrics["timestamp"].isoformat()
+                if quote_metrics["timestamp"] is not None
+                else None
+            )
 
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
         if (
@@ -7678,13 +7951,64 @@ class KiteTradingBot:
                 return None
 
         if (
+            paper_exit_quote_validation_v2
+            and reason
+            not in {"STOP_LOSS", "PROFIT_LOCK", "TRAILING_STOP"}
+            and not quote_metrics["valid"]
+        ):
+            self._log_option_exit_quote(
+                symbol,
+                position,
+                exit_quote_metrics,
+                "ltp_out_of_spread_for_nonprotective_exit",
+            )
+            return None
+
+        if paper_exit_quote_validation_v2 and reason in {
+            "STOP_LOSS",
+            "PROFIT_LOCK",
+            "TRAILING_STOP",
+        }:
+            active_stop = self._active_option_exit_stop(position)
+            if self._guard_suspicious_option_exit_quote(
+                symbol,
+                position,
+                exit_quote_metrics,
+                active_stop,
+                previous_exit_bid,
+                previous_exit_quote_time,
+            ):
+                if previous_exit_bid is None:
+                    position.pop("last_accepted_exit_bid", None)
+                else:
+                    position["last_accepted_exit_bid"] = previous_exit_bid
+                if previous_exit_quote_time is None:
+                    position.pop("last_accepted_exit_quote_time", None)
+                else:
+                    position["last_accepted_exit_quote_time"] = (
+                        previous_exit_quote_time.isoformat()
+                    )
+                return None
+
+        if (
             reason == "TRAILING_STOP"
             and position.get("trail_close_confirmed")
         ):
-            confirmed_quote = self._option_quote_metrics(
-                getattr(self, "option_quote_cache", {}).get(symbol, {})
+            confirmed_quote = (
+                self._option_exit_quote_metrics(
+                    getattr(self, "option_quote_cache", {}).get(symbol, {})
+                )
+                if paper_exit_quote_validation_v2
+                else self._option_quote_metrics(
+                    getattr(self, "option_quote_cache", {}).get(symbol, {})
+                )
             )
-            if not confirmed_quote["valid"] or confirmed_quote["bid"] is None:
+            confirmed_valid = (
+                confirmed_quote["exit_valid"]
+                if paper_exit_quote_validation_v2
+                else confirmed_quote["valid"]
+            )
+            if not confirmed_valid or confirmed_quote["bid"] is None:
                 return None
             exit_price = confirmed_quote["bid"]
         else:
@@ -8205,16 +8529,14 @@ class KiteTradingBot:
         trade = self.trade_journal.get_open_trade(symbol, action)
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         quote_metrics = self._option_quote_metrics(quote)
-        if (
-            reason != "feed_failure_exit"
-            and getattr(self, "config", {}).get(
-                "option_quote_validated_stops_enabled", False
-            )
-            and symbol.endswith(("_CE", "_PE"))
-            and quote_metrics["valid"]
-            and quote_metrics["bid"] is not None
-        ):
-            price = quote_metrics["bid"]
+        (
+            price,
+            exit_fill_from_bid,
+            forced_exit_fallback,
+            forced_exit_fallback_reason,
+        ) = self._select_paper_option_exit_fill(
+            symbol, position, quote, price, reason
+        )
         logger.info(
             "[%s] Exit quote bid=%s ask=%s LTP=%s timestamp=%s reason=%s",
             symbol,
@@ -8442,12 +8764,22 @@ class KiteTradingBot:
                 ),
                 "paper_exit_fill_source": (
                     "best_bid"
-                    if quote_metrics["valid"]
+                    if exit_fill_from_bid
                     else (
                         "last_valid_bid"
                         if reason == "feed_failure_exit"
                         else "existing_exit_reference"
                     )
+                ),
+                "forced_exit_fallback_used": forced_exit_fallback,
+                "forced_exit_fallback_price": (
+                    float(price) if forced_exit_fallback else None
+                ),
+                "forced_exit_fallback_reason": forced_exit_fallback_reason,
+                "guarded_exit_quote_count": int(
+                    position.get("guarded_exit_quote_count", 0)
+                    if position
+                    else 0
                 ),
                 "paper_exit_bid": self._positive_quote_value(
                     quote.get("bid")
@@ -8468,6 +8800,7 @@ class KiteTradingBot:
                         "profit_lock_v2",
                         "trail_close_confirm_v2",
                         "partial_profit_v2",
+                        "stop_quote_validation_v2",
                     )
                     if self._paper_change_enabled(flag)
                 ],
@@ -10169,6 +10502,7 @@ class KiteTradingBot:
                         "profit_lock_v2",
                         "trail_close_confirm_v2",
                         "partial_profit_v2",
+                        "stop_quote_validation_v2",
                     )
                     if self._paper_change_enabled(flag)
                 ]
@@ -10728,6 +11062,7 @@ class KiteTradingBot:
                                 "profit_lock_v2",
                                 "trail_close_confirm_v2",
                                 "partial_profit_v2",
+                                "stop_quote_validation_v2",
                             )
                             if self._paper_change_enabled(flag)
                         ],

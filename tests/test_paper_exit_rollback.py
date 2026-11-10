@@ -300,3 +300,33 @@ def test_rollback_cli_disables_partial_flag_on_accounting_failure(tmp_path, caps
     output = capsys.readouterr().out
     assert "Rollback switched OFF: partial_profit_v2" in output
     assert "tagged_trades=1" in output
+
+
+def test_stop_quote_rollback_reports_fill_gap_and_guard_counts():
+    trades = [
+        {
+            **_trade("small-gap", 3, flags=[]),
+            "paper_exit_flags_at_exit": ["stop_quote_validation_v2"],
+            "exit_trigger_price": 100.0,
+            "exit_price": 98.0,
+            "guarded_exit_quote_count": 2,
+        },
+        {
+            **_trade("large-gap", 4, flags=[]),
+            "paper_exit_flags_at_exit": ["stop_quote_validation_v2"],
+            "exit_trigger_price": 100.0,
+            "exit_price": 96.0,
+            "guarded_exit_quote_count": 1,
+        },
+    ]
+
+    result = paper_exit_rollback.evaluate_paper_exit_rollbacks(trades, Path())[
+        "stop_quote_validation_v2"
+    ]
+
+    assert result["tagged_trades"] == 2
+    assert result["rollback_required"] is True
+    assert any("exit_fill_gap_rupees=3.0000" in check for check in result["checks"])
+    assert any("exit_fill_gap_pct=3.0000" in check for check in result["checks"])
+    assert "guarded_quotes=3" in result["checks"]
+    assert "fills_more_than_3pct_below_stop=1" in result["checks"]

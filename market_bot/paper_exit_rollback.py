@@ -15,6 +15,7 @@ EXIT_FLAGS = (
     "profit_lock_v2",
     "trail_close_confirm_v2",
     "partial_profit_v2",
+    "stop_quote_validation_v2",
 )
 
 
@@ -288,7 +289,15 @@ def evaluate_paper_exit_rollbacks(
     summaries: dict[str, dict[str, Any]] = {}
     for flag in EXIT_FLAGS:
         tagged = sorted(
-            (trade for trade in closed if flag in _trade_flags(trade)),
+            (
+                trade
+                for trade in closed
+                if flag in _trade_flags(trade)
+                or flag
+                in _list_value(trade.get("paper_exit_flags_at_exit"))
+                or flag
+                in _list_value(trade.get("paper_change_flags_at_exit"))
+            ),
             key=lambda row: (
                 _parse_time(row.get("closed_at") or row.get("timestamp"))
                 or datetime.min.replace(tzinfo=IST),
@@ -297,6 +306,59 @@ def evaluate_paper_exit_rollbacks(
         )
         reasons: list[str] = []
         events: list[str] = []
+        if flag == "stop_quote_validation_v2":
+            fill_gaps = []
+            guarded_quotes = 0
+            fills_more_than_three_pct_below_stop = []
+            for trade in tagged:
+                guarded_quotes += int(
+                    _number(trade.get("guarded_exit_quote_count")) or 0
+                )
+                trigger = _number(
+                    trade.get(
+                        "exit_trigger_price",
+                        trade.get("initial_stop_loss", trade.get("stop_loss")),
+                    )
+                )
+                fill = _number(trade.get("exit_price"))
+                if trigger is None or fill is None or trigger <= 0:
+                    continue
+                gap = trigger - fill
+                gap_pct = gap / trigger * 100.0
+                fill_gaps.append((gap, gap_pct))
+                if gap_pct > 3.0:
+                    fills_more_than_three_pct_below_stop.append(trade)
+            if fills_more_than_three_pct_below_stop:
+                first = fills_more_than_three_pct_below_stop[0]
+                reasons.append(
+                    "trade "
+                    f"{first.get('trade_id', 'unknown')} filled more than 3% "
+                    "below its stop trigger"
+                )
+            events.append(
+                f"exit_fill_gap_rupees="
+                f"{sum(gap for gap, _ in fill_gaps) / len(fill_gaps):.4f}"
+                if fill_gaps
+                else "exit_fill_gap_rupees=NA"
+            )
+            events.append(
+                f"exit_fill_gap_pct="
+                f"{sum(pct for _, pct in fill_gaps) / len(fill_gaps):.4f}"
+                if fill_gaps
+                else "exit_fill_gap_pct=NA"
+            )
+            events.append(f"guarded_quotes={guarded_quotes}")
+            events.append(
+                "fills_more_than_3pct_below_stop="
+                f"{len(fills_more_than_three_pct_below_stop)}"
+            )
+            summaries[flag] = {
+                "tagged_trades": len(tagged),
+                "rollback_reasons": reasons,
+                "checks": events,
+                "rollback_required": bool(reasons),
+            }
+            continue
         if flag == "partial_profit_v2":
             executed = [
                 trade for trade in tagged
