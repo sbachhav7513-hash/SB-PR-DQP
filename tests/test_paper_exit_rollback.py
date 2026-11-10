@@ -214,6 +214,74 @@ def test_partial_rollback_paired_comparison_waits_for_ten_trades(monkeypatch):
     )
 
 
+def test_stock_take_profit_rollback_reports_gap_capped_winners_and_pairs(
+    monkeypatch,
+):
+    tagged = {
+        **_trade("tagged", 5, pnl=1000.0, flags=["stock_take_profit_v2"]),
+        "ticker": "INFY_CE",
+        "tier": "stock",
+        "reason": "TAKE_PROFIT_V2",
+        "entry": 100.0,
+        "initial_risk_per_unit": 10.0,
+        "exit_price": 106.5,
+        "exit_trigger_price": 108.0,
+        "exit_legs": [
+            {"leg_type": "partial", "fill": 105.0, "reason": "PARTIAL_PROFIT"},
+            {"leg_type": "final", "fill": 108.1, "reason": "TAKE_PROFIT_V2"},
+        ],
+        "closed_at": datetime(2026, 11, 5, 10, 0, tzinfo=IST).isoformat(),
+    }
+    untagged = {
+        **_trade("untagged", 5, pnl=700.0, flags=["runner_gap_v2"]),
+        "ticker": "INFY_CE",
+        "tier": "stock",
+        "closed_at": datetime(2026, 11, 5, 10, 30, tzinfo=IST).isoformat(),
+    }
+    monkeypatch.setattr(
+        paper_exit_rollback,
+        "_post_exit_quote_rows",
+        lambda trade, candle_root: [{"_bid": 113.2}],
+    )
+
+    result = paper_exit_rollback.evaluate_paper_exit_rollbacks(
+        [tagged, untagged], Path()
+    )["stock_take_profit_v2"]
+
+    checks = " ".join(result["checks"])
+    assert "fill_minus_trigger_gap_avg=0.1000" in checks
+    assert "capped_winner_exits_bid_more_than_0.5R_within_30m=1" in checks
+    assert "first_ten_paired_stock_pnl_delta_avg=300.00 paired=1/10" in checks
+    assert result["rollback_required"] is False
+
+
+def test_stock_take_profit_rollback_applies_tagged_daily_loss_limit(monkeypatch):
+    loss_a = {
+        **_trade("stock-loss-a", 6, pnl=-3500.0, flags=["stock_take_profit_v2"]),
+        "ticker": "INFY_CE",
+        "tier": "stock",
+        "closed_at": datetime(2026, 11, 6, 10, 0, tzinfo=IST).isoformat(),
+    }
+    loss_b = {
+        **_trade("stock-loss-b", 6, pnl=-2500.0, flags=["stock_take_profit_v2"]),
+        "ticker": "TCS_PE",
+        "tier": "stock",
+        "closed_at": datetime(2026, 11, 6, 11, 0, tzinfo=IST).isoformat(),
+    }
+    monkeypatch.setattr(
+        paper_exit_rollback, "_post_exit_quote_rows", lambda trade, root: []
+    )
+
+    result = paper_exit_rollback.evaluate_paper_exit_rollbacks(
+        [loss_a, loss_b], Path()
+    )["stock_take_profit_v2"]
+
+    assert result["rollback_required"] is True
+    assert "INR 6000.00 on 2026-11-06 (P&L -6000.00)" in (
+        result["rollback_reasons"][0]
+    )
+
+
 def test_rollback_cli_disables_only_triggered_flag_and_prints_restart_steps(
     tmp_path, capsys
 ):

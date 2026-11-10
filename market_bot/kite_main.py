@@ -62,7 +62,7 @@ from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
 from .stop_reentry_journal import StopReentryJournal
 from .telegram_notifier import TelegramNotifier
-from .telegram_control.commands import process_telegram_command
+from .telegram_control.commands import EXIT_REASON_TAGS, process_telegram_command
 from .telegram_control.listener import (
     TelegramCommand,
     TelegramCommandListener,
@@ -96,6 +96,7 @@ def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
         "runner_gap_v2": True,
         "profit_lock_v2": True,
         "trail_close_confirm_v2": True,
+        "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": False,
     }
     configured_flags = {
@@ -250,19 +251,16 @@ class KiteTradingBot:
         return values
 
     def _paper_option_exit_tier_values(self, symbol: str) -> tuple[float, float]:
-        tier = (
-            "index_options"
-            if self._underlying_symbol(symbol) in {"NIFTY", "BANKNIFTY"}
-            else "stock_options"
-        )
+        tier = self._paper_option_tier(symbol)
+        tier_key = "index_options" if tier == "index" else "stock_options"
         configured_tiers = self.config.get("paper_exit_tiers", {})
         configured = (
-            configured_tiers.get(tier, {})
+            configured_tiers.get(tier_key, {})
             if isinstance(configured_tiers, dict)
             else {}
         )
         if not isinstance(configured, dict):
-            raise ValueError(f"paper_exit_tiers.{tier} must be a mapping")
+            raise ValueError(f"paper_exit_tiers.{tier_key} must be a mapping")
         runner_gap = float(configured.get("runner_gap_r", 1.5))
         profit_lock = float(configured.get("profit_lock_r", 0.15))
         if (
@@ -271,8 +269,130 @@ class KiteTradingBot:
             or not math.isfinite(profit_lock)
             or not 0 <= profit_lock < 0.5
         ):
-            raise ValueError(f"Invalid PAPER exit parameters for {tier}")
+            raise ValueError(f"Invalid PAPER exit parameters for {tier_key}")
         return runner_gap, profit_lock
+
+    @classmethod
+    def _paper_option_tier(cls, symbol: str) -> Optional[str]:
+        if not symbol.endswith(("_CE", "_PE")):
+            return None
+        return (
+            "index"
+            if cls._underlying_symbol(symbol)
+            in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+            else "stock"
+        )
+
+    def _stock_take_profit_tiers(self) -> set[str]:
+        configured = self.config.get("stock_take_profit_tiers", ["stock"])
+        if not isinstance(configured, (list, tuple)) or any(
+            not isinstance(tier, str) or not tier.strip()
+            for tier in configured
+        ):
+            logger.error(
+                "Invalid stock_take_profit_tiers; expected a list of tier names"
+            )
+            return set()
+        return {tier.strip().lower() for tier in configured}
+
+    def _resolve_stock_take_profit_tier(
+        self, symbol: str, position: dict, trade: Optional[dict] = None
+    ) -> Optional[str]:
+        if (
+            position.get("tier") is None
+            and trade is None
+            and getattr(self, "trade_journal", None) is not None
+        ):
+            trade = self.trade_journal.get_open_trade(
+                symbol, str(position.get("direction", ""))
+            )
+        tier = position.get("tier")
+        if tier is None and isinstance(trade, dict):
+            tier = trade.get("tier")
+        if isinstance(tier, str) and tier.strip():
+            resolved = tier.strip().lower()
+            if resolved in {"stock", "index"}:
+                return resolved
+            logger.warning(
+                "[%s] STOCK_TAKE_PROFIT_TIER_NULL tier=%s "
+                "reason=unsupported_stored_tier",
+                symbol,
+                tier,
+            )
+            return None
+
+        underlying = self._underlying_symbol(symbol)
+        symbols = self.config.get("options_underlyings", [])
+        configured_symbols = (
+            {str(value).strip().upper() for value in symbols}
+            if isinstance(symbols, (list, tuple, set))
+            else set()
+        )
+        if underlying in configured_symbols:
+            resolved = self._paper_option_tier(symbol)
+            reason = "stored_tier_missing_derived_from_symbol_list"
+            if position.get("stock_take_profit_tier_null_reason") != reason:
+                logger.info(
+                    "[%s] STOCK_TAKE_PROFIT_TIER_NULL tier=null reason=%s "
+                    "derived_tier=%s",
+                    symbol,
+                    reason,
+                    resolved,
+                )
+                position["stock_take_profit_tier_null_reason"] = reason
+            return resolved
+
+        reason = "stored_tier_missing_underlying_not_in_options_underlyings"
+        if position.get("stock_take_profit_tier_null_reason") != reason:
+            logger.warning(
+                "[%s] STOCK_TAKE_PROFIT_TIER_NULL tier=null reason=%s",
+                symbol,
+                reason,
+            )
+            position["stock_take_profit_tier_null_reason"] = reason
+        return None
+
+    def _stock_take_profit_target(
+        self, symbol: str, position: dict, trade: Optional[dict] = None
+    ) -> Optional[float]:
+        if (
+            not self._paper_change_enabled("stock_take_profit_v2")
+            or not position.get("stock_take_profit_v2_enabled")
+            or str(position.get("direction", "")).upper() != "BUY"
+        ):
+            return None
+
+        tier = self._resolve_stock_take_profit_tier(symbol, position, trade)
+        if tier not in self._stock_take_profit_tiers():
+            return None
+
+        try:
+            entry = float(position["entry_price"])
+            risk = float(position["initial_risk_distance"])
+            target_r = float(
+                position.get(
+                    "stock_take_profit_r",
+                    self.config.get("stock_take_profit_r", 0.8),
+                )
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.exception(
+                "[%s] Stock take-profit position or configuration is invalid",
+                symbol,
+            )
+            return None
+        if (
+            not all(math.isfinite(value) for value in (entry, risk, target_r))
+            or entry <= 0
+            or risk <= 0
+            or target_r <= 0
+        ):
+            logger.error(
+                "[%s] Invalid stock_take_profit_r, entry, or initial risk",
+                symbol,
+            )
+            return None
+        return entry + target_r * risk
 
     def _entry_risk_cap(self) -> Optional[float]:
         configured_cap = self.config.get("max_risk_per_trade")
@@ -1722,6 +1842,9 @@ class KiteTradingBot:
         self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.config.setdefault("entry_feature_logging_v2", True)
         self.config.setdefault("stop_quote_validation_v2", True)
+        self.config.setdefault("stock_take_profit_v2", True)
+        self.config.setdefault("stock_take_profit_r", 0.8)
+        self.config.setdefault("stock_take_profit_tiers", ["stock"])
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.simulation_mode and self.mode == "LIVE":
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
@@ -1729,7 +1852,13 @@ class KiteTradingBot:
             self.mode = "PAPER"
         _log_runtime_flags(self.config, self.mode)
         self.config_hash = strategy_config_hash(self.config)
-        self.git_identity = log_startup_identity(self.config_hash)
+        self.git_identity = log_startup_identity(
+            self.config_hash,
+            stock_take_profit_v2=(
+                self.mode == "PAPER"
+                and bool(self.config.get("stock_take_profit_v2", True))
+            ),
+        )
         if (
             not self.simulation_mode
             and (not self.config["kite_api_key"] or not self.config["kite_access_token"])
@@ -2633,6 +2762,20 @@ class KiteTradingBot:
                 ),
             )
             restored_position = self.intraday_manager.active_positions[str(symbol)]
+            entry_exit_flags = trade.get("paper_exit_flags_at_entry") or []
+            if isinstance(entry_exit_flags, str):
+                try:
+                    entry_exit_flags = json.loads(entry_exit_flags)
+                except json.JSONDecodeError:
+                    entry_exit_flags = []
+            if not isinstance(entry_exit_flags, list):
+                entry_exit_flags = []
+            exit_parameters = trade.get("paper_exit_parameters") or {}
+            if not isinstance(exit_parameters, dict):
+                exit_parameters = {}
+            restored_tier = self._resolve_stock_take_profit_tier(
+                str(symbol), restored_position, trade
+            )
             restored_position.update(
                 {
                     "entry_quantity": int(
@@ -2663,6 +2806,25 @@ class KiteTradingBot:
                         self.config.get("partial_profit_fraction", 0.5),
                     ),
                     "exit_legs": list(trade.get("exit_legs") or []),
+                    "tier": trade.get("tier"),
+                    "paper_exit_flags_at_entry": list(entry_exit_flags),
+                    "stock_take_profit_r": exit_parameters.get(
+                        "stock_take_profit_r",
+                        self.config.get("stock_take_profit_r", 0.8),
+                    ),
+                    "stock_take_profit_v2_enabled": (
+                        self._paper_change_enabled("stock_take_profit_v2")
+                        and "stock_take_profit_v2" in entry_exit_flags
+                        and restored_tier in self._stock_take_profit_tiers()
+                    ),
+                    "stock_take_profit_tier_null_reason": restored_position.get(
+                        "stock_take_profit_tier_null_reason"
+                    ),
+                    "manual_exit_price": trade.get("manual_exit_price"),
+                    "manual_exit_events": list(
+                        trade.get("manual_exit_events") or []
+                    ),
+                    "exit_reason_tag": trade.get("exit_reason_tag"),
                 }
             )
 
@@ -6517,16 +6679,17 @@ class KiteTradingBot:
             if paper_v2_enabled
             else quote_metrics
         )
-        is_protective_exit = reason in {
+        is_quote_validated_exit = reason in {
             "STOP_LOSS",
             "PROFIT_LOCK",
             "TRAILING_STOP",
+            "TAKE_PROFIT_V2",
             "MARKET_CLOSE_FORCED_EXIT",
         }
         if (
             reason != "feed_failure_exit"
             and paper_v2_enabled
-            and is_protective_exit
+            and is_quote_validated_exit
         ):
             if exit_quote_metrics["exit_valid"]:
                 return exit_quote_metrics["bid"], True, False, None
@@ -7436,6 +7599,24 @@ class KiteTradingBot:
                 reply = "Command failed; the trading loop is continuing."
             finally:
                 self._current_telegram_command = None
+            command_tokens = command.text.strip().split()
+            normalized_command = (
+                command_tokens[0].split("@", 1)[0].lower()
+                if command_tokens
+                else ""
+            )
+            reason_candidate = (
+                command_tokens[2]
+                if normalized_command == "/exit" and len(command_tokens) == 3
+                else command_tokens[3]
+                if normalized_command == "/exitat" and len(command_tokens) == 4
+                else None
+            )
+            reason_tag = (
+                reason_candidate
+                if reason_candidate in EXIT_REASON_TAGS
+                else None
+            )
             journal = getattr(self, "trade_journal", None)
             log_command = getattr(journal, "log_command", None)
             if log_command is not None:
@@ -7448,6 +7629,7 @@ class KiteTradingBot:
                             "update_id": command.update_id,
                             "message_timestamp": command.message_timestamp,
                             "response": reply,
+                            "reason_tag": reason_tag,
                         }
                     )
                 except OSError:
@@ -7740,11 +7922,16 @@ class KiteTradingBot:
         quote_validated_option = self._quote_validated_long_option(
             symbol, position
         )
+        stock_take_profit_enabled = (
+            self._paper_change_enabled("stock_take_profit_v2")
+            and bool(position.get("stock_take_profit_v2_enabled"))
+        )
         paper_exit_quote_validation_v2 = (
             quote_validated_option
             and self._paper_change_enabled("stop_quote_validation_v2")
         )
         quote_metrics = None
+        stock_tp_exit_quote_metrics = None
         previous_exit_bid = None
         previous_exit_quote_time = None
         if quote_validated_option:
@@ -7755,6 +7942,7 @@ class KiteTradingBot:
                 if paper_exit_quote_validation_v2
                 else quote_metrics
             )
+            stock_tp_exit_quote_metrics = exit_quote_metrics
             quote_valid = (
                 exit_quote_metrics["exit_valid"]
                 if paper_exit_quote_validation_v2
@@ -7838,6 +8026,14 @@ class KiteTradingBot:
                 quote_metrics["timestamp"].isoformat()
                 if quote_metrics["timestamp"] is not None
                 else None
+            )
+        elif stock_take_profit_enabled:
+            quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
+            quote_metrics = self._option_quote_metrics(quote)
+            stock_tp_exit_quote_metrics = (
+                self._option_exit_quote_metrics(quote)
+                if self._paper_change_enabled("stop_quote_validation_v2")
+                else quote_metrics
             )
 
         trailing_stop = self.intraday_manager.update_trailing_stop(symbol, price)
@@ -7948,6 +8144,28 @@ class KiteTradingBot:
             )
             self._persist_paper_option_exit_state(symbol, position)
 
+        stock_take_profit_target = (
+            self._stock_take_profit_target(symbol, position)
+            if stock_take_profit_enabled
+            else None
+        )
+        stock_take_profit_bid = (
+            self._positive_quote_value(
+                stock_tp_exit_quote_metrics.get("bid")
+            )
+            if stock_tp_exit_quote_metrics
+            else None
+        )
+        stock_take_profit_quote_valid = bool(
+            stock_tp_exit_quote_metrics
+            and stock_take_profit_bid is not None
+            and (
+                stock_tp_exit_quote_metrics.get("exit_valid")
+                if self._paper_change_enabled("stop_quote_validation_v2")
+                else stock_tp_exit_quote_metrics.get("valid")
+            )
+        )
+
         if position["direction"] == "BUY":
             stop_price = (
                 quote_metrics["bid"]
@@ -7961,6 +8179,21 @@ class KiteTradingBot:
                 and stop_price <= float(position["profit_lock_stop"])
             ):
                 reason = "PROFIT_LOCK"
+            elif (
+                position.get("manual_exit_price") is not None
+                and price >= float(position["manual_exit_price"])
+            ):
+                reason = "MANUAL_TARGET"
+            elif (
+                stock_take_profit_target is not None
+                and stock_take_profit_quote_valid
+                and stock_take_profit_bid >= stock_take_profit_target
+                and position.get("manual_exit_price") is None
+            ):
+                position["stock_take_profit_target"] = (
+                    stock_take_profit_target
+                )
+                reason = "TAKE_PROFIT_V2"
             elif position.get("trail_close_confirmed"):
                 reason = "TRAILING_STOP"
             elif trailing_stop is not None and stop_price <= trailing_stop:
@@ -7973,18 +8206,9 @@ class KiteTradingBot:
                 not trailing_enabled
                 and not position.get("staged_targets_enabled")
                 and price >= position["take_profit"]
-                and (
-                    position.get("manual_exit_price") is None
-                    or float(position["manual_exit_price"])
-                    > float(position["take_profit"])
-                )
+                and position.get("manual_exit_price") is None
             ):
                 reason = "TAKE_PROFIT"
-            elif (
-                position.get("manual_exit_price") is not None
-                and price >= float(position["manual_exit_price"])
-            ):
-                reason = "MANUAL_TARGET"
             elif (
                 not self._is_option_dynamic_exit(position)
                 and position.get("exit_strategy") != "paper_range_breakout_2r"
@@ -8028,19 +8252,25 @@ class KiteTradingBot:
             else:
                 return None
 
-        if (
-            paper_exit_quote_validation_v2
-            and reason
-            not in {"STOP_LOSS", "PROFIT_LOCK", "TRAILING_STOP"}
-            and not quote_metrics["valid"]
-        ):
-            self._log_option_exit_quote(
-                symbol,
-                position,
-                exit_quote_metrics,
-                "ltp_out_of_spread_for_nonprotective_exit",
+        if paper_exit_quote_validation_v2 and reason not in {
+            "STOP_LOSS",
+            "PROFIT_LOCK",
+            "TRAILING_STOP",
+        }:
+            quote_valid = (
+                stock_tp_exit_quote_metrics.get("exit_valid")
+                if reason == "TAKE_PROFIT_V2"
+                and stock_tp_exit_quote_metrics is not None
+                else quote_metrics["valid"]
             )
-            return None
+            if not quote_valid:
+                self._log_option_exit_quote(
+                    symbol,
+                    position,
+                    exit_quote_metrics,
+                    "ltp_out_of_spread_for_nonprotective_exit",
+                )
+                return None
 
         if paper_exit_quote_validation_v2 and reason in {
             "STOP_LOSS",
@@ -8091,7 +8321,10 @@ class KiteTradingBot:
             exit_price = confirmed_quote["bid"]
         else:
             exit_price = (
-                quote_metrics["bid"]
+                stock_take_profit_bid
+                if reason == "TAKE_PROFIT_V2"
+                and stock_take_profit_bid is not None
+                else quote_metrics["bid"]
                 if quote_validated_option
                 and quote_metrics is not None
                 and quote_metrics["bid"] is not None
@@ -8640,6 +8873,12 @@ class KiteTradingBot:
             getattr(self, "_current_telegram_command", None),
             closed_at,
         )
+        if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}:
+            exit_audit_fields["chart_context_snapshot"] = (
+                self._manual_exit_chart_context(
+                    symbol, position, trade, quote, closed_at
+                )
+            )
         journal_pnl = self.trade_journal.close_trade(
             symbol,
             price,
@@ -8911,7 +9150,14 @@ class KiteTradingBot:
                         "stop_quote_validation_v2",
                     )
                     if self._paper_change_enabled(flag)
-                ],
+                ]
+                + (
+                    ["stock_take_profit_v2"]
+                    if position
+                    and position.get("stock_take_profit_v2_enabled")
+                    and self._paper_change_enabled("stock_take_profit_v2")
+                    else []
+                ),
                 "paper_exit_parameters": (
                     {
                         "runner_gap_r": position.get("adaptive_runner_gap_r"),
@@ -8922,6 +9168,12 @@ class KiteTradingBot:
                         "partial_profit_r": position.get("partial_profit_r"),
                         "partial_profit_fraction": position.get(
                             "partial_profit_fraction"
+                        ),
+                        "stock_take_profit_r": position.get(
+                            "stock_take_profit_r"
+                        ),
+                        "stock_take_profit_tier_null_reason": position.get(
+                            "stock_take_profit_tier_null_reason"
                         ),
                     }
                     if position
@@ -8992,6 +9244,8 @@ class KiteTradingBot:
                     if reason == "STOP_LOSS" and position
                     else position.get("profit_lock_stop")
                     if reason == "PROFIT_LOCK" and position
+                    else position.get("stock_take_profit_target")
+                    if reason == "TAKE_PROFIT_V2" and position
                     else float(price)
                 ),
                 "exit_trigger_source": (
@@ -9183,6 +9437,8 @@ class KiteTradingBot:
             return "bot trail"
         if reason == "PROFIT_LOCK":
             return "profit lock"
+        if reason == "TAKE_PROFIT_V2":
+            return "bot_take_profit"
         if reason in {"MARKET_CLOSE_FORCED_EXIT", "SESSION_GAP_FORCED_EXIT"}:
             return "forced EOD"
         if reason == "feed_failure_exit":
@@ -9252,7 +9508,179 @@ class KiteTradingBot:
             ),
             "exit_command": exit_command,
             "manual_exit_events": manual_exit_events,
+            "exit_reason_tag": (
+                (position or {}).get("exit_reason_tag")
+                or (trade or {}).get("exit_reason_tag")
+                if reason in {"MANUAL_EXIT", "MANUAL_TARGET"}
+                else None
+            ),
         }
+
+    def _manual_exit_chart_context(
+        self,
+        symbol: str,
+        position: Optional[dict],
+        trade: Optional[dict],
+        quote: dict,
+        captured_at: datetime,
+    ) -> dict[str, Any]:
+        position = position or {}
+        trade = trade or {}
+        underlying = self._underlying_symbol(symbol)
+        null_reasons: dict[str, str] = {}
+
+        underlying_last = self._positive_quote_value(
+            getattr(self, "latest_prices", {}).get(underlying)
+        )
+        price_source = "latest_tick" if underlying_last is not None else None
+
+        token_value = (
+            (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                underlying
+            )
+        )
+        bars = []
+        if token_value is not None:
+            try:
+                token = int(token_value)
+            except (TypeError, ValueError, OverflowError):
+                null_reasons["underlying_bars"] = "invalid_underlying_token"
+            else:
+                builder = getattr(self, "bar_builder", None)
+                if builder is not None:
+                    bars = builder.get_bars(token, limit=5)
+        closes: list[float] = []
+        for bar in bars:
+            try:
+                close = float(bar.close)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(close) and close > 0:
+                closes.append(close)
+        closes = closes[-5:]
+        if underlying_last is None and closes:
+            underlying_last = closes[-1]
+            price_source = "last_completed_1m_close"
+        if underlying_last is None:
+            null_reasons["underlying_last_price"] = "underlying_quote_unavailable"
+        if len(closes) < 5:
+            null_reasons["underlying_last_five_1m_closes"] = (
+                "fewer_than_five_completed_bars"
+            )
+
+        entry_features = trade.get("entry_feature_values") or {}
+        if isinstance(entry_features, str):
+            try:
+                entry_features = json.loads(entry_features)
+            except json.JSONDecodeError:
+                entry_features = {}
+        if not isinstance(entry_features, dict):
+            entry_features = {}
+        pivot = self._positive_quote_value(
+            entry_features.get("pivot_level", trade.get("entry_pivot_level"))
+        )
+        if pivot is None:
+            null_reasons["entry_pivot_level"] = (
+                (trade.get("entry_feature_null_reasons") or {}).get(
+                    "pivot_level", "entry_pivot_unavailable"
+                )
+                if isinstance(trade.get("entry_feature_null_reasons") or {}, dict)
+                else "entry_pivot_unavailable"
+            )
+            pivot_distance = None
+            pivot_distance_pct = None
+        elif underlying_last is None:
+            null_reasons["distance_to_entry_pivot"] = (
+                "underlying_last_price_unavailable"
+            )
+            pivot_distance = None
+            pivot_distance_pct = None
+        else:
+            pivot_distance = underlying_last - pivot
+            pivot_distance_pct = abs(pivot_distance) / pivot * 100.0
+
+        close_directions = [
+            "up" if current > previous else "down" if current < previous else "flat"
+            for previous, current in zip(closes, closes[1:])
+        ]
+        if not close_directions:
+            null_reasons["underlying_close_directions"] = (
+                "fewer_than_two_completed_bars"
+            )
+        trend = (
+            "up"
+            if closes[-1] > closes[0]
+            else "down"
+            if closes[-1] < closes[0]
+            else "flat"
+        ) if len(closes) >= 2 else None
+
+        bid_metrics = (
+            self._option_exit_quote_metrics(quote)
+            if symbol.endswith(("_CE", "_PE"))
+            else {}
+        )
+        option_bid = (
+            bid_metrics.get("bid")
+            if bid_metrics.get("exit_valid")
+            else None
+        )
+        entry = self._finite_float(
+            position.get("entry_price", trade.get("entry"))
+        )
+        risk = self._finite_float(
+            position.get(
+                "initial_risk_distance",
+                trade.get("initial_risk_per_unit"),
+            )
+        )
+        if risk is None or risk <= 0:
+            initial_stop = self._finite_float(
+                position.get(
+                    "initial_stop_loss",
+                    trade.get("initial_stop_loss", trade.get("stop_loss")),
+                )
+            )
+            risk = (
+                abs(entry - initial_stop)
+                if entry is not None and initial_stop is not None
+                else None
+            )
+        option_bid_r = (
+            (option_bid - entry) / risk
+            if option_bid is not None and entry is not None and risk and risk > 0
+            else None
+        )
+        if option_bid is None:
+            null_reasons["option_bid_r"] = (
+                f"invalid_option_quote:{bid_metrics.get('rejection_reason', 'quote_unavailable')}"
+            )
+        elif option_bid_r is None:
+            null_reasons["option_bid_r"] = "initial_risk_unavailable"
+
+        return {
+            "captured_at": captured_at.isoformat(timespec="seconds"),
+            "underlying_symbol": underlying,
+            "underlying_last_price": underlying_last,
+            "underlying_price_source": price_source,
+            "entry_pivot_level": pivot,
+            "distance_to_entry_pivot": pivot_distance,
+            "distance_to_entry_pivot_pct": pivot_distance_pct,
+            "underlying_last_five_1m_closes": closes,
+            "underlying_close_directions": close_directions,
+            "underlying_last_five_1m_trend": trend,
+            "option_bid": option_bid,
+            "option_bid_r": option_bid_r,
+            "null_reasons": null_reasons,
+        }
+
+    @staticmethod
+    def _finite_float(value: Any) -> Optional[float]:
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
 
     @staticmethod
     def _exit_reason_category(reason: str) -> str:
@@ -9260,6 +9688,8 @@ class KiteTradingBot:
             return "SL"
         if reason == "PROFIT_LOCK":
             return "TRAILING_PROFIT"
+        if reason == "TAKE_PROFIT_V2":
+            return "TAKE_PROFIT"
         if reason == "MARKET_CLOSE_FORCED_EXIT":
             return "EOD"
         if reason in {"TIME_BOX", "SIGNAL_WEAKEN"}:
@@ -10699,7 +11129,12 @@ class KiteTradingBot:
                     }
                 )
                 entry_position = self.intraday_manager.active_positions[symbol]
-                alert["paper_exit_flags_at_entry"] = [
+                entry_tier = self._paper_option_tier(symbol)
+                entry_position["tier"] = entry_tier
+                entry_position["stock_take_profit_r"] = self.config.get(
+                    "stock_take_profit_r", 0.8
+                )
+                entry_exit_flags = [
                     flag
                     for flag in (
                         "runner_gap_v2",
@@ -10710,6 +11145,19 @@ class KiteTradingBot:
                     )
                     if self._paper_change_enabled(flag)
                 ]
+                stock_take_profit_enabled = (
+                    self._paper_change_enabled("stock_take_profit_v2")
+                    and entry_tier in self._stock_take_profit_tiers()
+                )
+                if stock_take_profit_enabled:
+                    entry_exit_flags.append("stock_take_profit_v2")
+                entry_position["stock_take_profit_v2_enabled"] = (
+                    stock_take_profit_enabled
+                )
+                entry_position["paper_exit_flags_at_entry"] = list(
+                    entry_exit_flags
+                )
+                alert["paper_exit_flags_at_entry"] = entry_exit_flags
                 alert["paper_exit_parameters"] = {
                     "runner_gap_r": entry_position.get("adaptive_runner_gap_r"),
                     "profit_lock_r": entry_position.get("profit_lock_r"),
@@ -10721,6 +11169,12 @@ class KiteTradingBot:
                     ),
                     "partial_profit_fraction": self.config.get(
                         "partial_profit_fraction", 0.5
+                    ),
+                    "stock_take_profit_r": self.config.get(
+                        "stock_take_profit_r", 0.8
+                    ),
+                    "stock_take_profit_tiers": sorted(
+                        self._stock_take_profit_tiers()
                     ),
                 }
             if staged_option_targets:
@@ -11328,6 +11782,15 @@ class KiteTradingBot:
         positions = self.intraday_manager.get_all_open_positions()
         if positions:
             logger.warning(f"Market close time (3:15 PM) - Force closing all positions")
+            if getattr(self, "paper_trading_enabled", False) and not getattr(
+                self, "live_orders_enabled", False
+            ):
+                for pos_symbol, pos_details in positions.items():
+                    price = self.latest_prices.get(
+                        pos_symbol, pos_details["entry_price"]
+                    )
+                    self._check_position_exit(pos_symbol, price)
+                positions = self.intraday_manager.get_all_open_positions()
             for pos_symbol, pos_details in positions.items():
                 price = self.latest_prices.get(pos_symbol, pos_details["entry_price"])
                 self._close_position(pos_symbol, price, "MARKET_CLOSE_FORCED_EXIT")

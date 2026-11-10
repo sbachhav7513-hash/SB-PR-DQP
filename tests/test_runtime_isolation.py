@@ -122,6 +122,7 @@ def test_startup_logs_all_requested_runtime_flags(caplog):
         "runner_gap_v2": False,
         "profit_lock_v2": True,
         "trail_close_confirm_v2": False,
+        "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": True,
     }
 

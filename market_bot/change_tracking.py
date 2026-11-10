@@ -48,13 +48,23 @@ def log_startup_identity(
     config_hash: str,
     changelog_path: str | Path = REPOSITORY_ROOT / "config_changelog.md",
     repo_path: str | Path = REPOSITORY_ROOT,
+    stock_take_profit_v2: bool | None = None,
 ) -> GitIdentity:
     identity = get_git_identity(repo_path)
-    logger.info(
-        "Runtime identity: config_hash=%s git_sha=%s git_dirty=%s",
+    identity_line = (
+        "Runtime identity: config_hash=%s git_sha=%s git_dirty=%s"
+    )
+    identity_values: tuple[object, ...] = (
         config_hash,
         identity.sha,
         identity.dirty,
+    )
+    if stock_take_profit_v2 is not None:
+        identity_line += " stock_take_profit_v2=%s"
+        identity_values += (stock_take_profit_v2,)
+    logger.info(
+        identity_line,
+        *identity_values,
     )
     if not is_config_hash_changelogged(config_hash, changelog_path):
         logger.warning(

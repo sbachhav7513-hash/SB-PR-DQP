@@ -350,7 +350,7 @@ def test_exitat_closes_at_or_above_price_and_journals_manual_target(tmp_path):
         bot, s, price, reason
     )
 
-    trigger_reply = _queue_command(bot, f"/exitat {trade_id} 105")
+    trigger_reply = _queue_command(bot, f"/exitat {trade_id} 105 chart")
     assert "trigger set" in trigger_reply
     assert f"#{trade_id}" in trigger_reply
     assert "from none to 105.00" in trigger_reply
@@ -362,7 +362,62 @@ def test_exitat_closes_at_or_above_price_and_journals_manual_target(tmp_path):
     assert trade["exit_reason"] == "MANUAL_TARGET"
     assert trade["manual_exit"] is True
     assert trade["manual_exit_reason"] == "MANUAL_TARGET"
+    assert trade["exit_reason_tag"] == "chart"
     assert trade["manual_exit_price"] is None
+
+
+def test_exit_reason_tags_are_validated_and_written_to_command_and_trade_journals(
+    tmp_path,
+):
+    bot, trade_id, symbol, _ = _trade_bot(tmp_path)
+    bot._close_position = lambda s, price, reason: _close_trade_for_test(
+        bot, s, price, reason
+    )
+
+    reply = _queue_command(bot, f"/exit {trade_id} chart")
+    assert "exit completed" in reply
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["exit_reason_tag"] == "chart"
+    [command] = [
+        json.loads(line)
+        for line in (tmp_path / "commands.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert command["reason_tag"] == "chart"
+
+
+def test_exit_rejects_numeric_reason_and_exitat_persists_valid_tag(tmp_path):
+    bot, trade_id, symbol, position = _trade_bot(tmp_path)
+
+    reply = _queue_command(bot, f"/exit {trade_id} 79")
+    assert reply == f"Usage: /exit <id> [reason]"
+    assert bot.trade_journal.get_open_trade(symbol, "BUY") is not None
+
+    reply = _queue_command(bot, f"/exitat {trade_id} 105 pct")
+    assert "trigger set" in reply
+    trade = bot.trade_journal.get_open_trade(symbol, "BUY")
+    assert trade["exit_reason_tag"] == "pct"
+    assert position["exit_reason_tag"] == "pct"
+    commands = [
+        json.loads(line)
+        for line in (tmp_path / "commands.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [command["reason_tag"] for command in commands] == [None, "pct"]
+    assert commands[0]["text"] == f"/exit {trade_id} 79"
+
+
+def test_exit_rejects_unknown_reason_tag_with_usage(tmp_path):
+    bot, trade_id, _, _ = _trade_bot(tmp_path)
+
+    assert _queue_command(bot, f"/exit {trade_id} charting") == (
+        "Usage: /exit <id> [reason]"
+    )
+    assert _queue_command(bot, f"/exitat {trade_id} 105 unknown") == (
+        "Usage: /exitat <id> <price> [reason]"
+    )
 
 
 def test_losing_manual_target_keeps_its_trigger_label(tmp_path):

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 
 IST = ZoneInfo("Asia/Kolkata")
+EXIT_REASON_TAGS = {"chart", "pct", "eod", "other"}
 HELP_TEXT = (
     "Commands:\n"
     "/help - show this list\n"
@@ -17,8 +18,8 @@ HELP_TEXT = (
     "/health - quote and feed health\n"
     "/pause - pause new entries; keep managing open trades\n"
     "/resume - resume new entries\n"
-    "/exit <id> - close a trade (LIVE requires confirmation)\n"
-    "/exitat <id> <price> - close a long option at or above a price\n"
+    "/exit <id> [chart|pct|eod|other] - close a trade (LIVE requires confirmation)\n"
+    "/exitat <id> <price> [chart|pct|eod|other] - close a long option at or above a price\n"
     "/cancel <id> - clear a manual exit trigger\n"
     "/sl <id> <price> [force] - change stop loss\n"
     "/be <id> - move stop loss to breakeven\n"
@@ -304,11 +305,13 @@ def _manual_exit_event(
     chat_id: str | None,
     old_price: float | None,
     price: float | None,
+    reason_tag: str | None = None,
 ) -> dict[str, Any]:
     return {
         "event": event_type,
         "old_price": old_price,
         "price": price,
+        "reason_tag": reason_tag,
         **_command_audit_record(bot, text, chat_id),
     }
 
@@ -320,7 +323,9 @@ def _is_live(bot) -> bool:
     )
 
 
-def _manual_exit(bot, trade_id: str) -> str:
+def _manual_exit(
+    bot, trade_id: str, reason_tag: str | None = None
+) -> str:
     trade, position = _find_open_trade(bot, trade_id)
     if trade is None or position is None:
         return _missing_trade_reply(bot, trade_id)
@@ -332,7 +337,17 @@ def _manual_exit(bot, trade_id: str) -> str:
     price = _current_price(bot, str(trade.get("ticker", trade.get("symbol", ""))))
     if price is None:
         return _trade_reply(trade_id, "Current LTP is unavailable; no exit was placed.")
-    bot._close_position(str(trade.get("ticker", trade.get("symbol", ""))), price, "MANUAL_EXIT")
+    symbol = str(trade.get("ticker", trade.get("symbol", "")))
+    previous_reason_tag = position.get("exit_reason_tag")
+    position["exit_reason_tag"] = reason_tag
+    if not bot.trade_journal.update_open_trade(
+        symbol,
+        {"exit_reason_tag": reason_tag},
+        str(position.get("direction", trade.get("action", ""))).upper(),
+    ):
+        position["exit_reason_tag"] = previous_reason_tag
+        return _trade_reply(trade_id, "Could not persist the manual exit reason tag.")
+    bot._close_position(symbol, price, "MANUAL_EXIT")
     remaining = getattr(bot.intraday_manager, "active_positions", {}).get(
         str(trade.get("ticker", trade.get("symbol", "")))
     )
@@ -384,8 +399,8 @@ def _modify_trade(bot, trade: dict, position: dict, field: str, value: float) ->
 
 def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | None) -> str:
     expected = {
-        "/exit": (1, 1),
-        "/exitat": (2, 2),
+        "/exit": (1, 2),
+        "/exitat": (2, 3),
         "/cancel": (1, 1),
         "/sl": (2, 3),
         "/be": (1, 1),
@@ -393,17 +408,34 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
     }
     minimum, maximum = expected[command]
     if not minimum <= len(args) <= maximum:
+        if command == "/exit":
+            return "Usage: /exit <id> [reason]"
+        if command == "/exitat":
+            return "Usage: /exitat <id> <price> [reason]"
         return f"Usage: {command} <id>" if maximum == 1 else f"Usage: {command} <id> <price> [force]"
     trade_id = args[0]
     if not trade_id.isdecimal():
         return f"Usage: {command} <id>"
+    reason_arg = (
+        args[1]
+        if command == "/exit" and len(args) == 2
+        else args[2]
+        if command == "/exitat" and len(args) == 3
+        else None
+    )
+    if reason_arg is not None and reason_arg not in EXIT_REASON_TAGS:
+        return (
+            "Usage: /exit <id> [reason]"
+            if command == "/exit"
+            else "Usage: /exitat <id> <price> [reason]"
+        )
     trade, position = _find_open_trade(bot, trade_id)
     if trade is None or position is None:
         return _missing_trade_reply(bot, trade_id)
 
     if command == "/exit":
         if not _is_live(bot):
-            return _manual_exit(bot, trade_id)
+            return _manual_exit(bot, trade_id, reason_arg)
         pending = getattr(bot, "_telegram_pending_exit_confirmation", None)
         if pending:
             return _trade_reply(
@@ -412,6 +444,7 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
             )
         bot._telegram_pending_exit_confirmation = {
             "trade_id": trade_id,
+            "reason_tag": reason_arg,
             "chat_id": str(chat_id or ""),
             "expires_at": time.monotonic() + 30.0,
         }
@@ -427,6 +460,7 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
         if position.get("manual_exit_price") is None:
             return _trade_reply(trade_id, "has no manual exit trigger.")
         old_trigger = position["manual_exit_price"]
+        old_reason_tag = position.get("exit_reason_tag")
         event = _manual_exit_event(
             bot,
             event_type="cleared",
@@ -442,15 +476,18 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
         )
         exit_events.append(event)
         position["manual_exit_price"] = None
+        position["exit_reason_tag"] = None
         if not bot.trade_journal.update_open_trade(
             symbol,
             {
                 "manual_exit_price": None,
                 "manual_exit_events": exit_events,
+                "exit_reason_tag": None,
             },
             direction,
         ):
             position["manual_exit_price"] = old_trigger
+            position["exit_reason_tag"] = old_reason_tag
             raise RuntimeError("Could not persist cancellation of the manual exit trigger.")
         position["manual_exit_events"] = exit_events
         return _trade_reply(
@@ -486,25 +523,32 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
         event = _manual_exit_event(
             bot,
             event_type="changed" if old_trigger is not None else "set",
-            text=f"/exitat {trade_id} {target:g}",
+            text=(
+                f"/exitat {trade_id} {target:g}"
+                + (f" {reason_arg}" if reason_arg is not None else "")
+            ),
             chat_id=chat_id,
             old_price=(
                 float(old_trigger) if old_trigger is not None else None
             ),
             price=target,
+            reason_tag=reason_arg,
         )
         exit_events = list(
             position.get("manual_exit_events")
             or trade.get("manual_exit_events")
             or []
         )
+        old_reason_tag = position.get("exit_reason_tag")
         exit_events.append(event)
         position["manual_exit_price"] = target
+        position["exit_reason_tag"] = reason_arg
         if not bot.trade_journal.update_open_trade(
             symbol,
             {
                 "manual_exit_price": target,
                 "manual_exit_events": exit_events,
+                "exit_reason_tag": reason_arg,
             },
             direction,
         ):
@@ -512,6 +556,7 @@ def _handle_trade_command(bot, command: str, args: list[str], chat_id: str | Non
                 position.pop("manual_exit_price", None)
             else:
                 position["manual_exit_price"] = old_trigger
+            position["exit_reason_tag"] = old_reason_tag
             return _trade_reply(trade_id, "Could not persist the manual exit trigger.")
         position["manual_exit_events"] = exit_events
         old_text = f"{float(old_trigger):.2f}" if old_trigger is not None else "none"
@@ -655,7 +700,9 @@ def process_telegram_command(bot, raw_text: str, chat_id: str | None = None) -> 
             return "No pending exit confirmation for this chat."
         if parts[0].upper() == "YES":
             bot._telegram_pending_exit_confirmation = None
-            return _manual_exit(bot, pending["trade_id"])
+            return _manual_exit(
+                bot, pending["trade_id"], pending.get("reason_tag")
+            )
         if parts[0].upper() == "CANCEL":
             bot._telegram_pending_exit_confirmation = None
             return "LIVE exit cancelled; no order was placed."

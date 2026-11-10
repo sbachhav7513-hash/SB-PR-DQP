@@ -974,6 +974,7 @@ def build_weekly_report(
             "gross_pnl_rupees", "fees", "fees_rupees", "fee_model_status",
             "after_cost_pnl", "net_pnl", "r_multiple", "tier", "exit_trigger",
             "manual_exit", "manual_exit_events", "exit_command",
+            "exit_reason_tag", "chart_context_snapshot",
             "strategy_variant", "exit_strategy", "reason", "exit_reason_category",
             "quantity", "entry", "exit_price", "paper_entry_bid",
             "paper_entry_ask", "paper_exit_ltp", "paper_exit_bid",
@@ -1013,9 +1014,11 @@ def build_weekly_report(
             "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
             "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
             "planned_risk_rupees", "paper_entry_risk_rupees",
-            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "max_favorable_r", "contract_id", "ticker", "tier", "exit_price",
+            "exit_trigger_price", "paper_exit_flags_at_entry",
+            "paper_exit_flags_at_exit", "paper_change_flags_at_exit",
             "paper_exit_flags", "paper_change_flags_at_entry",
-            "paper_change_flags", "paper_exit_parameters",
+            "paper_change_flags", "paper_exit_parameters", "exit_legs",
         ],
     )
     exit_flag_rollback = evaluate_paper_exit_rollbacks(
@@ -1325,6 +1328,7 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
             "exit_command", "manual_exit", "manual_exit_events",
             "contract_id", "entry_time", "closed_at",
             "exit_reason_category", "ticker", "action", "score",
+            "exit_reason_tag", "chart_context_snapshot",
             "strategy_variant", "is_ema_reentry", "original_trade_id",
             "ema_reentry_eligible", "ema_reentry_outcome",
             "reentry_pnl", "reentry_outcome",
@@ -1352,6 +1356,7 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
         return [
             "chat_id", "user_id", "text", "update_id",
             "message_timestamp", "message_time", "logged_at", "response",
+            "reason_tag",
         ]
     return [
         "timestamp", "signal", "outcome", "score", "reasons",
@@ -1540,9 +1545,11 @@ def write_daily_summary(
             "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
             "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
             "planned_risk_rupees", "paper_entry_risk_rupees",
-            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "max_favorable_r", "contract_id", "ticker", "tier", "exit_price",
+            "exit_trigger_price", "paper_exit_flags_at_entry",
+            "paper_exit_flags_at_exit", "paper_change_flags_at_exit",
             "paper_exit_flags", "paper_change_flags_at_entry",
-            "paper_change_flags", "paper_exit_parameters",
+            "paper_change_flags", "paper_exit_parameters", "exit_legs",
         ],
     )
     exit_flag_rollback = evaluate_paper_exit_rollbacks(
@@ -1754,9 +1761,11 @@ def write_daily_review(
             "reason", "pnl", "pnl_rupees", "action", "quantity", "entry",
             "stop_loss", "initial_stop_loss", "initial_risk_per_unit",
             "planned_risk_rupees", "paper_entry_risk_rupees",
-            "max_favorable_r", "contract_id", "paper_exit_flags_at_entry",
+            "max_favorable_r", "contract_id", "ticker", "tier", "exit_price",
+            "exit_trigger_price", "paper_exit_flags_at_entry",
+            "paper_exit_flags_at_exit", "paper_change_flags_at_exit",
             "paper_exit_flags", "paper_change_flags_at_entry",
-            "paper_change_flags", "paper_exit_parameters",
+            "paper_change_flags", "paper_exit_parameters", "exit_legs",
         ],
     )
     exit_flag_rollback = evaluate_paper_exit_rollbacks(
@@ -1986,7 +1995,12 @@ def write_daily_review(
                     trade.get("exit_reason_category") or trade.get("reason") or "UNKNOWN"
                 ).replace("|", "/"),
                 manual=(
-                    "yes: " + str(trade.get("manual_exit_reason") or "manual")
+                    "yes: "
+                    + str(
+                        trade.get("exit_reason_tag")
+                        or trade.get("manual_exit_reason")
+                        or "manual (untagged)"
+                    )
                     if _flag(trade.get("manual_exit"))
                     else "no"
                 ).replace("|", "/"),

@@ -219,8 +219,8 @@ Telegram command control also supports:
 
 | Command | Behavior |
 |---------|----------|
-| `/exit <id>` | Close an open trade; PAPER executes on the next tick, LIVE requires a same-chat `YES` confirmation within 30 seconds |
-| `/exitat <id> <price>` | Set a long-option exit trigger; closes when LTP reaches the price unless an existing stop or target exits first |
+| `/exit <id> [reason]` | Close an open trade; PAPER executes on the next tick, LIVE requires a same-chat `YES` confirmation within 30 seconds |
+| `/exitat <id> <price> [reason]` | Set a long-option exit trigger; closes when the target is reached unless an existing stop or profit lock exits first |
 | `/cancel <id>` | Clear the trade's manual exit trigger |
 | `/sl <id> <price> [force]` | Change stop loss; a loosening change requires `force` |
 | `/be <id>` | Move stop loss to entry when LTP is above entry |
@@ -229,7 +229,9 @@ Telegram command control also supports:
 Commands are validated and queued by the listener, then applied at the start of
 a market tick. Commands and their responses are appended to `commands.jsonl`
 beside the trade journal. Trade records retain manual exit source/reason and a
-timestamped history of stop/target changes. `TELEGRAM_CONTROL_LIVE_ORDERS`
+timestamped history of stop/target changes. Optional manual exit tags are
+restricted to `chart`, `pct`, `eod`, and `other`; the tag and exit-time chart
+context are recorded in the trade journal. `TELEGRAM_CONTROL_LIVE_ORDERS`
 defaults to `false`; LIVE Telegram exits place no order unless explicitly set
 to `true`. Test in `PAPER` mode first.
 

@@ -471,6 +471,7 @@ def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_
             "paper_exit_flags_at_exit": [],
             "manual_exit": True,
             "manual_exit_reason": "operator_request",
+            "exit_reason_tag": "pct",
         },
     ]
     (tmp_path / "trades.jsonl").write_text(
@@ -488,7 +489,7 @@ def test_daily_review_shows_fill_age_manual_label_and_exit_flag_comparisons(tmp_
     assert "Signal/order/fill premium" in review
     assert "100.0/101.0/101.0" in review
     assert "100.5/101.0/100.75/2.5s" in review
-    assert "yes: operator_request" in review
+    assert "yes: pct" in review
     assert "| profit_lock_v2 | 1 (1/0/0) | 15.00 | 1 (0/1/0) | -10.00 |" in review
     assert "## Entry Features" in review
     assert "regime=trending/1.2%/0.8%" in review

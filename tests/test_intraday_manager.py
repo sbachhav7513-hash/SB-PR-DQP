@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -102,8 +103,8 @@ def _partial_profit_test_bot(
     dynamic=True,
     profit_lock=True,
     close_confirm=False,
+    symbol="NIFTY_CE",
 ):
-    symbol = "NIFTY_CE"
     lot_size = 50
     quantity = lots * lot_size
     now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(microsecond=0)
@@ -295,6 +296,374 @@ def test_partial_profit_arms_lock_and_trade_accounting_uses_total_pnl(tmp_path):
     assert bot.telegram_notifier.send_trade_alert.call_count == 2
 
 
+def _enable_stock_take_profit(bot, symbol, *, tier=None):
+    position = bot.intraday_manager.active_positions[symbol]
+    tier = tier or KiteTradingBot._paper_option_tier(symbol)
+    trade = bot.trade_journal.get_open_trade(symbol, "BUY")
+    position["tier"] = tier
+    position["stock_take_profit_r"] = 0.8
+    position["stock_take_profit_v2_enabled"] = tier == "stock"
+    flags = list(
+        position.get("paper_exit_flags_at_entry")
+        or trade.get("paper_exit_flags_at_entry")
+        or []
+    )
+    if tier == "stock":
+        flags.append("stock_take_profit_v2")
+    position["paper_exit_flags_at_entry"] = flags
+    bot.config.update(
+        {
+            "stock_take_profit_v2": True,
+            "stock_take_profit_r": 0.8,
+            "stock_take_profit_tiers": ["stock"],
+        }
+    )
+    assert bot.trade_journal.update_open_trade(
+        symbol,
+        {
+            "tier": tier,
+            "stock_take_profit_v2_enabled": tier == "stock",
+            "paper_exit_flags_at_entry": flags,
+            "paper_exit_parameters": {
+                **(trade.get("paper_exit_parameters") or {}),
+                "stock_take_profit_r": 0.8,
+                "stock_take_profit_tiers": ["stock"],
+            },
+        },
+        "BUY",
+    )
+
+
+def test_stock_take_profit_uses_exact_valid_bid_and_partial_remainder(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=2, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    _set_partial_quote(bot, symbol, now, 105.0)
+
+    assert bot._check_position_exit(symbol, 105.1) is None
+    position = bot.intraday_manager.active_positions[symbol]
+    assert position["quantity"] == 50
+    assert position["profit_lock_stop"] == pytest.approx(101.5)
+
+    _set_partial_quote(bot, symbol, now + timedelta(minutes=1), 107.99)
+    assert bot._check_position_exit(symbol, 108.1) is None
+    _set_partial_quote(bot, symbol, now + timedelta(minutes=2), 108.0)
+
+    assert bot._check_position_exit(symbol, 108.1) == "TAKE_PROFIT_V2"
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["reason"] == "TAKE_PROFIT_V2"
+    assert trade["exit_price"] == pytest.approx(106.5)
+    assert trade["exit_trigger_price"] == pytest.approx(108.0)
+    assert trade["exit_trigger"] == "bot_take_profit"
+    assert trade["exit_legs"][0]["fill"] == pytest.approx(105.0)
+    assert trade["exit_legs"][0]["quantity"] == 50
+    assert trade["exit_legs"][-1]["fill"] == pytest.approx(108.0)
+    assert "stock_take_profit_v2" in trade["paper_exit_flags_at_entry"]
+    assert trade["exit_reason_category"] == "TAKE_PROFIT"
+
+
+def test_stock_take_profit_closes_single_lot_without_partial_leg(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="RELIANCE_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    _set_partial_quote(bot, symbol, now, 105.0)
+    assert bot._check_position_exit(symbol, 105.1) is None
+    assert bot.intraday_manager.active_positions[symbol]["quantity"] == 50
+    assert bot.trade_journal.get_open_trade(symbol, "BUY")["partial_status"] == (
+        "single-lot-ineligible"
+    )
+
+    _set_partial_quote(bot, symbol, now + timedelta(minutes=1), 108.0)
+    assert bot._check_position_exit(symbol, 108.1) == "TAKE_PROFIT_V2"
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["exit_price"] == pytest.approx(108.0)
+    assert trade["exit_legs"] == []
+
+
+@pytest.mark.parametrize(
+    ("paper_enabled", "live_enabled", "flag_enabled"),
+    [(False, False, True), (True, True, True), (True, False, False)],
+)
+def test_stock_take_profit_is_paper_only_and_flag_gated(
+    tmp_path, paper_enabled, live_enabled, flag_enabled
+):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    bot.paper_trading_enabled = paper_enabled
+    bot.live_orders_enabled = live_enabled
+    bot.config["stock_take_profit_v2"] = flag_enabled
+    _set_partial_quote(bot, symbol, now, 108.0)
+
+    assert bot._check_position_exit(symbol, 108.1) is None
+    assert symbol in bot.intraday_manager.active_positions
+
+
+@pytest.mark.parametrize("symbol", ["NIFTY_CE", "BANKNIFTY_PE"])
+def test_stock_take_profit_does_not_apply_to_index_tiers(tmp_path, symbol):
+    bot, _, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol=symbol
+    )
+    _enable_stock_take_profit(bot, symbol)
+    _set_partial_quote(bot, symbol, now, 108.0)
+
+    assert bot._check_position_exit(symbol, 108.1) is None
+    assert symbol in bot.intraday_manager.active_positions
+    assert bot.trade_journal.get_open_trade(symbol, "BUY")[
+        "paper_exit_flags_at_entry"
+    ] == ["partial_profit_v2"]
+
+
+def test_stock_take_profit_defers_to_profit_lock_and_precedes_trail(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    position = bot.intraday_manager.active_positions[symbol]
+    position["profit_lock_stop"] = 101.5
+    _set_partial_quote(bot, symbol, now, 101.4)
+    assert bot._check_position_exit(symbol, 101.5) == "PROFIT_LOCK"
+    assert bot.trade_journal.read_trades()[0]["reason"] == "PROFIT_LOCK"
+
+    trail_bot, trail_symbol, trail_now = _partial_profit_test_bot(
+        tmp_path / "trail", lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(trail_bot, trail_symbol)
+    trail_position = trail_bot.intraday_manager.active_positions[trail_symbol]
+    trail_position["trailing_stop"] = 108.5
+    trail_position["trail_close_confirm_enabled"] = True
+    trail_bot.intraday_manager.update_trailing_stop = lambda symbol, price: 108.5
+    _set_partial_quote(trail_bot, trail_symbol, trail_now, 108.0)
+
+    assert (
+        trail_bot._check_position_exit(trail_symbol, 108.1)
+        == "TAKE_PROFIT_V2"
+    )
+
+
+def test_human_target_precedes_stock_take_profit_and_stop_precedes_lock(
+    tmp_path,
+):
+    target_bot, target_symbol, target_now = _partial_profit_test_bot(
+        tmp_path / "target", lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(target_bot, target_symbol)
+    target_position = target_bot.intraday_manager.active_positions[
+        target_symbol
+    ]
+    target_position["manual_exit_price"] = 107.5
+    target_position["exit_reason_tag"] = "other"
+    _set_partial_quote(target_bot, target_symbol, target_now, 108.0)
+
+    assert (
+        target_bot._check_position_exit(target_symbol, 108.1)
+        == "MANUAL_TARGET"
+    )
+    assert target_bot.trade_journal.read_trades()[0]["reason"] == "MANUAL_TARGET"
+    assert target_bot.trade_journal.read_trades()[0]["exit_reason_tag"] == "other"
+
+    stop_bot, stop_symbol, stop_now = _partial_profit_test_bot(
+        tmp_path / "stop-lock", lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    stop_position = stop_bot.intraday_manager.active_positions[stop_symbol]
+    stop_position["profit_lock_stop"] = 95.0
+    _set_partial_quote(stop_bot, stop_symbol, stop_now, 89.0)
+
+    assert stop_bot._check_position_exit(stop_symbol, 89.1) == "STOP_LOSS"
+    assert stop_bot.trade_journal.read_trades()[0]["reason"] == "STOP_LOSS"
+
+
+def test_paper_eod_checks_protective_stop_before_forced_exit(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="NIFTY_CE"
+    )
+    _set_partial_quote(bot, symbol, now, 89.0)
+    bot.latest_prices[symbol] = 89.1
+
+    bot._handle_market_close_exit()
+
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["reason"] == "STOP_LOSS"
+    assert trade["exit_price"] == pytest.approx(89.0)
+
+
+def test_paper_eod_checks_stock_target_before_forced_exit(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    _set_partial_quote(bot, symbol, now, 108.0)
+
+    bot._handle_market_close_exit()
+
+    [trade] = bot.trade_journal.read_trades()
+    assert trade["reason"] == "TAKE_PROFIT_V2"
+    assert trade["exit_price"] == pytest.approx(108.0)
+
+
+@pytest.mark.parametrize("invalid_reason", ["stale", "crossed"])
+def test_stock_take_profit_waits_for_valid_exit_quote(tmp_path, invalid_reason):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    _set_partial_quote(bot, symbol, now, 108.0)
+    quote = bot.option_quote_cache[symbol]
+    if invalid_reason == "stale":
+        quote["timestamp"] = datetime.now(ZoneInfo("Asia/Kolkata")) - timedelta(
+            seconds=61
+        )
+    else:
+        quote["ask"] = 107.9
+
+    assert bot._check_position_exit(symbol, 108.1) is None
+    assert symbol in bot.intraday_manager.active_positions
+
+
+def test_stock_take_profit_tier_derives_from_configured_symbol_list(
+    tmp_path, caplog
+):
+    caplog.set_level(logging.INFO)
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    position = bot.intraday_manager.active_positions[symbol]
+    position.pop("tier")
+    bot.config["options_underlyings"] = ["INFY", "NIFTY", "BANKNIFTY"]
+    assert bot.trade_journal.update_open_trade(symbol, {"tier": None}, "BUY")
+    _set_partial_quote(bot, symbol, now, 108.0)
+
+    assert bot._check_position_exit(symbol, 108.1) == "TAKE_PROFIT_V2"
+    assert "tier=null reason=stored_tier_missing_derived_from_symbol_list" in (
+        caplog.text
+    )
+
+
+def test_stock_take_profit_settings_survive_paper_position_restore(tmp_path):
+    bot, symbol, _ = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    _enable_stock_take_profit(bot, symbol)
+    assert bot.trade_journal.update_open_trade(symbol, {"tier": None}, "BUY")
+    [trade] = bot.trade_journal.read_trades()
+
+    restored = object.__new__(KiteTradingBot)
+    restored.config = {
+        **bot.config,
+        "strong_signal_score": 82,
+        "options_underlyings": ["INFY"],
+    }
+    restored.paper_trading_enabled = True
+    restored.live_orders_enabled = False
+    restored.trade_journal = bot.trade_journal
+    restored.intraday_manager = IntradayManager()
+    restored.intraday_manager.contract_specs[symbol] = {
+        "lot_size": 50,
+        "multiplier": 1.0,
+    }
+    restored._restore_paper_positions([trade])
+    position = restored.intraday_manager.active_positions[symbol]
+
+    assert position["tier"] is None
+    assert position["stock_take_profit_v2_enabled"] is True
+    assert position["stock_take_profit_r"] == pytest.approx(0.8)
+    assert KiteTradingBot._stock_take_profit_target(
+        restored, symbol, position, trade
+    ) == pytest.approx(108.0)
+
+
+def test_manual_exit_chart_context_captures_pivot_trend_and_option_r():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "instrument_tokens": {"INFY": 123},
+        "option_quote_max_age_seconds": 60,
+    }
+    bot.latest_prices = {"INFY": 201.0}
+    closes = [195.0, 196.0, 195.0, 197.0, 198.0]
+    bot.bar_builder = SimpleNamespace(
+        get_bars=lambda token, limit: [
+            SimpleNamespace(close=close) for close in closes[-limit:]
+        ]
+    )
+    captured_at = datetime.now(ZoneInfo("Asia/Kolkata"))
+    quote = {
+        "timestamp": captured_at,
+        "bid": 108.0,
+        "ask": 108.2,
+        "last_price": 108.1,
+    }
+
+    snapshot = bot._manual_exit_chart_context(
+        "INFY_CE",
+        {"entry_price": 100.0, "initial_risk_distance": 10.0},
+        {
+            "entry": 100.0,
+            "initial_risk_per_unit": 10.0,
+            "entry_feature_values": {"pivot_level": 200.0},
+        },
+        quote,
+        captured_at,
+    )
+
+    assert snapshot["underlying_last_price"] == pytest.approx(201.0)
+    assert snapshot["distance_to_entry_pivot"] == pytest.approx(1.0)
+    assert snapshot["distance_to_entry_pivot_pct"] == pytest.approx(0.5)
+    assert snapshot["underlying_last_five_1m_closes"] == closes
+    assert snapshot["underlying_close_directions"] == [
+        "up",
+        "down",
+        "up",
+        "up",
+    ]
+    assert snapshot["option_bid_r"] == pytest.approx(0.8)
+    assert snapshot["null_reasons"] == {}
+
+
+def test_manual_exit_persists_reason_tag_and_chart_context(tmp_path):
+    bot, symbol, now = _partial_profit_test_bot(
+        tmp_path, lots=1, dynamic=False, symbol="INFY_CE"
+    )
+    position = bot.intraday_manager.active_positions[symbol]
+    position["exit_reason_tag"] = "chart"
+    bot.config["instrument_tokens"] = {"INFY": 123}
+    bot.latest_prices["INFY"] = 201.0
+    bot.bar_builder = SimpleNamespace(
+        get_bars=lambda token, limit: [
+            SimpleNamespace(close=close)
+            for close in (195.0, 196.0, 195.0, 197.0, 198.0)
+        ][-limit:]
+    )
+    assert bot.trade_journal.update_open_trade(
+        symbol,
+        {
+            "exit_reason_tag": "chart",
+            "entry_feature_values": {"pivot_level": 200.0},
+        },
+        "BUY",
+    )
+    _set_partial_quote(bot, symbol, now, 101.0)
+    bot.latest_prices["INFY"] = 201.0
+
+    assert bot._close_position(symbol, 101.1, "MANUAL_EXIT") is True
+    [closed_trade] = bot.trade_journal.read_trades()
+    assert closed_trade["exit_reason_tag"] == "chart"
+    snapshot = closed_trade["chart_context_snapshot"]
+    assert snapshot["underlying_last_price"] == pytest.approx(201.0)
+    assert snapshot["entry_pivot_level"] == pytest.approx(200.0)
+    assert snapshot["underlying_last_five_1m_closes"] == [
+        195.0,
+        196.0,
+        195.0,
+        197.0,
+        198.0,
+    ]
+    assert snapshot["option_bid_r"] == pytest.approx(0.1)
+
+
 def test_partial_remainder_uses_runner_and_close_confirmation(tmp_path):
     bot, symbol, now = _partial_profit_test_bot(
         tmp_path, lots=2, close_confirm=True
@@ -454,6 +823,53 @@ def test_option_buy_uses_latest_premium_for_position_sizing():
     assert position["adaptive_trail_gap_r"] == 1.0
     assert position["adaptive_runner_activation_r"] == 2.0
     assert position["adaptive_runner_gap_r"] == 1.5
+
+
+def test_stock_option_entry_tags_stock_take_profit_flag():
+    symbol = "INFY_CE"
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "entry_cutoff_minutes_before_close": 0,
+        "option_premium_stop_pct": 0.10,
+        "option_premium_target_pct": 0.20,
+        "option_max_risk_per_lot_pct": 10.0,
+        "capital_based_risk_v2": False,
+        "stock_take_profit_v2": True,
+        "stock_take_profit_r": 0.8,
+        "stock_take_profit_tiers": ["stock"],
+    }
+    bot.live_orders_enabled = False
+    bot.paper_trading_enabled = True
+    bot.intraday_manager = IntradayManager()
+    bot.intraday_manager.set_contract_specs(
+        {symbol: {"lot_size": 50, "multiplier": 1}}
+    )
+    bot.intraday_manager.calculate_option_size = Mock(return_value=100)
+    bot.trade_journal = Mock()
+    bot.trade_journal.get_open_trade.return_value = None
+    bot.telegram_notifier = Mock()
+    bot.telegram_notifier.format_trade.return_value = {
+        "ticker": symbol,
+        "entry": 20.0,
+        "stop_loss": 18.0,
+        "take_profit": 24.0,
+    }
+    bot.kite_stream = SimpleNamespace(contract_symbols={})
+    bot.latest_prices = {symbol: 20.0}
+
+    assert bot._handle_buy_signal(symbol, 20.0, 80) == "trade_opened"
+
+    position = bot.intraday_manager.active_positions[symbol]
+    assert position["tier"] == "stock"
+    assert position["stock_take_profit_v2_enabled"] is True
+    assert "stock_take_profit_v2" in position["paper_exit_flags_at_entry"]
+    assert bot.telegram_notifier.send_trade_alert.call_args.args[0][
+        "paper_exit_flags_at_entry"
+    ] == position["paper_exit_flags_at_entry"]
+    assert bot.telegram_notifier.send_trade_alert.call_args.args[0][
+        "paper_exit_parameters"
+    ]["stock_take_profit_r"] == pytest.approx(0.8)
 
 
 def test_adaptive_option_exit_uses_shared_strategy_config():

@@ -54,6 +54,14 @@ policy to its prior behavior:
   fill at bid. The bad-tick guard requires a confirming quote after a sudden
   bid drop. Set this flag to `false` and restart the PAPER process to restore
   the previous protective-exit quote validation.
+- `stock_take_profit_v2`: for a stock-tier long option, exit the remaining
+  quantity at the first valid bid at or above entry + `stock_take_profit_r`
+  times the initial per-unit risk. The default is `0.8R`, with
+  `stock_take_profit_tiers: ["stock"]`; index-option targets are unchanged.
+  The existing whole-lot `partial_profit_v2` leg still sells at `0.5R`, so a
+  multi-lot remainder can exit at `0.8R`. This uses the
+  `stop_quote_validation_v2` quote rules and is tagged `TAKE_PROFIT_V2`, not
+  as a stop or stop-reentry event.
 
 `entry_feature_logging_v2` defaults to `true` in PAPER mode. It enables only
 observational entry-feature assembly and bid-based MFE/MAE tracking; setting it
@@ -66,13 +74,34 @@ independently under `paper_exit_tiers.index_options` and
 `paper_exit_tiers.stock_options`, using `runner_gap_r` and `profit_lock_r`.
 Both tiers default to 1.5R and 0.15R.
 
-Exit precedence is explicit: the initial hard stop is checked first and remains
-immediate; the profit-lock stop is checked next and remains immediate; only
-the adaptive trailing/runner stop is delayed by close confirmation. If the
-same sampled quote reaches multiple levels, the initial stop wins, then the
-profit lock, then a confirmed trail. A trailing wick without a confirming
-one-minute close does not exit. The two-consecutive-bid variant is an offline
-replay only and is not a production flag.
+Exit precedence is explicit: an immediate human `/exit` closes immediately.
+On a quote tick, the initial hard stop has first priority, then the profit-lock
+stop. A reached human `/exitat` target comes next and suppresses automated
+take-profit exits until reached; then the stock-tier `TAKE_PROFIT_V2` target
+is checked before adaptive trailing/runner confirmation and the existing
+take-profit/timebox logic. Forced EOD is last: a reached `/exitat` or eligible
+stock take-profit is evaluated before the forced close. If both a hard stop or
+profit lock and a manual/stock target apply on one tick, the stop or lock wins.
+Only the adaptive trailing/runner stop is delayed by close confirmation; a
+trailing wick without a confirming one-minute close does not exit. The
+two-consecutive-bid variant is an offline replay only and is not a production
+flag.
+
+To turn off an individual exit experiment, set only its key to `false` in the
+active PAPER `kite_config.json`, stop and restart PAPER, and verify the startup
+identity/runtime-flags line and the next trade's `paper_exit_flags_at_entry`:
+
+- `runner_gap_v2`
+- `profit_lock_v2`
+- `trail_close_confirm_v2`
+- `partial_profit_v2`
+- `stop_quote_validation_v2`
+- `stock_take_profit_v2`
+
+For `stock_take_profit_v2`, leave `stock_take_profit_r` and
+`stock_take_profit_tiers` unchanged when rolling the flag back. The stock
+take-profit experiment is PAPER-only; disabling it does not alter the index
+tier, entry behavior, filters, initial stop, LIVE behavior, or BACKTEST.
 
 #### PAPER exit rollback procedure
 
@@ -99,6 +128,11 @@ To roll back only the protective quote validation, stop the PAPER process,
 set `"stop_quote_validation_v2": false` in its active `kite_config.json`, and
 restart PAPER. Confirm the next startup log shows
 `stop_quote_validation_v2=False`. This does not change entry quote validation.
+
+To roll back only the stock-tier take-profit, set
+`"stock_take_profit_v2": false` in the active PAPER `kite_config.json` and
+restart PAPER. Do not change `stock_take_profit_r`, the `["stock"]` tier list,
+or the 10% initial stop.
 
 To apply the rollback, stop the PAPER process, verify the flag remains false,
 then start PAPER again and verify the next trade's

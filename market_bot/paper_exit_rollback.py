@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import csv
+import gzip
 from argparse import Namespace
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ EXIT_FLAGS = (
     "trail_close_confirm_v2",
     "partial_profit_v2",
     "stop_quote_validation_v2",
+    "stock_take_profit_v2",
 )
 
 
@@ -121,6 +124,93 @@ def _trade_session(trade: dict[str, Any]) -> str | None:
     value = trade.get("closed_at") or trade.get("timestamp") or trade.get("entry_time")
     parsed = _parse_time(value)
     return parsed.date().isoformat() if parsed else None
+
+
+def _is_stock_option_trade(trade: dict[str, Any]) -> bool:
+    tier = trade.get("tier")
+    if isinstance(tier, str) and tier.strip():
+        return tier.strip().lower() == "stock"
+    ticker = str(trade.get("ticker") or trade.get("symbol") or "").upper()
+    if not ticker.endswith(("_CE", "_PE")):
+        return False
+    underlying = ticker.rsplit("_", 1)[0]
+    return underlying not in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+
+
+def _stock_take_profit_risk(trade: dict[str, Any]) -> float | None:
+    risk = _number(trade.get("initial_risk_per_unit"))
+    if risk is not None and risk > 0:
+        return risk
+    entry = _number(trade.get("entry"))
+    stop = _number(trade.get("initial_stop_loss", trade.get("stop_loss")))
+    if entry is not None and stop is not None and entry > 0 and stop > 0:
+        risk = abs(entry - stop)
+        if risk > 0:
+            return risk
+    return entry * 0.10 if entry is not None and entry > 0 else None
+
+
+def _stock_take_profit_exit_fill(trade: dict[str, Any]) -> float | None:
+    exit_legs = trade.get("exit_legs")
+    if isinstance(exit_legs, str):
+        try:
+            exit_legs = json.loads(exit_legs)
+        except json.JSONDecodeError:
+            exit_legs = []
+    if isinstance(exit_legs, list):
+        for leg in reversed(exit_legs):
+            if (
+                isinstance(leg, dict)
+                and leg.get("leg_type") == "final"
+                and str(leg.get("reason") or "").upper() == "TAKE_PROFIT_V2"
+            ):
+                fill = _number(leg.get("fill"))
+                if fill is not None:
+                    return fill
+    return _number(trade.get("exit_price"))
+
+
+def _post_exit_quote_rows(
+    trade: dict[str, Any], candle_root: Path
+) -> list[dict[str, Any]]:
+    event_time = _parse_time(trade.get("closed_at"))
+    contract_id = str(trade.get("contract_id") or "")
+    if event_time is None or not contract_id.startswith("NFO:"):
+        return []
+    quote_dir = candle_root / event_time.date().isoformat()
+    base_name = f"NFO_{contract_id.split(':', 1)[1]}.quotes.csv"
+    compressed_path = quote_dir / f"{base_name}.gz"
+    plain_path = quote_dir / base_name
+    if compressed_path.is_file():
+        source = gzip.open(
+            compressed_path, "rt", encoding="utf-8-sig", newline=""
+        )
+    elif plain_path.is_file():
+        source = plain_path.open("r", encoding="utf-8-sig", newline="")
+    else:
+        return []
+
+    upper_time = event_time.timestamp() + 30 * 60
+    rows: list[dict[str, Any]] = []
+    with source as handle:
+        for row in csv.DictReader(handle):
+            quote_time = _parse_time(row.get("time") or row.get("timestamp"))
+            bid = _number(row.get("bid"))
+            ask = _number(row.get("ask"))
+            age = _number(row.get("quote_age_seconds"))
+            if (
+                quote_time is None
+                or not event_time <= quote_time
+                or quote_time.timestamp() > upper_time
+                or bid is None
+                or bid <= 0
+                or ask is None
+                or ask < bid
+                or (age is not None and (age < 0 or age > 60))
+            ):
+                continue
+            rows.append({"_time": quote_time, "_bid": bid})
+    return rows
 
 
 def _counterfactual_delta_r(
@@ -307,6 +397,144 @@ def evaluate_paper_exit_rollbacks(
         )
         reasons: list[str] = []
         events: list[str] = []
+        if flag == "stock_take_profit_v2":
+            tagged = [
+                trade for trade in tagged if _is_stock_option_trade(trade)
+            ]
+            take_profit_exits = [
+                trade
+                for trade in tagged
+                if str(
+                    trade.get("reason") or trade.get("exit_reason") or ""
+                ).upper()
+                == "TAKE_PROFIT_V2"
+            ]
+            fill_gaps: list[float] = []
+            capped_winners = 0
+            quote_missing = 0
+            for trade in take_profit_exits:
+                trigger = _number(trade.get("exit_trigger_price"))
+                fill = _stock_take_profit_exit_fill(trade)
+                if trigger is not None and fill is not None:
+                    fill_gaps.append(fill - trigger)
+                risk = _stock_take_profit_risk(trade)
+                if risk is None or fill is None:
+                    quote_missing += 1
+                    continue
+                post_exit_quotes = _post_exit_quote_rows(trade, candle_root)
+                if not post_exit_quotes:
+                    quote_missing += 1
+                    continue
+                if max(row["_bid"] for row in post_exit_quotes) > fill + 0.5 * risk:
+                    capped_winners += 1
+
+            daily_pnl: dict[str, float] = {}
+            for trade in tagged:
+                session = _trade_session(trade)
+                pnl = _trade_pnl(trade)
+                if session is not None and pnl is not None:
+                    daily_pnl[session] = daily_pnl.get(session, 0.0) + pnl
+            loss_days = [
+                (session, pnl)
+                for session, pnl in daily_pnl.items()
+                if pnl <= -abs(float(daily_loss_limit))
+            ]
+            if loss_days:
+                session, pnl = sorted(loss_days)[0]
+                reasons.append(
+                    "stock_take_profit_v2 tagged daily loss reached "
+                    f"INR {abs(float(daily_loss_limit)):.2f} on {session} "
+                    f"(P&L {pnl:.2f})"
+                )
+
+            untagged_stock = [
+                trade
+                for trade in closed
+                if _is_stock_option_trade(trade)
+                and "stock_take_profit_v2" not in _trade_flags(trade)
+                and "stock_take_profit_v2"
+                not in _list_value(trade.get("paper_exit_flags_at_exit"))
+                and "stock_take_profit_v2"
+                not in _list_value(trade.get("paper_change_flags_at_exit"))
+            ]
+            untagged_stock.sort(
+                key=lambda row: (
+                    _parse_time(row.get("closed_at") or row.get("timestamp"))
+                    or datetime.min.replace(tzinfo=IST),
+                    str(row.get("trade_id") or ""),
+                )
+            )
+            available_untagged = list(untagged_stock)
+            paired_deltas: list[float] = []
+            pair_missing = 0
+            for trade in tagged[:10]:
+                ticker = str(trade.get("ticker") or trade.get("symbol") or "")
+                session = _trade_session(trade)
+                match_index = next(
+                    (
+                        index
+                        for index, candidate in enumerate(available_untagged)
+                        if str(
+                            candidate.get("ticker")
+                            or candidate.get("symbol")
+                            or ""
+                        )
+                        == ticker
+                        and _trade_session(candidate) == session
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    pair_missing += 1
+                    continue
+                candidate = available_untagged.pop(match_index)
+                tagged_pnl = _trade_pnl(trade)
+                baseline_pnl = _trade_pnl(candidate)
+                if tagged_pnl is None or baseline_pnl is None:
+                    pair_missing += 1
+                    continue
+                paired_deltas.append(tagged_pnl - baseline_pnl)
+
+            events.append(
+                f"take_profit_exits={len(take_profit_exits)} "
+                f"fill_minus_trigger_gap_avg="
+                f"{sum(fill_gaps) / len(fill_gaps):.4f}"
+                if fill_gaps
+                else f"take_profit_exits={len(take_profit_exits)} "
+                "fill_minus_trigger_gap_avg=NA"
+            )
+            events.append(
+                f"capped_winner_exits_bid_more_than_0.5R_within_30m="
+                f"{capped_winners} quote_missing={quote_missing}"
+            )
+            events.append(
+                "tagged_daily_loss="
+                + (
+                    ", ".join(
+                        f"{session}:{pnl:.2f}"
+                        for session, pnl in sorted(daily_pnl.items())
+                    )
+                    or "unavailable"
+                )
+                + f" days_at_limit={len(loss_days)}"
+            )
+            events.append(
+                "first_ten_paired_stock_pnl_delta_avg="
+                + (
+                    f"{sum(paired_deltas) / len(paired_deltas):.2f}"
+                    if paired_deltas
+                    else "NA"
+                )
+                + f" paired={len(paired_deltas)}/10 "
+                f"missing={pair_missing} eligible={len(tagged)}/10"
+            )
+            summaries[flag] = {
+                "tagged_trades": len(tagged),
+                "rollback_reasons": reasons,
+                "checks": events,
+                "rollback_required": bool(reasons),
+            }
+            continue
         if flag == "stop_quote_validation_v2":
             fill_gaps = []
             guarded_quotes = 0

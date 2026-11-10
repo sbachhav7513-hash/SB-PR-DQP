@@ -34,12 +34,16 @@ def test_startup_logs_identity_and_warns_for_unknown_config_hash(tmp_path, caplo
 
     with caplog.at_level(logging.INFO):
         identity = log_startup_identity(
-            "abc123", changelog_path=changelog, repo_path=repo
+            "abc123",
+            changelog_path=changelog,
+            repo_path=repo,
+            stock_take_profit_v2=True,
         )
 
     assert identity.sha == expected_sha
     assert identity.dirty is True
     assert f"config_hash=abc123 git_sha={expected_sha} git_dirty=True" in caplog.text
+    assert "stock_take_profit_v2=True" in caplog.text
     assert "is not listed" not in caplog.text
 
     caplog.clear()
