@@ -1,0 +1,221 @@
+{
+  "candle_gaps_per_contract": {
+    "NFO:RELIANCE26NOV1320CE": 1,
+    "NFO:TCS26NOV2480PE": 1
+  },
+  "contract_capture_timing": {
+    "NFO:BANKNIFTY26NOV59700CE": {
+      "first_candle_time": "2026-11-11T09:44:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:02+05:30",
+      "registration_time": "2026-11-11T09:44:21+05:30"
+    },
+    "NFO:BANKNIFTY26NOV59700PE": {
+      "first_candle_time": "2026-11-11T09:44:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:02+05:30",
+      "registration_time": "2026-11-11T09:44:21+05:30"
+    },
+    "NFO:HDFCBANK26NOV800CE": {
+      "first_candle_time": "2026-11-11T09:59:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:59+05:30",
+      "registration_time": "2026-11-11T09:59:59+05:30"
+    },
+    "NFO:HDFCBANK26NOV800PE": {
+      "first_candle_time": "2026-11-11T09:59:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:59+05:30",
+      "registration_time": "2026-11-11T09:59:59+05:30"
+    },
+    "NFO:ICICIBANK26NOV1590CE": {
+      "first_candle_time": "2026-11-11T10:05:00+05:30",
+      "first_tick_time": "2026-11-11T09:07:38+05:30",
+      "registration_time": "2026-11-11T10:05:05+05:30"
+    },
+    "NFO:ICICIBANK26NOV1590PE": {
+      "first_candle_time": "2026-11-11T10:05:00+05:30",
+      "first_tick_time": "2026-11-11T09:07:38+05:30",
+      "registration_time": "2026-11-11T10:05:05+05:30"
+    },
+    "NFO:INFY26NOV1154CE": {
+      "first_candle_time": "2026-11-11T09:37:00+05:30",
+      "first_tick_time": "2026-11-11T09:08:22+05:30",
+      "registration_time": "2026-11-11T09:37:05+05:30"
+    },
+    "NFO:INFY26NOV1154PE": {
+      "first_candle_time": "2026-11-11T09:37:00+05:30",
+      "first_tick_time": "2026-11-11T09:08:22+05:30",
+      "registration_time": "2026-11-11T09:37:05+05:30"
+    },
+    "NFO:LT26NOV4200CE": {
+      "first_candle_time": "2026-11-11T11:34:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:23+05:30",
+      "registration_time": "2026-11-11T11:34:23+05:30"
+    },
+    "NFO:LT26NOV4200PE": {
+      "first_candle_time": "2026-11-11T11:34:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:23+05:30",
+      "registration_time": "2026-11-11T11:34:23+05:30"
+    },
+    "NFO:NIFTY26N1725050CE": {
+      "first_candle_time": "2026-11-11T10:00:00+05:30",
+      "first_tick_time": "2026-11-11T09:03:05+05:30",
+      "registration_time": "2026-11-11T10:00:05+05:30"
+    },
+    "NFO:NIFTY26N1725050PE": {
+      "first_candle_time": "2026-11-11T10:00:00+05:30",
+      "first_tick_time": "2026-11-11T09:03:05+05:30",
+      "registration_time": "2026-11-11T10:00:05+05:30"
+    },
+    "NFO:RELIANCE26NOV1320CE": {
+      "first_candle_time": "2026-11-11T09:34:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:58+05:30",
+      "registration_time": "2026-11-11T09:34:05+05:30"
+    },
+    "NFO:RELIANCE26NOV1320PE": {
+      "first_candle_time": "2026-11-11T09:34:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:58+05:30",
+      "registration_time": "2026-11-11T09:34:05+05:30"
+    },
+    "NFO:SBIN26NOV1040CE": {
+      "first_candle_time": "2026-11-11T09:38:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:41+05:30",
+      "registration_time": "2026-11-11T09:38:05+05:30"
+    },
+    "NFO:SBIN26NOV1040PE": {
+      "first_candle_time": "2026-11-11T09:38:00+05:30",
+      "first_tick_time": "2026-11-11T09:06:41+05:30",
+      "registration_time": "2026-11-11T09:38:05+05:30"
+    },
+    "NFO:TCS26NOV2480CE": {
+      "first_candle_time": "2026-11-11T13:12:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:43+05:30",
+      "registration_time": "2026-11-11T13:12:43+05:30"
+    },
+    "NFO:TCS26NOV2480PE": {
+      "first_candle_time": "2026-11-11T13:12:00+05:30",
+      "first_tick_time": "2026-11-11T09:04:43+05:30",
+      "registration_time": "2026-11-11T13:12:43+05:30"
+    }
+  },
+  "contracts_captured": [
+    "NFO:BANKNIFTY26NOV59700CE",
+    "NFO:BANKNIFTY26NOV59700PE",
+    "NFO:HDFCBANK26NOV800CE",
+    "NFO:HDFCBANK26NOV800PE",
+    "NFO:ICICIBANK26NOV1590CE",
+    "NFO:ICICIBANK26NOV1590PE",
+    "NFO:INFY26NOV1154CE",
+    "NFO:INFY26NOV1154PE",
+    "NFO:LT26NOV4200CE",
+    "NFO:LT26NOV4200PE",
+    "NFO:NIFTY26N1725050CE",
+    "NFO:NIFTY26N1725050PE",
+    "NFO:RELIANCE26NOV1320CE",
+    "NFO:RELIANCE26NOV1320PE",
+    "NFO:SBIN26NOV1040CE",
+    "NFO:SBIN26NOV1040PE",
+    "NFO:TCS26NOV2480CE",
+    "NFO:TCS26NOV2480PE"
+  ],
+  "contracts_captured_count": 18,
+  "contracts_skipped": [],
+  "contracts_skipped_count": 0,
+  "date": "2026-11-11",
+  "dropped_rows": 0,
+  "match_rate": 1.0,
+  "signals": 177,
+  "signals_with_60_minutes_forward_candles": 151,
+  "signals_with_resolved_contract_id": 177,
+  "subscription_start_delays": [
+    {
+      "contract_id": "NFO:RELIANCE26NOV1320CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:RELIANCE26NOV1320PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:INFY26NOV1154CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:INFY26NOV1154PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:SBIN26NOV1040CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:SBIN26NOV1040PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26NOV59700CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26NOV59700PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:HDFCBANK26NOV800PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:HDFCBANK26NOV800CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26N1725050PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26N1725050CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26NOV1590PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26NOV1590CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:LT26NOV4200CE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:LT26NOV4200PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:TCS26NOV2480PE",
+      "seconds": 4.0
+    },
+    {
+      "contract_id": "NFO:TCS26NOV2480CE",
+      "seconds": 4.0
+    }
+  ],
+  "tick_gaps_over_30_seconds_per_contract": {
+    "NFO:BANKNIFTY26NOV59700CE": 4,
+    "NFO:BANKNIFTY26NOV59700PE": 2,
+    "NFO:HDFCBANK26NOV800CE": 2,
+    "NFO:HDFCBANK26NOV800PE": 2,
+    "NFO:ICICIBANK26NOV1590CE": 28,
+    "NFO:ICICIBANK26NOV1590PE": 63,
+    "NFO:INFY26NOV1154CE": 62,
+    "NFO:INFY26NOV1154PE": 98,
+    "NFO:LT26NOV4200CE": 7,
+    "NFO:LT26NOV4200PE": 4,
+    "NFO:NIFTY26N1725050CE": 4,
+    "NFO:NIFTY26N1725050PE": 2,
+    "NFO:RELIANCE26NOV1320CE": 10,
+    "NFO:RELIANCE26NOV1320PE": 21,
+    "NFO:SBIN26NOV1040CE": 22,
+    "NFO:SBIN26NOV1040PE": 4,
+    "NFO:TCS26NOV2480CE": 47,
+    "NFO:TCS26NOV2480PE": 96
+  }
+}
