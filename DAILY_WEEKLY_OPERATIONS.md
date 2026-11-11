@@ -69,6 +69,32 @@ to `false` disables those writes without changing signal UID generation,
 entries, filters, exits, thresholds, or LIVE/BACKTEST behavior. Change only this
 key in the active PAPER config if feature telemetry needs to be disabled.
 
+`scorer_input_logging_v1` defaults to `true` and is a separate observational
+kill switch. For 60-second bars it writes one completed-bar scorer observation
+per underlying (not per option contract) to
+`paper_trading_data/YYYY-MM/week_XX/day_DD/scorer_bars/`. Rows include the
+scorer window, last-bar OHLC/completion status, numeric indicators and regime
+inputs, pivot levels, score components, signal, and observer CPU time. Scored
+decision rows also include their scorer window and gate-pass timestamps;
+trade rows include `order_time`. The engine's returned score object is not
+modified by this telemetry.
+
+The observer uses the existing asynchronous paper-journal writer and fails
+open: a telemetry or persistence error is counted/logged without interrupting
+bar processing. To disable it, set `"scorer_input_logging_v1": false` in the
+active `kite_config.json` and restart the process. Re-enable by setting it to
+`true`. This switch does not change score thresholds, signals, entry/exit
+logic, or LIVE behavior. Review writer status and `scorer_bars` file sizes
+after a session to confirm rows were persisted and to monitor queue drops.
+
+An isolated replay of the Nov. 9 and 11, 2026 sessions produced 3,270
+`scorer_bars` rows per day, about 0.66 MB compressed per day. Estimated
+decision-row enrichment adds 0.77–0.85 MB/day, for about 1.42–1.51 MB/day
+total incremental compressed output. Measured incremental CPU was about
+1.54–1.57 ms per underlying bar including the async scorer-bar writer, plus
+0.79–0.86 ms per numeric scored decision for decision-context capture. These
+are local replay measurements, not a live-host capacity guarantee.
+
 Index options (`NIFTY`, `BANKNIFTY`) and stock options can be configured
 independently under `paper_exit_tiers.index_options` and
 `paper_exit_tiers.stock_options`, using `runner_gap_r` and `profit_lock_r`.

@@ -25,6 +25,26 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-11-11
+
+#### DLY-2026-11-11-01
+
+- Reason: Add fail-open scorer input, score-component, and entry-gate observability with a default-on kill switch, without changing strategy behavior.
+- Related prior entries checked: Reviewed `DLY-2026-11-10-01` for the established observational fail-open and PAPER kill-switch patterns; no prior scorer-input archive covered this request.
+- Files:
+  - `market_bot/scorer_observability.py` (added): Derive scorer inputs, component breakdowns, and gate-pass timestamps without modifying `engine.py`.
+  - `market_bot/kite_main.py` (modified): Add completed-underlying-bar recording, scored-decision provenance, custom strategy score adjustments, gate timestamps, and `order_time` telemetry.
+  - `market_bot/trade_journal.py` (modified): Add the `scorer_bars` Parquet queue/table, mixed-schema reader support, scorer counters, decision component persistence, and trade `order_time` fallback.
+  - `kite_config.example.json` and `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the default-on `scorer_input_logging_v1` switch and archive behavior.
+  - `tests/test_scorer_observability.py` (added): Cover recorded-session on/off equivalence, mixed schemas, writer persistence, queue drops, decision components, trade order time, and injected observer failure.
+  - `DAILY_CHANGELOG.md` (modified): Record this work and its validation.
+- Validation and result: `python -m pytest -q` passed (`582 passed, 1 skipped`); focused observability/writer/fail-open tests passed; Python compilation, example-config JSON parsing, and `git diff --check` passed. Replaying all numeric-score decisions using the matching historical configs and uploaded underlying bars yielded:
+  - Nov. 9: 5,517 decisions; exact score 4,277 (77.52%); exact signal 5,228 (94.76%).
+  - Nov. 11: 6,191 decisions; exact score 5,186 (83.77%); exact signal 5,855 (94.57%).
+  - The core scorer-only replay matched primary-route signals at 98.47% / 98.95%, but exact primary scores at 80.59% / 87.64%. Mismatch causes include 479 support-reversal overrides outside `score_market`, 340 early decisions lacking 30 bars in the uploaded source (197 had nonzero logged scores), 1,564 primary score mismatches despite sufficient uploaded history, 36 primary signal-only mismatches, and 6 untagged confirmation rows (5 score mismatches, 3 signal mismatches). The archived decisions do not contain the original scorer windows/inputs, so remaining source/window and filter-boundary mismatches cannot be separated further.
+  - Isolated Nov. 9/11 replay benchmarks produced 3,270 completed-underlying rows/day. Observer + enqueue cost was 1.20 / 1.19 ms CPU per row; the async scorer-bar writer added 0.37 / 0.35 ms per row. Decision-context capture measured 0.86 / 0.79 ms per numeric scored decision. Compressed scorer-bar output was about 0.66 MB/day; estimated decision-row enrichment added 0.77 / 0.85 MB/day, for 1.42 / 1.51 MB/day total incremental compressed output.
+- Outcome / follow-up / rollback: No threshold, signal, score, or entry/exit logic changes; `market_bot/engine.py` remains unchanged. Results do not establish replay fidelity or pre-open LIVE deployment safety. Use only a PAPER canary; disable by setting `scorer_input_logging_v1` to `false` and restarting PAPER.
+
 ### 2026-11-10
 
 #### DLY-2026-11-10-01

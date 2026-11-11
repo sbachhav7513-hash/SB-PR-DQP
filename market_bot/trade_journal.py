@@ -186,6 +186,7 @@ class PaperTradingRecorder:
         "exit_reason_tag",
         "chart_context_snapshot",
         "order_time",
+        "gate_passed_at",
         "tier",
         "signal_uid",
         "entry_feature_values",
@@ -359,6 +360,11 @@ class PaperTradingRecorder:
         "confirmation_event", "signal_id", "signal_uid",
         "entry_feature_values", "entry_feature_null_reasons",
         "order_time", "entry_mode", "route",
+        "scorer_first_bar_time", "scorer_last_bar_time",
+        "scorer_last_bar_ohlc", "scorer_last_bar_complete",
+        "scorer_inputs", "score_components", "component_score",
+        "gate_passed_at",
+        "scorer_bar_payload",
         "signal_time", "signal_close", "signal_bar", "signal_premium",
         "signal_bid", "signal_ask", "signal_ltp", "signal_quote_age_seconds",
         "quote_source", "quote_age_seconds", "candle_age_seconds",
@@ -395,6 +401,12 @@ class PaperTradingRecorder:
         "max_lots", "premium_cap", "lots_reduced_reason",
         "capital_based_risk_v2",
     ]
+    SCORER_BAR_COLUMNS = [
+        "timestamp", "config_hash", "git_sha", "git_dirty", "ticker",
+        "first_bar_time", "last_bar_time", "last_bar_ohlc", "bar_complete",
+        "inputs", "score_components", "component_score", "score", "signal",
+        "reasons", "observation_cpu_us",
+    ]
 
     def __init__(
         self,
@@ -422,6 +434,10 @@ class PaperTradingRecorder:
         self._decision_compaction_status = "idle"
         self._decision_failure_count = 0
         self._decision_writer_cpu_ms = 0.0
+        self._scorer_bar_rows_enqueued = 0
+        self._scorer_bar_payload_bytes_enqueued = 0
+        self._scorer_bar_written_bytes = 0
+        self._scorer_bar_observation_cpu_us = 0.0
         self._decision_touched_days: set[Path] = set()
         self._decision_sequences: Dict[tuple[Path, int], int] = {}
         self._trade_feature_write_errors = 0
@@ -517,10 +533,23 @@ class PaperTradingRecorder:
         temporary.replace(path)
 
     def record_decision(self, payload: Dict[str, Any]) -> None:
+        self._record_queued_row("decision", payload)
+
+    def record_scorer_bar(self, payload: Dict[str, Any]) -> None:
+        self._record_queued_row("scorer_bar", payload)
+
+    def _record_queued_row(self, kind: str, payload: Dict[str, Any]) -> None:
         entry = self._stamp_identity(payload)
         for key, value in entry.items():
             if isinstance(value, (dict, list, set, tuple, bytearray)):
                 entry[key] = deepcopy(value)
+        scorer_payload_bytes = 0
+        if kind == "scorer_bar":
+            scorer_payload_bytes = len(
+                json.dumps(entry, default=str, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
         with self._decision_lock:
             if self._decision_closed:
                 self._decision_drops += 1
@@ -539,10 +568,17 @@ class PaperTradingRecorder:
                 with DECISION_WRITERS_LOCK:
                     DECISION_WRITERS.add(self)
             try:
-                self._decision_queue.put_nowait(("decision", entry))
+                self._decision_queue.put_nowait((kind, entry))
             except queue.Full:
                 self._decision_drops += 1
                 self._log_decision_drop()
+                return
+            if kind == "scorer_bar":
+                self._scorer_bar_rows_enqueued += 1
+                self._scorer_bar_payload_bytes_enqueued += scorer_payload_bytes
+                self._scorer_bar_observation_cpu_us += float(
+                    entry.get("observation_cpu_us") or 0.0
+                )
 
     def _log_decision_drop(self) -> None:
         if self._decision_drops == 1 or self._decision_drops % 100 == 0:
@@ -560,19 +596,33 @@ class PaperTradingRecorder:
             "compaction_status": self._decision_compaction_status,
             "write_failures": self._decision_failure_count,
             "writer_cpu_ms": round(self._decision_writer_cpu_ms, 3),
+            "scorer_bar_rows_enqueued": self._scorer_bar_rows_enqueued,
+            "scorer_bar_payload_bytes_enqueued": (
+                self._scorer_bar_payload_bytes_enqueued
+            ),
+            "scorer_bar_written_bytes": self._scorer_bar_written_bytes,
+            "scorer_bar_observation_cpu_us": round(
+                self._scorer_bar_observation_cpu_us, 3
+            ),
         }
 
-    def _write_decision_part(self, day_dir: Path, hour: int, rows: List[Dict[str, Any]]) -> None:
-        parts_dir = day_dir / "decisions"
+    def _write_decision_part(
+        self,
+        day_dir: Path,
+        hour: int,
+        rows: List[Dict[str, Any]],
+        table: str = "decisions",
+    ) -> None:
+        parts_dir = day_dir / table
         parts_dir.mkdir(parents=True, exist_ok=True)
         sequence_key = (parts_dir, hour)
         sequence = self._decision_sequences.get(sequence_key)
         if sequence is None:
             existing = [
                 int(match.group(1))
-                for path in parts_dir.glob(f"decisions_{hour:02d}_*_*")
+                for path in parts_dir.glob(f"{table}_{hour:02d}_*_*")
                 if (match := re.fullmatch(
-                    rf"decisions_{hour:02d}_\d{{6}}_(\d+)\.parquet",
+                    rf"{table}_{hour:02d}_\d{{6}}_(\d+)\.parquet",
                     path.name,
                 ))
             ]
@@ -580,27 +630,33 @@ class PaperTradingRecorder:
         sequence += 1
         self._decision_sequences[sequence_key] = sequence
         stamp = datetime.now(IST).strftime("%H%M%S")
-        destination = parts_dir / (
-            f"decisions_{hour:02d}_{stamp}_{sequence:06d}.parquet"
-        )
+        destination = parts_dir / f"{table}_{hour:02d}_{stamp}_{sequence:06d}.parquet"
         temporary = destination.with_name(f".{destination.name}.tmp")
+        columns = (
+            self.SCORER_BAR_COLUMNS if table == "scorer_bars"
+            else self.DECISION_COLUMNS
+        )
         nested_columns = {
             column
             for row in rows
             for column, value in row.items()
             if isinstance(value, (dict, list, tuple))
         }
-        frame = pd.DataFrame(rows, columns=self.DECISION_COLUMNS).fillna("")
-        for column in self.DECISION_COLUMNS:
+        frame = pd.DataFrame(rows, columns=columns).fillna("")
+        for column in columns:
             if column in nested_columns:
                 frame[column] = frame[column].map(self._parquet_value)
             else:
                 frame[column] = frame[column].astype(str)
         write_parquet(temporary, frame, compression="SNAPPY")
         os.replace(temporary, destination)
+        if table == "scorer_bars":
+            self._scorer_bar_written_bytes += destination.stat().st_size
         self._decision_touched_days.add(day_dir)
 
-    def _flush_decision_batch(self, rows: List[Dict[str, Any]]) -> None:
+    def _flush_decision_batch(
+        self, rows: List[Dict[str, Any]], table: str = "decisions"
+    ) -> None:
         if not rows:
             return
         started = time_module.perf_counter()
@@ -616,7 +672,7 @@ class PaperTradingRecorder:
         written = 0
         try:
             for (day_dir, hour), group in grouped.items():
-                self._write_decision_part(day_dir, hour, group)
+                self._write_decision_part(day_dir, hour, group, table)
                 written += len(group)
         except (OSError, TypeError, ValueError):
             self._decision_failure_count += 1
@@ -631,9 +687,14 @@ class PaperTradingRecorder:
             ) * 1000
 
     def _compact_decision_hour(self, day_dir: Path, hour: int) -> bool:
-        parts_dir = day_dir / "decisions"
-        destination = parts_dir / f"decisions_{hour:02d}.parquet"
-        parts = sorted(parts_dir.glob(f"decisions_{hour:02d}_*.parquet"))
+        return self._compact_table_hour(day_dir, hour, "decisions")
+
+    def _compact_table_hour(
+        self, day_dir: Path, hour: int, table: str
+    ) -> bool:
+        parts_dir = day_dir / table
+        destination = parts_dir / f"{table}_{hour:02d}.parquet"
+        parts = sorted(parts_dir.glob(f"{table}_{hour:02d}_*.parquet"))
         if not parts:
             return destination.exists()
         frames = []
@@ -655,7 +716,10 @@ class PaperTradingRecorder:
                         f"Compaction row-count mismatch for {destination}: "
                         f"{written_rows} != {expected_rows}"
                     )
+                written_bytes = temporary.stat().st_size
                 os.replace(temporary, destination)
+                if table == "scorer_bars":
+                    self._scorer_bar_written_bytes += written_bytes
             compacted_rows = len(pd.read_parquet(destination, engine="fastparquet"))
             if compacted_rows != expected_rows:
                 raise IOError(
@@ -673,34 +737,35 @@ class PaperTradingRecorder:
         now = datetime.now(IST)
         try:
             for day_dir in tuple(self._decision_touched_days):
-                parts_dir = day_dir / "decisions"
-                hours = {
-                    int(match.group(1))
-                    for path in parts_dir.glob("decisions_*.parquet")
-                    if (match := re.fullmatch(
-                        r"decisions_(\d{2})_\d{6}_\d+\.parquet", path.name
-                    ))
-                }
-                for hour in sorted(hours):
-                    try:
-                        day = datetime.strptime(
-                            f"{day_dir.parent.parent.name}-"
-                            f"{day_dir.name.removeprefix('day_')}",
-                            "%Y-%m-%d",
-                        ).date()
-                    except ValueError:
-                        logger.error(
-                            "Could not determine date for decision directory %s",
-                            day_dir,
-                        )
-                        continue
-                    if final or day < now.date() or (
-                        day == now.date() and hour < now.hour
-                    ):
-                        self._decision_compaction_status = (
-                            f"compacting {day_dir.name} {hour:02d}"
-                        )
-                        self._compact_decision_hour(day_dir, hour)
+                for table in ("decisions", "scorer_bars"):
+                    parts_dir = day_dir / table
+                    hours = {
+                        int(match.group(1))
+                        for path in parts_dir.glob(f"{table}_*.parquet")
+                        if (match := re.fullmatch(
+                            rf"{table}_(\d{{2}})_\d{{6}}_\d+\.parquet", path.name
+                        ))
+                    }
+                    for hour in sorted(hours):
+                        try:
+                            day = datetime.strptime(
+                                f"{day_dir.parent.parent.name}-"
+                                f"{day_dir.name.removeprefix('day_')}",
+                                "%Y-%m-%d",
+                            ).date()
+                        except ValueError:
+                            logger.error(
+                                "Could not determine date for decision directory %s",
+                                day_dir,
+                            )
+                            continue
+                        if final or day < now.date() or (
+                            day == now.date() and hour < now.hour
+                        ):
+                            self._decision_compaction_status = (
+                                f"compacting {table} {day_dir.name} {hour:02d}"
+                            )
+                            self._compact_table_hour(day_dir, hour, table)
         finally:
             self._decision_compaction_status = "idle"
             self._decision_writer_cpu_ms += (
@@ -708,7 +773,20 @@ class PaperTradingRecorder:
             ) * 1000
 
     def _run_decision_writer(self) -> None:
-        pending: List[Dict[str, Any]] = []
+        pending: Dict[str, List[Dict[str, Any]]] = {
+            "decision": [],
+            "scorer_bar": [],
+        }
+
+        def flush_pending() -> None:
+            for kind, table in (
+                ("decision", "decisions"),
+                ("scorer_bar", "scorer_bars"),
+            ):
+                if pending[kind]:
+                    self._flush_decision_batch(pending[kind], table)
+                    pending[kind] = []
+
         last_flush = time_module.monotonic()
         while True:
             timeout = max(
@@ -719,9 +797,9 @@ class PaperTradingRecorder:
             try:
                 kind, payload = self._decision_queue.get(timeout=timeout)
             except queue.Empty:
-                if pending:
-                    self._flush_decision_batch(pending)
-                    pending = []
+                had_pending = any(pending.values())
+                flush_pending()
+                if had_pending:
                     last_flush = time_module.monotonic()
                 try:
                     self._compact_ended_decision_hours()
@@ -733,33 +811,32 @@ class PaperTradingRecorder:
                     logger.exception("Unexpected paper decision compaction failure")
                 continue
             try:
-                if kind == "decision":
-                    pending.append(payload)
+                if kind in pending:
+                    pending[kind].append(payload)
                     while self._decision_closed or (
-                        len(pending) < DECISION_BATCH_SIZE
+                        sum(len(rows) for rows in pending.values())
+                        < DECISION_BATCH_SIZE
                     ):
                         try:
                             next_kind, next_payload = self._decision_queue.get_nowait()
                         except queue.Empty:
                             break
                         try:
-                            if next_kind == "decision":
-                                pending.append(next_payload)
+                            if next_kind in pending:
+                                pending[next_kind].append(next_payload)
                             else:
                                 self._decision_queue.put_nowait((next_kind, next_payload))
                                 break
                         finally:
                             self._decision_queue.task_done()
-                    if len(pending) >= DECISION_BATCH_SIZE:
-                        self._flush_decision_batch(pending)
-                        pending = []
+                    if sum(len(rows) for rows in pending.values()) >= DECISION_BATCH_SIZE:
+                        flush_pending()
                         last_flush = time_module.monotonic()
                         self._compact_after_flush()
                 elif kind == "flush":
                     completed, compact_final_hour = payload
                     try:
-                        self._flush_decision_batch(pending)
-                        pending = []
+                        flush_pending()
                         last_flush = time_module.monotonic()
                         if compact_final_hour:
                             self._compact_ended_decision_hours(final=True)
@@ -775,8 +852,7 @@ class PaperTradingRecorder:
                         completed.set()
                 elif kind == "close":
                     try:
-                        self._flush_decision_batch(pending)
-                        pending = []
+                        flush_pending()
                         self._decision_compaction_status = "compacting final hours"
                         self._compact_ended_decision_hours(final=True)
                     except (OSError, TypeError, ValueError):
@@ -873,6 +949,15 @@ class PaperTradingRecorder:
 
     def record_trade(self, payload: Dict[str, Any]) -> None:
         entry = self._stamp_identity(payload)
+        entry.setdefault(
+            "order_time", entry.get("entry_time") or entry.get("timestamp")
+        )
+        gate_passed_at = entry.get("gate_passed_at")
+        if not isinstance(gate_passed_at, dict):
+            gate_passed_at = {}
+        if entry.get("order_time"):
+            gate_passed_at.setdefault("order", entry["order_time"])
+            entry["gate_passed_at"] = gate_passed_at
         timestamp = entry.get("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         path = self._day_path(timestamp, "trades.parquet")
         rows = self._read_parquet(path)
@@ -1129,6 +1214,37 @@ def read_decisions(
     if columns:
         result = result.reindex(columns=columns)
     return result
+
+
+def read_scorer_bars(day_path: str | Path) -> pd.DataFrame:
+    """Read scorer-bar rows across old and current Parquet part schemas."""
+    directory = Path(day_path)
+    with DECISION_WRITERS_LOCK:
+        writers = list(DECISION_WRITERS)
+    for writer in writers:
+        try:
+            directory.resolve().relative_to(writer.root.resolve())
+        except ValueError:
+            continue
+        if not writer.flush_decisions(timeout=20.0):
+            raise TimeoutError(
+                f"Timed out flushing scorer bars before reading {directory}"
+            )
+
+    parts_dir = directory / "scorer_bars"
+    if not parts_dir.exists():
+        return pd.DataFrame(columns=PaperTradingRecorder.SCORER_BAR_COLUMNS)
+    files = sorted(parts_dir.glob("scorer_bars_*.parquet"))
+    if not files:
+        return pd.DataFrame(columns=PaperTradingRecorder.SCORER_BAR_COLUMNS)
+    frames = [
+        pd.read_parquet(path, engine="fastparquet")
+        for path in files
+    ]
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    return combined.reindex(
+        columns=PaperTradingRecorder.SCORER_BAR_COLUMNS, fill_value=""
+    )
 
 
 def rejected_signal_updates_path(path: str | Path) -> Path:

@@ -60,6 +60,14 @@ from .strategy_config import (
 )
 from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
+from .scorer_observability import (
+    add_score_adjustment,
+    first_passed_gate_times,
+    score_components,
+    score_observation,
+    scorer_history,
+    scorer_inputs,
+)
 from .stop_reentry_journal import StopReentryJournal
 from .telegram_notifier import TelegramNotifier
 from .telegram_control.commands import EXIT_REASON_TAGS, process_telegram_command
@@ -92,6 +100,7 @@ def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
     defaults = {
         "partial_profit_v2": True,
         "entry_feature_logging_v2": True,
+        "scorer_input_logging_v1": True,
         "stop_quote_validation_v2": True,
         "runner_gap_v2": True,
         "profit_lock_v2": True,
@@ -1820,6 +1829,8 @@ class KiteTradingBot:
         self._feature_observation_error_counts = {}
         self._feature_observation_warning_times = {}
         self._feature_observation_error_lock = threading.Lock()
+        self._scorer_context_by_symbol = {}
+        self._scorer_bar_observations_seen = set()
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
         self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
@@ -1841,6 +1852,7 @@ class KiteTradingBot:
         self.config.setdefault("capture_all_evaluated_contracts", True)
         self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.config.setdefault("entry_feature_logging_v2", True)
+        self.config.setdefault("scorer_input_logging_v1", True)
         self.config.setdefault("stop_quote_validation_v2", True)
         self.config.setdefault("stock_take_profit_v2", True)
         self.config.setdefault("stock_take_profit_r", 0.8)
@@ -3555,6 +3567,191 @@ class KiteTradingBot:
             )
         )
 
+    def _scorer_input_logging_enabled(self) -> bool:
+        return bool(
+            (getattr(self, "config", {}) or {}).get(
+                "scorer_input_logging_v1", True
+            )
+        )
+
+    def _record_completed_scorer_bar(self, symbol: str, bar: Bar) -> None:
+        if not self._scorer_input_logging_enabled():
+            return
+        try:
+            if (
+                symbol.endswith(("_CE", "_PE"))
+                or int(self.config.get("bar_interval_seconds", 60)) != 60
+            ):
+                return
+            timestamp = self._journal_datetime(bar.timestamp)
+            if timestamp is None:
+                raise ValueError("completed scorer bar has invalid timestamp")
+            key = (symbol.upper(), timestamp.isoformat())
+            seen = getattr(self, "_scorer_bar_observations_seen", None)
+            if seen is None:
+                seen = set()
+                self._scorer_bar_observations_seen = seen
+            if key in seen:
+                return
+
+            token = int(self.config["instrument_tokens"][symbol])
+            completed_bars = self.bar_builder.get_bars(token, limit=100)
+            history = [item.to_dict() for item in completed_bars]
+            if not history or history[-1].get("time") != bar.timestamp:
+                history.append(bar.to_dict())
+            history = scorer_history(history)
+            if not history:
+                raise ValueError("completed scorer history is empty")
+
+            started = time.thread_time()
+            observation = score_observation(symbol, history, self.config)
+            inputs = {
+                name: observation[name]
+                for name in (
+                    "ema_fast_value",
+                    "ema_slow_value",
+                    "rsi_value",
+                    "adx_value",
+                    "macd_value",
+                    "macd_previous_value",
+                    "regime_label",
+                    "regime_range_pct",
+                    "regime_20_bar_move_pct",
+                    "near_recent_high",
+                    "near_recent_low",
+                    "recent_high",
+                    "recent_low",
+                    "pivot_levels",
+                )
+            }
+            if self.config.get("support_reversal_enabled", False):
+                source_interval = int(
+                    self.config.get("bar_interval_seconds", 60)
+                )
+                pivot_history = aggregate_ohlcv_bars(
+                    history,
+                    source_interval_seconds=source_interval,
+                    target_interval_seconds=300,
+                )
+                candidate = detect_support_resistance_reversal(pivot_history)
+                if candidate is not None:
+                    inputs["pivot_levels"] = [
+                        {
+                            "kind": (
+                                "support" if candidate.signal == "BUY"
+                                else "resistance"
+                            ),
+                            "level": candidate.level,
+                            "touches": candidate.touches,
+                        }
+                    ]
+            recorder = getattr(
+                getattr(self, "decision_journal", None), "paper_recorder", None
+            )
+            if recorder is None or not hasattr(recorder, "record_scorer_bar"):
+                raise RuntimeError("scorer-bar recorder is unavailable")
+            last_bar = history[-1]
+            recorder.record_scorer_bar(
+                {
+                    "timestamp": timestamp.isoformat(),
+                    "ticker": symbol.upper(),
+                    "first_bar_time": str(history[0].get("time", "")),
+                    "last_bar_time": str(last_bar.get("time", "")),
+                    "last_bar_ohlc": {
+                        key: last_bar.get(key)
+                        for key in ("open", "high", "low", "close")
+                    },
+                    "bar_complete": True,
+                    "inputs": inputs,
+                    "score_components": observation["score_components"],
+                    "component_score": observation["component_score"],
+                    "score": observation["score"],
+                    "signal": observation["signal"],
+                    "reasons": observation["reasons"],
+                    "observation_cpu_us": (
+                        time.thread_time() - started
+                    ) * 1_000_000,
+                }
+            )
+            seen.add(key)
+        except Exception as error:
+            self._record_feature_observation_error(
+                "scorer_bar_observation", error, symbol
+            )
+
+    def _capture_scorer_context(
+        self, symbol: str, history: list[dict], market_score
+    ) -> None:
+        if not self._scorer_input_logging_enabled() or not history:
+            return
+        try:
+            history = scorer_history(history)
+            inputs = scorer_inputs(history, self.config)
+            components = score_components(
+                list(getattr(market_score, "reasons", []))
+            )
+            last_bar = history[-1]
+            self._scorer_context_by_symbol[symbol] = {
+                "scorer_first_bar_time": str(history[0].get("time", "")),
+                "scorer_last_bar_time": str(last_bar.get("time", "")),
+                "scorer_last_bar_ohlc": {
+                    key: last_bar.get(key)
+                    for key in ("open", "high", "low", "close")
+                },
+                "scorer_last_bar_complete": True,
+                "scorer_inputs": inputs,
+                "score_components": components,
+                "component_score": sum(components.values()),
+                "scorer_reasons": list(
+                    getattr(market_score, "reasons", [])
+                ),
+            }
+        except Exception as error:
+            self._record_feature_observation_error(
+                "scorer_decision_context", error, symbol
+            )
+
+    def _record_scorer_score_adjustment(
+        self,
+        symbol: str,
+        component: str,
+        adjustment: int,
+        *,
+        pivot_level: Optional[float] = None,
+        pivot_touches: Optional[int] = None,
+        pivot_kind: Optional[str] = None,
+    ) -> None:
+        if not self._scorer_input_logging_enabled():
+            return
+        try:
+            context = getattr(self, "_scorer_context_by_symbol", {}).get(symbol)
+            if not isinstance(context, dict):
+                return
+            components = add_score_adjustment(
+                dict(context.get("score_components") or {}),
+                component,
+                adjustment,
+            )
+            context["score_components"] = components
+            context["component_score"] = sum(components.values())
+            if pivot_level is not None:
+                context.setdefault("scorer_inputs", {})["pivot_levels"] = [
+                    {
+                        "kind": pivot_kind,
+                        "level": pivot_level,
+                        "touches": pivot_touches,
+                    }
+                ]
+        except Exception as error:
+            try:
+                self._record_feature_observation_error(
+                    "scorer_score_adjustment", error, symbol
+                )
+            except Exception:
+                logger.exception(
+                    "Could not report scorer telemetry failure for %s", symbol
+                )
+
     def _record_feature_observation_error(
         self, call_site: str, error: Exception, symbol: Optional[str] = None
     ) -> None:
@@ -4100,16 +4297,53 @@ class KiteTradingBot:
             "values": entry_feature_values,
             "null_reasons": entry_feature_null_reasons,
         }
+        signal_time = (
+            self._journal_datetime(signal_bars[-1].timestamp)
+            if signal_bars
+            else None
+        )
+        scorer_context = getattr(
+            self, "_scorer_context_by_symbol", {}
+        ).get(symbol, {})
+        if self._scorer_input_logging_enabled():
+            timing_inputs = scorer_context.get("scorer_inputs")
+            if not isinstance(timing_inputs, dict):
+                timing_inputs = scorer_inputs(history, self.config)
+            timing_measurements = {
+                **gate_measurements,
+                "scorer_inputs": timing_inputs,
+            }
+            gate_passed_at = first_passed_gate_times(
+                signal=signal,
+                timestamp=signal_time.isoformat() if signal_time else None,
+                outcome="candidate",
+                reasons=scorer_context.get("scorer_reasons", []),
+                score=score,
+                measurements=timing_measurements,
+                config=self.config,
+            )
+        else:
+            gate_passed_at = {}
         return {
             "signal_id": signal_id,
             "signal_uid": signal_uid,
-            "signal_time": (
-                self._journal_datetime(signal_bars[-1].timestamp)
-                if signal_bars
-                and self._journal_datetime(signal_bars[-1].timestamp)
-                is not None
-                else None
+            "signal_time": signal_time,
+            "gate_passed_at": gate_passed_at,
+            "scorer_first_bar_time": scorer_context.get(
+                "scorer_first_bar_time"
             ),
+            "scorer_last_bar_time": scorer_context.get(
+                "scorer_last_bar_time"
+            ),
+            "scorer_last_bar_ohlc": scorer_context.get(
+                "scorer_last_bar_ohlc"
+            ),
+            "scorer_last_bar_complete": scorer_context.get(
+                "scorer_last_bar_complete"
+            ),
+            "scorer_inputs": scorer_context.get("scorer_inputs", {}),
+            "score_components": scorer_context.get("score_components", {}),
+            "component_score": scorer_context.get("component_score"),
             "signal_premium": gate_measurements.get(
                 "signal_premium", gate_measurements.get("ltp")
             ),
@@ -4478,6 +4712,16 @@ class KiteTradingBot:
         gate_measurements = pending.get("gate_measurements")
         if not isinstance(gate_measurements, dict):
             gate_measurements = {}
+        gate_passed_at = dict(pending.get("gate_passed_at") or {})
+        confirmation_passed = (
+            fields.get("confirmation_result") == "passed"
+            or event == "confirmed_trade"
+        )
+        if confirmation_passed:
+            gate_passed_at["confirmation"] = (
+                fields.get("confirmation_candle_time")
+                or timestamp.isoformat()
+            )
         payload = {
             "timestamp": timestamp.isoformat(),
             "event": "entry_confirmation",
@@ -4509,6 +4753,15 @@ class KiteTradingBot:
                 "entry_feature_null_reasons", {}
             ),
             "gate_measurements": gate_measurements,
+            "gate_passed_at": gate_passed_at,
+            "scorer_first_bar_time": pending.get("scorer_first_bar_time"),
+            "scorer_last_bar_time": pending.get("scorer_last_bar_time"),
+            "scorer_last_bar_ohlc": pending.get("scorer_last_bar_ohlc"),
+            "scorer_last_bar_complete": pending.get(
+                "scorer_last_bar_complete"
+            ),
+            "scorer_inputs": pending.get("scorer_inputs", {}),
+            "score_components": pending.get("score_components", {}),
             "quote_source": gate_measurements.get("quote_source"),
             "quote_age_seconds": gate_measurements.get("quote_age_seconds"),
             "candle_age_seconds": gate_measurements.get("candle_age_seconds"),
@@ -4586,6 +4839,10 @@ class KiteTradingBot:
                     "risk_cap_rupees",
                 ):
                     payload[key] = trade_record.get(key)
+                if trade_record.get("order_time"):
+                    gate_passed_at["order"] = trade_record["order_time"]
+                    payload["gate_passed_at"] = gate_passed_at
+                    payload["order_time"] = trade_record["order_time"]
         journal.log_decision(payload)
         writer = getattr(self, "option_capture_writer", None)
         if writer is not None:
@@ -5256,6 +5513,11 @@ class KiteTradingBot:
                 "signal_quote_age_seconds": pending["signal_quote_age_seconds"],
                 "confirmation_candle_time": confirmation_time.isoformat(),
                 "order_time": now.isoformat(timespec="seconds"),
+                "gate_passed_at": {
+                    **dict(pending.get("gate_passed_at") or {}),
+                    "confirmation": confirmation_time.isoformat(),
+                    "order": now.isoformat(timespec="seconds"),
+                },
                 "confirmation_close": close,
                 "confirmation_result": "passed",
                 "confirmation_bid": metrics["bid"],
@@ -5476,10 +5738,12 @@ class KiteTradingBot:
         """Called when a new bar is completed."""
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        getattr(self, "_scorer_context_by_symbol", {}).pop(symbol, None)
         if not symbol.endswith(("_CE", "_PE")):
             writer = getattr(self, "option_capture_writer", None)
             if writer is not None:
                 writer.record_underlying_bar(symbol, bar)
+            self._record_completed_scorer_bar(symbol, bar)
         if symbol.endswith(("_CE", "_PE")):
             self._confirm_option_trailing_close(symbol, bar)
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
@@ -5656,6 +5920,7 @@ class KiteTradingBot:
             logger.exception("[%s] Strategy evaluation failed", symbol)
             self._record_decision(symbol, bar, bars, None, "ERROR", "strategy_error")
             return
+        self._capture_scorer_context(symbol, history, market_score)
         news_context = self.news_monitor.snapshot() if self.news_monitor else None
         if news_context:
             filtered_signal, news_reason = apply_news_filter(
@@ -5760,25 +6025,44 @@ class KiteTradingBot:
                         "[%s] Invalid support_reversal_min_score", symbol
                     )
                 elif support_score >= support_min_score:
-                    market_score.signal = support_candidate.signal
-                    market_score.score = support_score
-                    market_score.strategy_variant = (
-                        "paper_underlying_support_reversal"
-                    )
-                    market_score.reasons.append(
-                        "Paper underlying support/reversal confirmed at "
-                        f"{support_candidate.level:.2f} "
+                        base_score = market_score.score
+                        market_score.signal = support_candidate.signal
+                        market_score.score = support_score
+                        market_score.strategy_variant = (
+                            "paper_underlying_support_reversal"
+                        )
+                        self._record_scorer_score_adjustment(
+                            symbol,
+                            "support_reversal_adjustment",
+                            support_score - base_score,
+                            pivot_level=support_candidate.level,
+                            pivot_touches=support_candidate.touches,
+                            pivot_kind=(
+                                "support"
+                                if support_candidate.signal == "BUY"
+                                else "resistance"
+                            ),
+                        )
+                        market_score.reasons.append(
+                            "Paper underlying support/reversal confirmed at "
+                            f"{support_candidate.level:.2f} "
                         f"({support_candidate.touches} clustered pivots)"
                     )
 
         ema_reentry_context = self._ema_reentry_candidate(symbol, history)
         if ema_reentry_context is not None:
             market_score.signal = ema_reentry_context["signal"]
+            base_score = market_score.score
             market_score.score = max(
                 market_score.score,
                 self._entry_score_floor(),
             )
             market_score.strategy_variant = "paper_ema_stop_reentry"
+            self._record_scorer_score_adjustment(
+                symbol,
+                "ema_reentry_adjustment",
+                market_score.score - base_score,
+            )
             market_score.reasons.append(ema_reentry_context["reentry_reason"])
             state = self._ema_reentry_states[symbol]
             self._log_ema_reentry_event(
@@ -7290,6 +7574,10 @@ class KiteTradingBot:
                 "drops": 0,
                 "compaction_status": "disabled",
                 "writer_cpu_ms": 0.0,
+                "scorer_bar_rows_enqueued": 0,
+                "scorer_bar_payload_bytes_enqueued": 0,
+                "scorer_bar_written_bytes": 0,
+                "scorer_bar_observation_cpu_us": 0.0,
             }
         )
         with getattr(self, "_tick_duration_lock", threading.Lock()):
@@ -7369,6 +7657,8 @@ class KiteTradingBot:
             "option_capture_last_flush_rows=%d option_capture_last_flush_ms=%.3f "
             "option_capture_dropped_rows=%d shadow_latest=%d option_capture_sizes=%s "
             "feature_observation_errors=%d paper_trade_feature_write_errors=%d "
+            "scorer_bar_rows=%d scorer_bar_payload_bytes=%d "
+            "scorer_bar_written_bytes=%d scorer_bar_observation_cpu_us=%.3f "
             "telegram_queue_depth=%d telegram_sent=%d telegram_failed=%d "
             "telegram_dropped=%d telegram_last_success=%s",
             decision["queue_depth"],
@@ -7394,6 +7684,10 @@ class KiteTradingBot:
             json.dumps(option_sizes, sort_keys=True),
             feature_observation_errors,
             trade_feature_errors,
+            decision.get("scorer_bar_rows_enqueued", 0),
+            decision.get("scorer_bar_payload_bytes_enqueued", 0),
+            decision.get("scorer_bar_written_bytes", 0),
+            decision.get("scorer_bar_observation_cpu_us", 0.0),
             telegram_stats["queue_depth"],
             telegram_stats["sent"],
             telegram_stats["failed"],
@@ -10256,6 +10550,45 @@ class KiteTradingBot:
                 "Could not capture rejected-signal measurements for %s", symbol
             )
             gate_measurements = {"route": "scored"}
+        scorer_context = getattr(
+            self, "_scorer_context_by_symbol", {}
+        ).get(symbol, {})
+        scorer_last_time = scorer_context.get("scorer_last_bar_time")
+        decision_time = scorer_last_time or str(bar.timestamp)
+        if self._scorer_input_logging_enabled():
+            gate_measurements_for_timing = {
+                **gate_measurements,
+                "scorer_inputs": scorer_context.get("scorer_inputs", {}),
+            }
+            try:
+                gate_passed_at = first_passed_gate_times(
+                    signal=signal,
+                    timestamp=decision_time,
+                    outcome=outcome,
+                    reasons=reasons,
+                    score=market_score.score if market_score else None,
+                    measurements=gate_measurements_for_timing,
+                    config=getattr(self, "config", {}) or {},
+                )
+            except Exception as error:
+                self._record_feature_observation_error(
+                    "candidate_gate_timestamps", error, symbol
+                )
+                gate_passed_at = {}
+        else:
+            gate_passed_at = {
+                name: None
+                for name in (
+                    "regime", "ema_adx_rsi", "option_momentum",
+                    "score", "confirmation", "order",
+                )
+            }
+        if outcome == "trade_opened":
+            gate_passed_at["order"] = (
+                gate_measurements.get("order_time")
+                or getattr(self, "_candidate_order_times", {}).get(signal_uid)
+                or decision_time
+            )
         callback_time = self._journal_datetime(
             getattr(self, "_bar_callback_time", None)
         )
@@ -10293,6 +10626,25 @@ class KiteTradingBot:
                 "history": [item.to_dict() for item in bars],
                 "score": market_score.score if market_score else None,
                 "reasons": reasons,
+                "scorer_first_bar_time": scorer_context.get(
+                    "scorer_first_bar_time"
+                ),
+                "scorer_last_bar_time": scorer_context.get(
+                    "scorer_last_bar_time"
+                ),
+                "scorer_last_bar_ohlc": scorer_context.get(
+                    "scorer_last_bar_ohlc"
+                ),
+                "scorer_last_bar_complete": scorer_context.get(
+                    "scorer_last_bar_complete"
+                ),
+                "scorer_inputs": scorer_context.get("scorer_inputs", {}),
+                "score_components": scorer_context.get(
+                    "score_components", {}
+                ),
+                "component_score": scorer_context.get("component_score"),
+                "gate_passed_at": gate_passed_at,
+                "order_time": gate_passed_at.get("order"),
                 "strategy_variant": (
                     variant
                 ),
@@ -11271,6 +11623,15 @@ class KiteTradingBot:
             alert["order_time"] = alert.get(
                 "order_time", entry_timestamp.isoformat(timespec="seconds")
             )
+            gate_passed_at = dict(alert.get("gate_passed_at") or {})
+            gate_passed_at["order"] = alert["order_time"]
+            alert["gate_passed_at"] = gate_passed_at
+            if alert.get("signal_uid"):
+                order_times = getattr(self, "_candidate_order_times", None)
+                if order_times is None:
+                    order_times = {}
+                    self._candidate_order_times = order_times
+                order_times[alert["signal_uid"]] = alert["order_time"]
             self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, entry_timestamp
             )
@@ -11752,6 +12113,15 @@ class KiteTradingBot:
             alert["order_time"] = alert.get(
                 "order_time", sell_entry_timestamp.isoformat(timespec="seconds")
             )
+            gate_passed_at = dict(alert.get("gate_passed_at") or {})
+            gate_passed_at["order"] = alert["order_time"]
+            alert["gate_passed_at"] = gate_passed_at
+            if alert.get("signal_uid"):
+                order_times = getattr(self, "_candidate_order_times", None)
+                if order_times is None:
+                    order_times = {}
+                    self._candidate_order_times = order_times
+                order_times[alert["signal_uid"]] = alert["order_time"]
             self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, sell_entry_timestamp
             )
