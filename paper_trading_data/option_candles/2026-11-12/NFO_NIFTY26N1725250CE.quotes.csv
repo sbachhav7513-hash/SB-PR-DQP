@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-12T15:30:00+05:30,NFO:NIFTY26N1725250CE,NIFTY,CE,25250.0,2026-11-17,200.4,199.8,200.3,2026-11-12T15:30:00+05:30,0.548908,57ced55afbde15a536db7d35d052b27eca43de5a19f4ad102926e638c3908338,75f2b990d24acb1c47f623e1e056474ec479d3f6,True
