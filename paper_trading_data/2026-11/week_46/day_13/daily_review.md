@@ -1,0 +1,2439 @@
+# Daily Paper-Trading Review - 2026-11-13
+
+## Results
+- Closed trades: 4
+- Wins / losses / breakeven: 1 / 3 / 0
+- Gross recorded P&L before modeled fees: -3332.50
+- Win rate: 25.0%
+- Decisions: 10592
+
+## Modeled Fees and Net Performance
+- Gross P&L: -3332.50
+- Modeled fees: 298.02 (4/4 trades)
+- Net P&L (gross minus modeled fees; no slippage): -3630.52 (4/4 trades)
+- Human command affected at least one trade: yes
+- All fee figures are modeled from the configured paper charge model.
+
+| Dimension | Group | Trades | Gross P&L | Modeled fees | Net P&L | R total | Average R |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| tier | index | 1 | -1560.00 | 80.30 (1/1) | -1640.30 (1/1) | N/A | N/A |
+| tier | stock | 3 | -1772.50 | 217.72 (3/3) | -1990.22 (3/3) | N/A | N/A |
+| CE/PE | CE | 3 | -1675.00 | 224.72 (3/3) | -1899.72 (3/3) | N/A | N/A |
+| CE/PE | PE | 1 | -1657.50 | 73.30 (1/1) | -1730.80 (1/1) | N/A | N/A |
+| exit_trigger | bot stop | 3 | -4257.50 | 223.32 (3/3) | -4480.82 (3/3) | N/A | N/A |
+| exit_trigger | bot_take_profit | 1 | 925.00 | 74.70 (1/1) | 850.30 (1/1) | N/A | N/A |
+
+## One-Candle Entry Confirmation
+- Signals generated: 49
+- Direction confirmed: 34
+- Rejected by confirmation (CE / PE): 8 / 7
+- Filter failures after confirmation: {"filter": 16, "stale_quote": 14}
+- Expired signals: 0
+- Confirmed trades: 4
+- Win rate: 25.0%
+- Gross recorded P&L: -3332.50
+- After-cost P&L: -3630.52
+- Average delay: 60.5s
+- Average premium change from signal to fill: 1.010%
+
+## EMA Stop-Loss Re-entry
+- Eligible stop-loss trades: 3
+- Confirmed signals: 0
+- Windows expired without a signal: 0
+- Signal entries rejected by other gates: 0
+- Re-entries closed: 0
+- Re-entry wins / losses / breakeven: 0 / 0 / 0
+- Re-entry P&L: 0.00
+- Baseline P&L: -3332.50; with re-entries: -3332.50
+
+### Re-entry Trade Log
+| Original trade ID | Symbol | Stop time | Signal time | Reason | Entry | Exit | P&L | Outcome |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| No re-entry trades recorded | - | - | - | - | - | - | 0.00 | - |
+
+## Signals
+- HOLD: 9634
+- MARKET_CLOSE: 418
+- SELL: 274
+- BUY: 266
+
+## Entry Flow
+- BUY/SELL signals: 540
+- Unselected option-leg skips: 29
+- Side-eligible directional candidates: 511
+- Entries opened: 4
+
+## Outcomes
+- hold: 5659
+- operational: 4565
+- option_filter: 244
+- accuracy_filter: 120
+- trade_opened: 4
+
+## Closed Trades
+| Symbol | Direction | Variant | Score | Held (s) | P&L | Exit | Manual | Flags at entry → exit | Signal/order/fill premium | Fill bid/ask/LTP/age | Fill Δ% | Trigger price/source | Capture |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | --- | --- |
+| RELIANCE_CE | BUY | paper_underlying_support_reversal | 75 | 308 | 925.00 | TAKE_PROFIT | no | ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] → ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] | 21.45/21.7/21.7 | 21.6/21.7/21.6/1.123107s | N/A | 23.435999999999996/bid | complete |
+| HDFCBANK_PE | BUY | paper_underlying_support_reversal | 80 | 1713 | -1657.50 | SL | no | ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] → ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] | 18.9/19.0/19.0 | 18.85/19.0/18.95/8.608226s | N/A | 17.1/bid | incomplete: 0/31 minutes |
+| INFY_CE | BUY | paper_underlying_support_reversal | 75 | 1292 | -1040.00 | SL | no | ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] → ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2","stock_take_profit_v2"] | 25.0/25.85/25.85 | 25.65/25.85/25.65/1.377134s | N/A | 23.265/bid | complete |
+| BANKNIFTY_CE | BUY | paper_underlying_support_reversal | 75 | 481 | -1560.00 | SL | no | ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2"] → ["runner_gap_v2","profit_lock_v2","trail_close_confirm_v2","partial_profit_v2","stop_quote_validation_v2"] | 512.85/507.45/507.45 | 505.95/507.45/506.9/1.388681s | N/A | 456.705/bid | complete |
+
+## Entry Features
+- RELIANCE_CE (ecffde7362b84096b18fe4c1f7223a70): regime=SIDEWAYS/0.27686321460640867%/0.24754332008102786%; pivot=None@None; near H/L=True/True; EMA/MACD/RSI/ADX=bullish/improving/above_50/above_threshold; option momentum=0.8148148148148148/option_premium_rising; prior U30/U60/O30/O60=0.3755445395823953/None/21.46892655367232/3.6144578313253017; signal=ecffde7362b84096b18fe4c1f7223a70@2026-11-13T10:05:13+05:30 premium=21.45; tier/lots/qty=stock/1/500; risk/cap=1080.0/1000.0; bucket=10:00-11:00; partial=single-lot-ineligible; MFE/MAE=0.5760368663594475@2026-11-13T10:12:15+05:30/0.0@2026-11-13T10:07:14.146486+05:30
+- HDFCBANK_PE (f997535b87d2460690d1e94d6c6802d6): regime=SIDEWAYS/0.17494532958450199%/0.21820448877805484%; pivot=None@None; near H/L=True/True; EMA/MACD/RSI/ADX=bearish/weakening/below_50/above_threshold; option momentum=0.7777777777777821/option_premium_rising_momentum_v2; prior U30/U60/O30/O60=0.01874765654292787/None/0.5291005291005346/29.692832764505116; signal=f997535b87d2460690d1e94d6c6802d6@2026-11-13T10:10:13+05:30 premium=18.9; tier/lots/qty=stock/1/650; risk/cap=1231.75/1000.0; bucket=10:00-11:00; partial=not-triggered; MFE/MAE=0.0@2026-11-13T10:12:13.629232+05:30/0.0@2026-11-13T10:12:13.629232+05:30
+- INFY_CE (67525f7e5d0545c7aee4c3cdcfa8a8ae): regime=SIDEWAYS/0.2952926871634611%/0.25250326512843635%; pivot=None@None; near H/L=True/True; EMA/MACD/RSI/ADX=bullish/improving/above_50/above_threshold; option momentum=0.8124999999999976/option_premium_rising; prior U30/U60/O30/O60=0.2612330198537016/None/7.3275862068965525/5.508474576271172; signal=67525f7e5d0545c7aee4c3cdcfa8a8ae@2026-11-13T10:33:13+05:30 premium=25.0; tier/lots/qty=stock/1/400; risk/cap=1026.0/1000.0; bucket=10:00-11:00; partial=not-triggered; MFE/MAE=0.0@2026-11-13T10:35:15.396084+05:30/0.0@2026-11-13T10:35:15.396084+05:30
+- BANKNIFTY_CE (c4d6221dcf0b40aea88af3cc22549a48): regime=SIDEWAYS/0.20073644212018504%/0.30049347469446447%; pivot=None@None; near H/L=True/True; EMA/MACD/RSI/ADX=bullish/improving/above_50/above_threshold; option momentum=0.10204081632653629/option_premium_rising; prior U30/U60/O30/O60=0.29474039574040045/None/18.45513413506015/12.509610104338286; signal=c4d6221dcf0b40aea88af3cc22549a48@2026-11-13T10:48:29+05:30 premium=512.85; tier/lots/qty=index/1/30; risk/cap=1520.7/3000.0; bucket=10:00-11:00; partial=not-triggered; MFE/MAE=0.0@2026-11-13T10:50:29.412606+05:30/0.0@2026-11-13T10:50:29.412606+05:30
+
+| Field | Populated | Share |
+| --- | ---: | ---: |
+| regime_label | 4/4 | 100.0% |
+| regime_range_pct | 4/4 | 100.0% |
+| regime_20_bar_move_pct | 4/4 | 100.0% |
+| pivot_count | 0/4 | 0.0% |
+| pivot_level | 0/4 | 0.0% |
+| distance_to_pivot_pct | 0/4 | 0.0% |
+| near_recent_high | 4/4 | 100.0% |
+| distance_to_recent_high_pct | 4/4 | 100.0% |
+| near_recent_low | 4/4 | 100.0% |
+| distance_to_recent_low_pct | 4/4 | 100.0% |
+| ema_fast_value | 4/4 | 100.0% |
+| ema_slow_value | 4/4 | 100.0% |
+| ema_state | 4/4 | 100.0% |
+| macd_value | 4/4 | 100.0% |
+| macd_state | 4/4 | 100.0% |
+| rsi_value | 4/4 | 100.0% |
+| rsi_state | 4/4 | 100.0% |
+| adx_value | 4/4 | 100.0% |
+| adx_state | 4/4 | 100.0% |
+| option_candle_body_ratio | 4/4 | 100.0% |
+| option_candle_body_ratio_threshold | 4/4 | 100.0% |
+| option_candle_direction_rule | 4/4 | 100.0% |
+| prior_30m_underlying_move_pct | 4/4 | 100.0% |
+| prior_60m_underlying_move_pct | 0/4 | 0.0% |
+| prior_30m_option_move_pct | 4/4 | 100.0% |
+| prior_60m_option_move_pct | 4/4 | 100.0% |
+| signal_id | 4/4 | 100.0% |
+| signal_uid | 4/4 | 100.0% |
+| signal_time | 4/4 | 100.0% |
+| signal_premium | 4/4 | 100.0% |
+| confirmation_time | 4/4 | 100.0% |
+| confirmation_ltp | 4/4 | 100.0% |
+| order_time | 4/4 | 100.0% |
+| fill_bid | 4/4 | 100.0% |
+| fill_ask | 4/4 | 100.0% |
+| fill_ltp | 4/4 | 100.0% |
+| fill_quote_age_seconds | 4/4 | 100.0% |
+| signal_to_fill_pct | 0/4 | 0.0% |
+| tier | 4/4 | 100.0% |
+| lot_size | 4/4 | 100.0% |
+| lots | 4/4 | 100.0% |
+| quantity | 4/4 | 100.0% |
+| risk_amount | 4/4 | 100.0% |
+| risk_cap | 4/4 | 100.0% |
+| time_of_day_bucket | 4/4 | 100.0% |
+| active_paper_change_flags | 4/4 | 100.0% |
+| paper_change_attributions | 4/4 | 100.0% |
+| partial_status | 4/4 | 100.0% |
+| mfe_r | 4/4 | 100.0% |
+| mfe_time | 4/4 | 100.0% |
+| mae_r | 4/4 | 100.0% |
+| mae_time | 4/4 | 100.0% |
+
+## Stop-out recovery
+
+Option R uses initial per-unit risk and one-minute option OHLC; checkpoint bids are the nearest valid archived quote after exit to each checkpoint, with quote age and sample offset shown. Underlying reversal means the captured one-minute range crossed the entry-time underlying reference against the option direction.
+
+| Trade | Exit type | Entry→exit seconds | ≤5m | Bid @ 5m | Bid @ 15m | Bid @ 30m | Bid @ 60m | Max/min R 60m | Max/min R close | Reclaimed entry | Reached +1R | Underlying reversed | Capture |
+| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| HDFCBANK_PE-2026-11-13T10:12:13.629137+05:30-BUY | initial_stop | 1713.368094 | no | 15.55 (age 1.382972s; offset 49.632s) | 16.00 (age 0.0s; offset 3.632s) | 16.35 (age 1.160473s; offset -5.368s) | 16.85 (age 1.141049s; offset 0.632s) | None/None | None/None | no | no | yes | incomplete |
+| INFY_CE-2026-11-13T10:35:15.396028+05:30-BUY | initial_stop | 1292.479993 | no | 22.40 (age 5.154982s; offset -8.48s) | 22.60 (age 3.411824s; offset -7.48s) | 21.15 (age 2.901776s; offset -5.48s) | 18.85 (age 6.139582s; offset 2.52s) | None/None | None/None | no | no | yes | incomplete |
+| BANKNIFTY_CE-2026-11-13T10:50:29.411239+05:30-BUY | initial_stop | 481.689399 | no | 441.55 (age 1.657632s; offset 2.311s) | 432.85 (age 0.412713s; offset 11.311s) | 425.15 (age 0.647909s; offset 14.311s) | 387.00 (age 1.13672s; offset 0.311s) | None/None | None/None | no | no | yes | incomplete |
+
+## Paper exit flag results
+
+| Flag | Tagged trades (W/L/BE) | Tagged P&L | Untagged trades (W/L/BE) | Untagged P&L |
+| --- | ---: | ---: | ---: | ---: |
+| runner_gap_v2 | 4 (1/3/0) | -3332.50 | 0 (0/0/0) | 0.00 |
+| profit_lock_v2 | 4 (1/3/0) | -3332.50 | 0 (0/0/0) | 0.00 |
+| trail_close_confirm_v2 | 4 (1/3/0) | -3332.50 | 0 (0/0/0) | 0.00 |
+| partial_profit_v2 | 4 (1/3/0) | -3332.50 | 0 (0/0/0) | 0.00 |
+| stop_quote_validation_v2 | 4 (1/3/0) | -3332.50 | 0 (0/0/0) | 0.00 |
+| stock_take_profit_v2 | 3 (1/2/0) | -1772.50 | 1 (0/1/0) | -1560.00 |
+
+## Paper exit flag rollback checks
+
+| Flag | Tagged trades | Threshold checks | Status |
+| --- | ---: | --- | --- |
+| runner_gap_v2 | 23 | runner_drawdowns=0 closed_trade_sessions=5/5; risk_overruns=0 days_at_or_below_-6000=0 | no rollback trigger |
+| profit_lock_v2 | 23 | risk_overruns=0 days_at_or_below_-6000=0; first_ten_old_rule_better=0 paired=10/10 missing=0 tagged=23/10 | no rollback trigger |
+| trail_close_confirm_v2 | 23 | risk_overruns=0 days_at_or_below_-6000=0; first_ten_old_rule_better=0 paired=10/10 missing=0 tagged=23/10 | no rollback trigger |
+| partial_profit_v2 | 16 | executed=0 accounting_errors=0 duplicate_partials=0 days_at_daily_loss_limit=0; first_ten_partial_off_better=0 paired=0/10 missing=0 eligible=0/10 | no rollback trigger |
+| stop_quote_validation_v2 | 16 | exit_fill_gap_rupees=0.2516; exit_fill_gap_pct=0.3576; guarded_quotes=0; fills_more_than_3pct_below_stop=1 | trade HDFCBANK_PE-2026-11-13T10:12:13.629137+05:30-BUY filled more than 3% below its stop trigger |
+| stock_take_profit_v2 | 13 | take_profit_exits=4 fill_minus_trigger_gap_avg=0.2440; capped_winner_exits_bid_more_than_0.5R_within_30m=3 quote_missing=0; tagged_daily_loss=2026-11-11:655.00, 2026-11-12:-792.50, 2026-11-13:-1772.50 days_at_limit=0; first_ten_paired_stock_pnl_delta_avg=NA paired=0/10 missing=10 eligible=13/10 | no rollback trigger |
+
+## Learning Feedback
+- Status: collecting_evidence (4/10 closed trades for the minimum screening sample).
+- 4/10 closed trades: below the minimum screening sample. Treat loss patterns as review hypotheses; do not tune strategy settings from this sample.
+- Repeated losing exit patterns to review: SL (3 losses / 3 trades, -4257.50 before costs)
+- These patterns are descriptive, not causal; paper P&L excludes unmodeled brokerage, taxes, and slippage.
+- No strategy or configuration settings are changed automatically.
+
+### Entry Rejections
+- OPTION_FILTER_WEAK_CANDLE_MOMENTUM: 218
+- accuracy_filter_rejected:volatility: 88
+- accuracy_filter_rejected:confirmation: 28
+- accuracy_filter_rejected:score<70: 3
+- OPTION_FILTER_PREMIUM_TOO_LOW:_7.55_<_12.0: 2
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1003.05_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1005.35_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1009.0_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1009.1_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1018.25_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1020.9_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1025.2_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1028.35_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1033.05_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1034.3_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1039.0_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1043.35_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1050.0_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1056.0_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1074.3_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1077.55_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1085.0_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1089.55_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1102.5_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1121.15_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_HIGH:_1142.2_>_1000.0: 1
+- OPTION_FILTER_PREMIUM_TOO_LOW:_11.3_<_12.0: 1
+- OPTION_FILTER_PREMIUM_TOO_LOW:_11.55_<_12.0: 1
+- OPTION_FILTER_PREMIUM_TOO_LOW:_11.5_<_12.0: 1
+- accuracy_filter_rejected:trading_hours: 1
+
+## HOLD Reasons
+- underlying_context_only: 3447
+- RSI in trend zone: 653
+- not_enough_bars: 522
+- EMA bearish: 474
+- Price near recent low: 474
+- EMA bullish: 441
+- Price near recent high: 441
+- MACD weakening: 305
+- MACD improving: 205
+- Trend momentum present: 126
+- RSI oversold against SELL: 70
+- Extended move: wait for a pullback or retest before entering: 58
+- NIFTY: Benchmark trend bearish; BUY blocked: 49
+- ADX is not rising: 22
+- NIFTY: Benchmark trend bullish; SELL blocked: 20
+- BANKNIFTY: Benchmark trend bullish; SELL blocked: 18
+- BANKNIFTY: Benchmark trend bearish; BUY blocked: 14
+- ADX rising and EMA spread expanding: 12
+- Trend continuation: compression and breakout-candle checks relaxed: 12
+- VWAP and higher-timeframe trend aligned: 12
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.070% < 0.250%: 10
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.088% < 0.250%: 10
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.019% < 0.250%: 10
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.051% < 0.250%: 9
+- RSI overbought against BUY: 8
+- Sideways regime: recent range 0.053% < 0.300% and 20-bar move 0.158% < 0.250%: 8
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.089% < 0.250%: 8
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.025% < 0.250%: 8
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.032% < 0.250%: 8
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.158% < 0.250%: 7
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.150% < 0.250%: 7
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.046% < 0.250%: 7
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.012% < 0.250%: 7
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.125% < 0.250%: 7
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.061% < 0.250%: 7
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.060% < 0.250%: 7
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.026% < 0.250%: 7
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.093% < 0.250%: 6
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.019% < 0.250%: 6
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.012% < 0.250%: 6
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.019% < 0.250%: 6
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.044% < 0.250%: 6
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.032% < 0.250%: 6
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.105% < 0.250%: 6
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.075% < 0.250%: 6
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.045% < 0.250%: 6
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.097% < 0.250%: 6
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.070% < 0.250%: 6
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.035% < 0.250%: 6
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.038% < 0.250%: 6
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.017% < 0.250%: 6
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.139% < 0.250%: 6
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.125% < 0.250%: 6
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.148% < 0.250%: 6
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.058% < 0.250%: 6
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.012% < 0.250%: 5
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.045% < 0.250%: 5
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.038% < 0.250%: 5
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.104% < 0.250%: 5
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.062% < 0.250%: 5
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.021% < 0.250%: 5
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.051% < 0.250%: 5
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.058% < 0.250%: 5
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.063% < 0.250%: 5
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.075% < 0.250%: 5
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.013% < 0.250%: 5
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.030% < 0.250%: 5
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.062% < 0.250%: 5
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.127% < 0.250%: 5
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.149% < 0.250%: 5
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.095% < 0.250%: 5
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.108% < 0.250%: 5
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.102% < 0.250%: 5
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.127% < 0.250%: 5
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.106% < 0.250%: 5
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.015% < 0.250%: 5
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.127% < 0.250%: 5
+- ADX too weak (10.6 < 11.0): 4
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.037% < 0.250%: 4
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.013% < 0.250%: 4
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.038% < 0.250%: 4
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.235% < 0.250%: 4
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.025% < 0.250%: 4
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.038% < 0.250%: 4
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.040% < 0.250%: 4
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.125% < 0.250%: 4
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.015% < 0.250%: 4
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.045% < 0.250%: 4
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.097% < 0.250%: 4
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.069% < 0.250%: 4
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.036% < 0.250%: 4
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.123% < 0.250%: 4
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.158% < 0.250%: 4
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.016% < 0.250%: 4
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.006% < 0.250%: 4
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.019% < 0.250%: 4
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.032% < 0.250%: 4
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.019% < 0.250%: 4
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.006% < 0.250%: 4
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.056% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.044% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.045% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.063% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.070% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.114% < 0.250%: 4
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.140% < 0.250%: 4
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.099% < 0.250%: 4
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.127% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.019% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.022% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.030% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.037% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.075% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.125% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.127% < 0.250%: 4
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.137% < 0.250%: 4
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.010% < 0.250%: 4
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.048% < 0.250%: 4
+- Sideways regime: recent range 0.078% < 0.300% and 20-bar move 0.048% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.009% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.018% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.044% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.079% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.096% < 0.250%: 4
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.175% < 0.250%: 4
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.062% < 0.250%: 4
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.221% < 0.250%: 4
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.009% < 0.250%: 4
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.025% < 0.250%: 4
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.057% < 0.250%: 4
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.089% < 0.250%: 4
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.044% < 0.250%: 4
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.026% < 0.250%: 4
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.140% < 0.250%: 4
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.032% < 0.250%: 4
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.057% < 0.250%: 4
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.145% < 0.250%: 4
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.048% < 0.250%: 4
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.084% < 0.250%: 4
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.069% < 0.250%: 4
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.078% < 0.250%: 4
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.093% < 0.250%: 4
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.012% < 0.250%: 4
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.056% < 0.250%: 4
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.150% < 0.250%: 4
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.156% < 0.250%: 4
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.231% < 0.250%: 4
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.041% < 0.250%: 4
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.029% < 0.250%: 4
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.038% < 0.250%: 4
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.102% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.022% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.042% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.083% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.097% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.116% < 0.250%: 4
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.195% < 0.250%: 4
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.000% < 0.250%: 4
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.019% < 0.250%: 4
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.025% < 0.250%: 4
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.037% < 0.250%: 4
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.050% < 0.250%: 4
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.066% < 0.250%: 4
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.134% < 0.250%: 4
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.173% < 0.250%: 4
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.219% < 0.250%: 4
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.019% < 0.250%: 4
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.041% < 0.250%: 4
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.075% < 0.250%: 4
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.095% < 0.250%: 4
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.006% < 0.250%: 4
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.090% < 0.250%: 4
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.118% < 0.250%: 4
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.127% < 0.250%: 4
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.023% < 0.250%: 4
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.030% < 0.250%: 4
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.044% < 0.250%: 4
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.193% < 0.250%: 4
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.032% < 0.250%: 4
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.075% < 0.250%: 4
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.087% < 0.250%: 4
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.123% < 0.250%: 4
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.162% < 0.250%: 4
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.118% < 0.250%: 4
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.030% < 0.250%: 4
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.119% < 0.250%: 4
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.180% < 0.250%: 4
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.075% < 0.250%: 4
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.105% < 0.250%: 4
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.135% < 0.250%: 4
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.079% < 0.250%: 4
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.097% < 0.250%: 4
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.184% < 0.250%: 4
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.245% < 0.250%: 4
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.075% < 0.250%: 4
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.087% < 0.250%: 4
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.125% < 0.250%: 4
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.137% < 0.250%: 4
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.037% < 0.250%: 4
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.042% < 0.250%: 4
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.000% < 0.250%: 4
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.051% < 0.250%: 4
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.077% < 0.250%: 4
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.193% < 0.250%: 4
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.035% < 0.250%: 4
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.079% < 0.250%: 4
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.056% < 0.250%: 4
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.102% < 0.250%: 4
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.000% < 0.250%: 4
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.005% < 0.250%: 4
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.226% < 0.250%: 4
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.082% < 0.250%: 4
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.162% < 0.250%: 4
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.012% < 0.250%: 4
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.000% < 0.250%: 4
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.162% < 0.250%: 4
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.127% < 0.250%: 4
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.115% < 0.250%: 4
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.015% < 0.250%: 4
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.217% < 0.250%: 4
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.166% < 0.250%: 4
+- Sideways regime: recent range 0.202% < 0.300% and 20-bar move 0.037% < 0.250%: 4
+- Sideways regime: recent range 0.211% < 0.300% and 20-bar move 0.105% < 0.250%: 4
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.157% < 0.250%: 4
+- Sideways regime: recent range 0.239% < 0.300% and 20-bar move 0.045% < 0.250%: 4
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.237% < 0.250%: 4
+- ADX too weak (8.0 < 11.0): 3
+- CANCELLED_NEW_LOW: 3
+- OBSERVATION_STARTED: 3
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.119% < 0.250%: 3
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.194% < 0.250%: 3
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.058% < 0.250%: 3
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.125% < 0.250%: 3
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.037% < 0.250%: 3
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.067% < 0.250%: 3
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.174% < 0.250%: 3
+- Sideways regime: recent range 0.050% < 0.300% and 20-bar move 0.017% < 0.250%: 3
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.083% < 0.250%: 3
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.096% < 0.250%: 3
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.120% < 0.250%: 3
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.090% < 0.250%: 3
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.121% < 0.250%: 3
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.045% < 0.250%: 3
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.175% < 0.250%: 3
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.232% < 0.250%: 3
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.082% < 0.250%: 3
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.095% < 0.250%: 3
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.164% < 0.250%: 3
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.029% < 0.250%: 3
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.172% < 0.250%: 3
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.032% < 0.250%: 3
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.064% < 0.250%: 3
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.134% < 0.250%: 3
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.076% < 0.250%: 3
+- Sideways regime: recent range 0.078% < 0.300% and 20-bar move 0.041% < 0.250%: 3
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.071% < 0.250%: 3
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.202% < 0.250%: 3
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.013% < 0.250%: 3
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.037% < 0.250%: 3
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.042% < 0.250%: 3
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.066% < 0.250%: 3
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.087% < 0.250%: 3
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.166% < 0.250%: 3
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.019% < 0.250%: 3
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.045% < 0.250%: 3
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.076% < 0.250%: 3
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.179% < 0.250%: 3
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.005% < 0.250%: 3
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.023% < 0.250%: 3
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.075% < 0.250%: 3
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.089% < 0.250%: 3
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.215% < 0.250%: 3
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.096% < 0.250%: 3
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.015% < 0.250%: 3
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.172% < 0.250%: 3
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.180% < 0.250%: 3
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.004% < 0.250%: 3
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.100% < 0.250%: 3
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.104% < 0.250%: 3
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.005% < 0.250%: 3
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.044% < 0.250%: 3
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.045% < 0.250%: 3
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.064% < 0.250%: 3
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.060% < 0.250%: 3
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.067% < 0.250%: 3
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.124% < 0.250%: 3
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.096% < 0.250%: 3
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.097% < 0.250%: 3
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.105% < 0.250%: 3
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.209% < 0.250%: 3
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.014% < 0.250%: 3
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.044% < 0.250%: 3
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.051% < 0.250%: 3
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.079% < 0.250%: 3
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.013% < 0.250%: 3
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.101% < 0.250%: 3
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.007% < 0.250%: 3
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.112% < 0.250%: 3
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.135% < 0.250%: 3
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.114% < 0.250%: 3
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.064% < 0.250%: 3
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.121% < 0.250%: 3
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.046% < 0.250%: 3
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.007% < 0.250%: 3
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.015% < 0.250%: 3
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.022% < 0.250%: 3
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.082% < 0.250%: 3
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.104% < 0.250%: 3
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.120% < 0.250%: 3
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.157% < 0.250%: 3
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.038% < 0.250%: 3
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.083% < 0.250%: 3
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.089% < 0.250%: 3
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.012% < 0.250%: 3
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.030% < 0.250%: 3
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.149% < 0.250%: 3
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.096% < 0.250%: 3
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.144% < 0.250%: 3
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.114% < 0.250%: 3
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.060% < 0.250%: 3
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.064% < 0.250%: 3
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.127% < 0.250%: 3
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.032% < 0.250%: 3
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.120% < 0.250%: 3
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.037% < 0.250%: 3
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.029% < 0.250%: 3
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.114% < 0.250%: 3
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.150% < 0.250%: 3
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.000% < 0.250%: 3
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.045% < 0.250%: 3
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.052% < 0.250%: 3
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.060% < 0.250%: 3
+- Sideways regime: recent range 0.147% < 0.300% and 20-bar move 0.038% < 0.250%: 3
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.190% < 0.250%: 3
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.022% < 0.250%: 3
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.153% < 0.250%: 3
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.004% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.022% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.045% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.090% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.104% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.127% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.139% < 0.250%: 3
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.172% < 0.250%: 3
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.075% < 0.250%: 3
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.090% < 0.250%: 3
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.206% < 0.250%: 3
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.037% < 0.250%: 3
+- Sideways regime: recent range 0.170% < 0.300% and 20-bar move 0.219% < 0.250%: 3
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.119% < 0.250%: 3
+- Sideways regime: recent range 0.180% < 0.300% and 20-bar move 0.142% < 0.250%: 3
+- Sideways regime: recent range 0.180% < 0.300% and 20-bar move 0.231% < 0.250%: 3
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.000% < 0.250%: 3
+- Sideways regime: recent range 0.184% < 0.300% and 20-bar move 0.114% < 0.250%: 3
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.000% < 0.250%: 3
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.171% < 0.250%: 3
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.187% < 0.250%: 3
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.129% < 0.250%: 3
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.079% < 0.250%: 3
+- Sideways regime: recent range 0.262% < 0.300% and 20-bar move 0.149% < 0.250%: 3
+- ADX too weak (10.1 < 11.0): 2
+- ADX too weak (10.5 < 11.0): 2
+- ADX too weak (10.9 < 11.0): 2
+- ADX too weak (11.0 < 11.0): 2
+- ADX too weak (8.9 < 11.0): 2
+- ADX too weak (9.2 < 11.0): 2
+- ADX too weak (9.6 < 11.0): 2
+- EMA spread is not expanding: 2
+- Sideways regime: recent range 0.019% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.020% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.021% < 0.300% and 20-bar move 0.011% < 0.250%: 2
+- Sideways regime: recent range 0.021% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.023% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.023% < 0.300% and 20-bar move 0.245% < 0.250%: 2
+- Sideways regime: recent range 0.024% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.025% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.026% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.028% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.029% < 0.300% and 20-bar move 0.104% < 0.250%: 2
+- Sideways regime: recent range 0.029% < 0.300% and 20-bar move 0.154% < 0.250%: 2
+- Sideways regime: recent range 0.030% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.032% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.033% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.033% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.033% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.036% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.011% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.020% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.040% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.141% < 0.250%: 2
+- Sideways regime: recent range 0.038% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.040% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.040% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.041% < 0.300% and 20-bar move 0.008% < 0.250%: 2
+- Sideways regime: recent range 0.041% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.043% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.043% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.141% < 0.250%: 2
+- Sideways regime: recent range 0.044% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.184% < 0.250%: 2
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.198% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.003% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.049% < 0.300% and 20-bar move 0.047% < 0.250%: 2
+- Sideways regime: recent range 0.050% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.078% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.119% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.146% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.152% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.228% < 0.250%: 2
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.247% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.127% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.199% < 0.250%: 2
+- Sideways regime: recent range 0.053% < 0.300% and 20-bar move 0.078% < 0.250%: 2
+- Sideways regime: recent range 0.053% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.053% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.054% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.054% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.072% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.016% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.109% < 0.250%: 2
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.004% < 0.250%: 2
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.058% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.059% < 0.300% and 20-bar move 0.040% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.157% < 0.250%: 2
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.040% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.110% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.122% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.128% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.061% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.062% < 0.300% and 20-bar move 0.103% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.001% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.003% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.063% < 0.300% and 20-bar move 0.104% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.048% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.147% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.098% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.023% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.145% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.214% < 0.250%: 2
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.224% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.067% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.119% < 0.250%: 2
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.124% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.136% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.142% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.168% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.176% < 0.250%: 2
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.187% < 0.250%: 2
+- Sideways regime: recent range 0.071% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.071% < 0.300% and 20-bar move 0.048% < 0.250%: 2
+- Sideways regime: recent range 0.071% < 0.300% and 20-bar move 0.232% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.200% < 0.250%: 2
+- Sideways regime: recent range 0.072% < 0.300% and 20-bar move 0.218% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.048% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.049% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.073% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.049% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.004% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.049% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.118% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.124% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.142% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.217% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.245% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.091% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.196% < 0.250%: 2
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.209% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.131% < 0.250%: 2
+- Sideways regime: recent range 0.077% < 0.300% and 20-bar move 0.183% < 0.250%: 2
+- Sideways regime: recent range 0.078% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.001% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.073% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.086% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.171% < 0.250%: 2
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.193% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.004% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.184% < 0.250%: 2
+- Sideways regime: recent range 0.080% < 0.300% and 20-bar move 0.242% < 0.250%: 2
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.131% < 0.250%: 2
+- Sideways regime: recent range 0.081% < 0.300% and 20-bar move 0.219% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.016% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.240% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.011% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.122% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.127% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.212% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.040% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.067% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.084% < 0.250%: 2
+- Sideways regime: recent range 0.084% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.039% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.133% < 0.250%: 2
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.230% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.010% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.169% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.170% < 0.250%: 2
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.039% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.048% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.084% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.091% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.161% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.184% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.170% < 0.250%: 2
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.171% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.004% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.023% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.129% < 0.250%: 2
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.228% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.128% < 0.250%: 2
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.227% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.085% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.138% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.249% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.071% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.084% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.129% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.154% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.164% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.171% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.182% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.196% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.228% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.241% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.242% < 0.250%: 2
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.246% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.016% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.122% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.133% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.161% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.217% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.092% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.128% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.135% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.171% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.176% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.213% < 0.250%: 2
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.228% < 0.250%: 2
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.078% < 0.250%: 2
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.099% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.099% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.099% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.099% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.099% < 0.300% and 20-bar move 0.115% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.011% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.033% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.040% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.151% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.154% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.170% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.218% < 0.250%: 2
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.244% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.072% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.193% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.196% < 0.250%: 2
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.240% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.010% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.115% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.146% < 0.250%: 2
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.164% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.008% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.142% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.178% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.189% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.192% < 0.250%: 2
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.013% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.047% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.086% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.092% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.138% < 0.250%: 2
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.174% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.027% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.039% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.180% < 0.250%: 2
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.199% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.010% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.135% < 0.250%: 2
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.071% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.124% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.170% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.178% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.220% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.110% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.110% < 0.300% and 20-bar move 0.016% < 0.250%: 2
+- Sideways regime: recent range 0.110% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.110% < 0.300% and 20-bar move 0.023% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.039% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.059% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.072% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.131% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.169% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.176% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.203% < 0.250%: 2
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.208% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.131% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.141% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.200% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.219% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.224% < 0.250%: 2
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.098% < 0.250%: 2
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.221% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.165% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.215% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.236% < 0.250%: 2
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.245% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.072% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.216% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.066% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.067% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.099% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.179% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.180% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.183% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.197% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.211% < 0.250%: 2
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.233% < 0.250%: 2
+- Sideways regime: recent range 0.117% < 0.300% and 20-bar move 0.003% < 0.250%: 2
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.187% < 0.250%: 2
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.212% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.168% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.209% < 0.250%: 2
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.071% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.176% < 0.250%: 2
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.223% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.023% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.174% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.039% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.128% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.151% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.157% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.210% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.211% < 0.250%: 2
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.220% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.178% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.157% < 0.250%: 2
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.015% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.152% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.068% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.071% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.168% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.161% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.174% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.183% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.220% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.130% < 0.300% and 20-bar move 0.213% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.080% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.131% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.169% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.230% < 0.250%: 2
+- Sideways regime: recent range 0.131% < 0.300% and 20-bar move 0.242% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.036% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.132% < 0.300% and 20-bar move 0.201% < 0.250%: 2
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.048% < 0.250%: 2
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.022% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.111% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.115% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.180% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.232% < 0.250%: 2
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.240% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.067% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.089% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.135% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.186% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.188% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.191% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.196% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.206% < 0.250%: 2
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.219% < 0.250%: 2
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.229% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.119% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.133% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.138% < 0.250%: 2
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.181% < 0.250%: 2
+- Sideways regime: recent range 0.138% < 0.300% and 20-bar move 0.029% < 0.250%: 2
+- Sideways regime: recent range 0.138% < 0.300% and 20-bar move 0.109% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.152% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.213% < 0.250%: 2
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.247% < 0.250%: 2
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.179% < 0.250%: 2
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.090% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.094% < 0.250%: 2
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.143% < 0.300% and 20-bar move 0.012% < 0.250%: 2
+- Sideways regime: recent range 0.143% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.143% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.143% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.143% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.016% < 0.250%: 2
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.145% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.145% < 0.300% and 20-bar move 0.084% < 0.250%: 2
+- Sideways regime: recent range 0.145% < 0.300% and 20-bar move 0.092% < 0.250%: 2
+- Sideways regime: recent range 0.145% < 0.300% and 20-bar move 0.124% < 0.250%: 2
+- Sideways regime: recent range 0.147% < 0.300% and 20-bar move 0.229% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.049% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.176% < 0.250%: 2
+- Sideways regime: recent range 0.148% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.118% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.127% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.141% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.165% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.178% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.212% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.236% < 0.250%: 2
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.092% < 0.250%: 2
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.152% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.152% < 0.300% and 20-bar move 0.023% < 0.250%: 2
+- Sideways regime: recent range 0.152% < 0.300% and 20-bar move 0.031% < 0.250%: 2
+- Sideways regime: recent range 0.152% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.064% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.235% < 0.250%: 2
+- Sideways regime: recent range 0.154% < 0.300% and 20-bar move 0.021% < 0.250%: 2
+- Sideways regime: recent range 0.155% < 0.300% and 20-bar move 0.034% < 0.250%: 2
+- Sideways regime: recent range 0.155% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.155% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.155% < 0.300% and 20-bar move 0.248% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.072% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.119% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.193% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.237% < 0.250%: 2
+- Sideways regime: recent range 0.156% < 0.300% and 20-bar move 0.243% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.142% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.157% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.216% < 0.250%: 2
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.239% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.018% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.053% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.171% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.188% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.228% < 0.250%: 2
+- Sideways regime: recent range 0.159% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.159% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.159% < 0.300% and 20-bar move 0.045% < 0.250%: 2
+- Sideways regime: recent range 0.160% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.160% < 0.300% and 20-bar move 0.197% < 0.250%: 2
+- Sideways regime: recent range 0.161% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.161% < 0.300% and 20-bar move 0.179% < 0.250%: 2
+- Sideways regime: recent range 0.161% < 0.300% and 20-bar move 0.209% < 0.250%: 2
+- Sideways regime: recent range 0.161% < 0.300% and 20-bar move 0.235% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.065% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.075% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.110% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.130% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.187% < 0.250%: 2
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.190% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.055% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.105% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.132% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.163% < 0.300% and 20-bar move 0.189% < 0.250%: 2
+- Sideways regime: recent range 0.165% < 0.300% and 20-bar move 0.096% < 0.250%: 2
+- Sideways regime: recent range 0.165% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.092% < 0.250%: 2
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.184% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.205% < 0.250%: 2
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.210% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.058% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.118% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.124% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.206% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.211% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.221% < 0.250%: 2
+- Sideways regime: recent range 0.168% < 0.300% and 20-bar move 0.237% < 0.250%: 2
+- Sideways regime: recent range 0.169% < 0.300% and 20-bar move 0.024% < 0.250%: 2
+- Sideways regime: recent range 0.169% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.170% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.170% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.038% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.083% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.099% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.133% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.170% < 0.250%: 2
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.219% < 0.250%: 2
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.159% < 0.250%: 2
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.201% < 0.250%: 2
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.209% < 0.250%: 2
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.232% < 0.250%: 2
+- Sideways regime: recent range 0.173% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.174% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.006% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.025% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.227% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.079% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.208% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.217% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.245% < 0.250%: 2
+- Sideways regime: recent range 0.176% < 0.300% and 20-bar move 0.250% < 0.250%: 2
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.076% < 0.250%: 2
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.152% < 0.250%: 2
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.218% < 0.250%: 2
+- Sideways regime: recent range 0.178% < 0.300% and 20-bar move 0.108% < 0.250%: 2
+- Sideways regime: recent range 0.178% < 0.300% and 20-bar move 0.128% < 0.250%: 2
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.051% < 0.250%: 2
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.114% < 0.250%: 2
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.180% < 0.300% and 20-bar move 0.180% < 0.250%: 2
+- Sideways regime: recent range 0.180% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.086% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.107% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.109% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.181% < 0.300% and 20-bar move 0.181% < 0.250%: 2
+- Sideways regime: recent range 0.182% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.182% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.182% < 0.300% and 20-bar move 0.101% < 0.250%: 2
+- Sideways regime: recent range 0.182% < 0.300% and 20-bar move 0.173% < 0.250%: 2
+- Sideways regime: recent range 0.182% < 0.300% and 20-bar move 0.243% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.061% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.071% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.165% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.174% < 0.250%: 2
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.183% < 0.250%: 2
+- Sideways regime: recent range 0.184% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.184% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.185% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.185% < 0.300% and 20-bar move 0.202% < 0.250%: 2
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.030% < 0.250%: 2
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.188% < 0.300% and 20-bar move 0.230% < 0.250%: 2
+- Sideways regime: recent range 0.190% < 0.300% and 20-bar move 0.203% < 0.250%: 2
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.017% < 0.250%: 2
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.084% < 0.250%: 2
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.235% < 0.250%: 2
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.236% < 0.250%: 2
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.244% < 0.250%: 2
+- Sideways regime: recent range 0.192% < 0.300% and 20-bar move 0.035% < 0.250%: 2
+- Sideways regime: recent range 0.192% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.192% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.192% < 0.300% and 20-bar move 0.113% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.135% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.169% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.184% < 0.250%: 2
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.250% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.120% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.213% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.225% < 0.250%: 2
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.236% < 0.250%: 2
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.074% < 0.250%: 2
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.154% < 0.250%: 2
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.216% < 0.250%: 2
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.220% < 0.250%: 2
+- Sideways regime: recent range 0.196% < 0.300% and 20-bar move 0.110% < 0.250%: 2
+- Sideways regime: recent range 0.197% < 0.300% and 20-bar move 0.223% < 0.250%: 2
+- Sideways regime: recent range 0.198% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.028% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.116% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.139% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.162% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.190% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.194% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.217% < 0.250%: 2
+- Sideways regime: recent range 0.199% < 0.300% and 20-bar move 0.237% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.020% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.063% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.077% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.200% < 0.300% and 20-bar move 0.187% < 0.250%: 2
+- Sideways regime: recent range 0.201% < 0.300% and 20-bar move 0.233% < 0.250%: 2
+- Sideways regime: recent range 0.202% < 0.300% and 20-bar move 0.229% < 0.250%: 2
+- Sideways regime: recent range 0.203% < 0.300% and 20-bar move 0.008% < 0.250%: 2
+- Sideways regime: recent range 0.203% < 0.300% and 20-bar move 0.032% < 0.250%: 2
+- Sideways regime: recent range 0.204% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.204% < 0.300% and 20-bar move 0.242% < 0.250%: 2
+- Sideways regime: recent range 0.206% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.206% < 0.300% and 20-bar move 0.219% < 0.250%: 2
+- Sideways regime: recent range 0.208% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.208% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.208% < 0.300% and 20-bar move 0.152% < 0.250%: 2
+- Sideways regime: recent range 0.208% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.209% < 0.300% and 20-bar move 0.067% < 0.250%: 2
+- Sideways regime: recent range 0.209% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.209% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.210% < 0.300% and 20-bar move 0.166% < 0.250%: 2
+- Sideways regime: recent range 0.210% < 0.300% and 20-bar move 0.217% < 0.250%: 2
+- Sideways regime: recent range 0.212% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.212% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.212% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.212% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.212% < 0.300% and 20-bar move 0.188% < 0.250%: 2
+- Sideways regime: recent range 0.213% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.213% < 0.300% and 20-bar move 0.102% < 0.250%: 2
+- Sideways regime: recent range 0.213% < 0.300% and 20-bar move 0.153% < 0.250%: 2
+- Sideways regime: recent range 0.213% < 0.300% and 20-bar move 0.164% < 0.250%: 2
+- Sideways regime: recent range 0.214% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.214% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.216% < 0.300% and 20-bar move 0.041% < 0.250%: 2
+- Sideways regime: recent range 0.216% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.216% < 0.300% and 20-bar move 0.091% < 0.250%: 2
+- Sideways regime: recent range 0.216% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.037% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.165% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.208% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.226% < 0.250%: 2
+- Sideways regime: recent range 0.217% < 0.300% and 20-bar move 0.250% < 0.250%: 2
+- Sideways regime: recent range 0.218% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.218% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.218% < 0.300% and 20-bar move 0.088% < 0.250%: 2
+- Sideways regime: recent range 0.219% < 0.300% and 20-bar move 0.140% < 0.250%: 2
+- Sideways regime: recent range 0.219% < 0.300% and 20-bar move 0.206% < 0.250%: 2
+- Sideways regime: recent range 0.220% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.220% < 0.300% and 20-bar move 0.210% < 0.250%: 2
+- Sideways regime: recent range 0.221% < 0.300% and 20-bar move 0.014% < 0.250%: 2
+- Sideways regime: recent range 0.221% < 0.300% and 20-bar move 0.129% < 0.250%: 2
+- Sideways regime: recent range 0.221% < 0.300% and 20-bar move 0.133% < 0.250%: 2
+- Sideways regime: recent range 0.221% < 0.300% and 20-bar move 0.209% < 0.250%: 2
+- Sideways regime: recent range 0.222% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.054% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.062% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.183% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.238% < 0.250%: 2
+- Sideways regime: recent range 0.224% < 0.300% and 20-bar move 0.247% < 0.250%: 2
+- Sideways regime: recent range 0.225% < 0.300% and 20-bar move 0.249% < 0.250%: 2
+- Sideways regime: recent range 0.226% < 0.300% and 20-bar move 0.042% < 0.250%: 2
+- Sideways regime: recent range 0.226% < 0.300% and 20-bar move 0.087% < 0.250%: 2
+- Sideways regime: recent range 0.226% < 0.300% and 20-bar move 0.148% < 0.250%: 2
+- Sideways regime: recent range 0.226% < 0.300% and 20-bar move 0.174% < 0.250%: 2
+- Sideways regime: recent range 0.227% < 0.300% and 20-bar move 0.009% < 0.250%: 2
+- Sideways regime: recent range 0.227% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.227% < 0.300% and 20-bar move 0.106% < 0.250%: 2
+- Sideways regime: recent range 0.230% < 0.300% and 20-bar move 0.070% < 0.250%: 2
+- Sideways regime: recent range 0.230% < 0.300% and 20-bar move 0.093% < 0.250%: 2
+- Sideways regime: recent range 0.230% < 0.300% and 20-bar move 0.247% < 0.250%: 2
+- Sideways regime: recent range 0.232% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.232% < 0.300% and 20-bar move 0.091% < 0.250%: 2
+- Sideways regime: recent range 0.234% < 0.300% and 20-bar move 0.143% < 0.250%: 2
+- Sideways regime: recent range 0.235% < 0.300% and 20-bar move 0.232% < 0.250%: 2
+- Sideways regime: recent range 0.238% < 0.300% and 20-bar move 0.020% < 0.250%: 2
+- Sideways regime: recent range 0.239% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.240% < 0.300% and 20-bar move 0.095% < 0.250%: 2
+- Sideways regime: recent range 0.240% < 0.300% and 20-bar move 0.158% < 0.250%: 2
+- Sideways regime: recent range 0.240% < 0.300% and 20-bar move 0.231% < 0.250%: 2
+- Sideways regime: recent range 0.241% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.241% < 0.300% and 20-bar move 0.005% < 0.250%: 2
+- Sideways regime: recent range 0.241% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.241% < 0.300% and 20-bar move 0.097% < 0.250%: 2
+- Sideways regime: recent range 0.241% < 0.300% and 20-bar move 0.121% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.044% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.112% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.137% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.156% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.181% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.205% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.212% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.213% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.225% < 0.250%: 2
+- Sideways regime: recent range 0.243% < 0.300% and 20-bar move 0.241% < 0.250%: 2
+- Sideways regime: recent range 0.244% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.244% < 0.300% and 20-bar move 0.043% < 0.250%: 2
+- Sideways regime: recent range 0.244% < 0.300% and 20-bar move 0.144% < 0.250%: 2
+- Sideways regime: recent range 0.246% < 0.300% and 20-bar move 0.056% < 0.250%: 2
+- Sideways regime: recent range 0.246% < 0.300% and 20-bar move 0.222% < 0.250%: 2
+- Sideways regime: recent range 0.246% < 0.300% and 20-bar move 0.238% < 0.250%: 2
+- Sideways regime: recent range 0.247% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.248% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.248% < 0.300% and 20-bar move 0.123% < 0.250%: 2
+- Sideways regime: recent range 0.248% < 0.300% and 20-bar move 0.150% < 0.250%: 2
+- Sideways regime: recent range 0.248% < 0.300% and 20-bar move 0.175% < 0.250%: 2
+- Sideways regime: recent range 0.249% < 0.300% and 20-bar move 0.208% < 0.250%: 2
+- Sideways regime: recent range 0.250% < 0.300% and 20-bar move 0.218% < 0.250%: 2
+- Sideways regime: recent range 0.251% < 0.300% and 20-bar move 0.177% < 0.250%: 2
+- Sideways regime: recent range 0.251% < 0.300% and 20-bar move 0.218% < 0.250%: 2
+- Sideways regime: recent range 0.253% < 0.300% and 20-bar move 0.057% < 0.250%: 2
+- Sideways regime: recent range 0.253% < 0.300% and 20-bar move 0.190% < 0.250%: 2
+- Sideways regime: recent range 0.254% < 0.300% and 20-bar move 0.117% < 0.250%: 2
+- Sideways regime: recent range 0.255% < 0.300% and 20-bar move 0.125% < 0.250%: 2
+- Sideways regime: recent range 0.255% < 0.300% and 20-bar move 0.134% < 0.250%: 2
+- Sideways regime: recent range 0.256% < 0.300% and 20-bar move 0.100% < 0.250%: 2
+- Sideways regime: recent range 0.256% < 0.300% and 20-bar move 0.239% < 0.250%: 2
+- Sideways regime: recent range 0.260% < 0.300% and 20-bar move 0.198% < 0.250%: 2
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.046% < 0.250%: 2
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.060% < 0.250%: 2
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.149% < 0.250%: 2
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.172% < 0.250%: 2
+- Sideways regime: recent range 0.266% < 0.300% and 20-bar move 0.160% < 0.250%: 2
+- Sideways regime: recent range 0.268% < 0.300% and 20-bar move 0.052% < 0.250%: 2
+- Sideways regime: recent range 0.268% < 0.300% and 20-bar move 0.082% < 0.250%: 2
+- Sideways regime: recent range 0.268% < 0.300% and 20-bar move 0.250% < 0.250%: 2
+- Sideways regime: recent range 0.275% < 0.300% and 20-bar move 0.119% < 0.250%: 2
+- Sideways regime: recent range 0.280% < 0.300% and 20-bar move 0.000% < 0.250%: 2
+- Sideways regime: recent range 0.280% < 0.300% and 20-bar move 0.212% < 0.250%: 2
+- Sideways regime: recent range 0.281% < 0.300% and 20-bar move 0.050% < 0.250%: 2
+- Sideways regime: recent range 0.281% < 0.300% and 20-bar move 0.069% < 0.250%: 2
+- Sideways regime: recent range 0.281% < 0.300% and 20-bar move 0.081% < 0.250%: 2
+- Sideways regime: recent range 0.281% < 0.300% and 20-bar move 0.167% < 0.250%: 2
+- Sideways regime: recent range 0.285% < 0.300% and 20-bar move 0.215% < 0.250%: 2
+- Sideways regime: recent range 0.290% < 0.300% and 20-bar move 0.002% < 0.250%: 2
+- Sideways regime: recent range 0.290% < 0.300% and 20-bar move 0.007% < 0.250%: 2
+- Sideways regime: recent range 0.290% < 0.300% and 20-bar move 0.019% < 0.250%: 2
+- Sideways regime: recent range 0.290% < 0.300% and 20-bar move 0.026% < 0.250%: 2
+- Sideways regime: recent range 0.292% < 0.300% and 20-bar move 0.157% < 0.250%: 2
+- Sideways regime: recent range 0.292% < 0.300% and 20-bar move 0.185% < 0.250%: 2
+- Sideways regime: recent range 0.292% < 0.300% and 20-bar move 0.241% < 0.250%: 2
+- Sideways regime: recent range 0.299% < 0.300% and 20-bar move 0.249% < 0.250%: 2
+- ADX too weak (9.1 < 11.0): 1
+- Sideways regime: recent range 0.030% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.042% < 0.250%: 1
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.090% < 0.250%: 1
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.116% < 0.250%: 1
+- Sideways regime: recent range 0.037% < 0.300% and 20-bar move 0.198% < 0.250%: 1
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.071% < 0.250%: 1
+- Sideways regime: recent range 0.042% < 0.300% and 20-bar move 0.112% < 0.250%: 1
+- Sideways regime: recent range 0.045% < 0.300% and 20-bar move 0.111% < 0.250%: 1
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.021% < 0.250%: 1
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.042% < 0.250%: 1
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.058% < 0.250%: 1
+- Sideways regime: recent range 0.046% < 0.300% and 20-bar move 0.170% < 0.250%: 1
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.082% < 0.250%: 1
+- Sideways regime: recent range 0.048% < 0.300% and 20-bar move 0.122% < 0.250%: 1
+- Sideways regime: recent range 0.050% < 0.300% and 20-bar move 0.000% < 0.250%: 1
+- Sideways regime: recent range 0.050% < 0.300% and 20-bar move 0.021% < 0.250%: 1
+- Sideways regime: recent range 0.050% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.063% < 0.250%: 1
+- Sideways regime: recent range 0.051% < 0.300% and 20-bar move 0.157% < 0.250%: 1
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.022% < 0.250%: 1
+- Sideways regime: recent range 0.052% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.053% < 0.300% and 20-bar move 0.072% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.045% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.059% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.089% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.092% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.102% < 0.250%: 1
+- Sideways regime: recent range 0.055% < 0.300% and 20-bar move 0.127% < 0.250%: 1
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.082% < 0.250%: 1
+- Sideways regime: recent range 0.056% < 0.300% and 20-bar move 0.156% < 0.250%: 1
+- Sideways regime: recent range 0.057% < 0.300% and 20-bar move 0.026% < 0.250%: 1
+- Sideways regime: recent range 0.060% < 0.300% and 20-bar move 0.094% < 0.250%: 1
+- Sideways regime: recent range 0.064% < 0.300% and 20-bar move 0.093% < 0.250%: 1
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.015% < 0.250%: 1
+- Sideways regime: recent range 0.065% < 0.300% and 20-bar move 0.035% < 0.250%: 1
+- Sideways regime: recent range 0.066% < 0.300% and 20-bar move 0.182% < 0.250%: 1
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.127% < 0.250%: 1
+- Sideways regime: recent range 0.067% < 0.300% and 20-bar move 0.180% < 0.250%: 1
+- Sideways regime: recent range 0.068% < 0.300% and 20-bar move 0.101% < 0.250%: 1
+- Sideways regime: recent range 0.069% < 0.300% and 20-bar move 0.100% < 0.250%: 1
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.057% < 0.250%: 1
+- Sideways regime: recent range 0.070% < 0.300% and 20-bar move 0.146% < 0.250%: 1
+- Sideways regime: recent range 0.071% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.074% < 0.300% and 20-bar move 0.030% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.000% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.007% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.023% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.076% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.088% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.119% < 0.250%: 1
+- Sideways regime: recent range 0.075% < 0.300% and 20-bar move 0.181% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.027% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.032% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.044% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.062% < 0.250%: 1
+- Sideways regime: recent range 0.076% < 0.300% and 20-bar move 0.113% < 0.250%: 1
+- Sideways regime: recent range 0.078% < 0.300% and 20-bar move 0.020% < 0.250%: 1
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.046% < 0.250%: 1
+- Sideways regime: recent range 0.079% < 0.300% and 20-bar move 0.060% < 0.250%: 1
+- Sideways regime: recent range 0.082% < 0.300% and 20-bar move 0.181% < 0.250%: 1
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.032% < 0.250%: 1
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.076% < 0.250%: 1
+- Sideways regime: recent range 0.083% < 0.300% and 20-bar move 0.133% < 0.250%: 1
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.085% < 0.250%: 1
+- Sideways regime: recent range 0.085% < 0.300% and 20-bar move 0.138% < 0.250%: 1
+- Sideways regime: recent range 0.086% < 0.300% and 20-bar move 0.189% < 0.250%: 1
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.017% < 0.250%: 1
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.067% < 0.250%: 1
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.094% < 0.250%: 1
+- Sideways regime: recent range 0.087% < 0.300% and 20-bar move 0.183% < 0.250%: 1
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.006% < 0.250%: 1
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.032% < 0.250%: 1
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.074% < 0.250%: 1
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.175% < 0.250%: 1
+- Sideways regime: recent range 0.088% < 0.300% and 20-bar move 0.206% < 0.250%: 1
+- Sideways regime: recent range 0.089% < 0.300% and 20-bar move 0.119% < 0.250%: 1
+- Sideways regime: recent range 0.090% < 0.300% and 20-bar move 0.003% < 0.250%: 1
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.074% < 0.250%: 1
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.089% < 0.250%: 1
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.095% < 0.250%: 1
+- Sideways regime: recent range 0.091% < 0.300% and 20-bar move 0.132% < 0.250%: 1
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.088% < 0.250%: 1
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.115% < 0.250%: 1
+- Sideways regime: recent range 0.092% < 0.300% and 20-bar move 0.117% < 0.250%: 1
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.000% < 0.250%: 1
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.082% < 0.250%: 1
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.122% < 0.250%: 1
+- Sideways regime: recent range 0.093% < 0.300% and 20-bar move 0.157% < 0.250%: 1
+- Sideways regime: recent range 0.094% < 0.300% and 20-bar move 0.100% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.004% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.032% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.108% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.127% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.147% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.190% < 0.250%: 1
+- Sideways regime: recent range 0.095% < 0.300% and 20-bar move 0.214% < 0.250%: 1
+- Sideways regime: recent range 0.096% < 0.300% and 20-bar move 0.053% < 0.250%: 1
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.067% < 0.250%: 1
+- Sideways regime: recent range 0.097% < 0.300% and 20-bar move 0.142% < 0.250%: 1
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.105% < 0.250%: 1
+- Sideways regime: recent range 0.098% < 0.300% and 20-bar move 0.135% < 0.250%: 1
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.005% < 0.250%: 1
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.015% < 0.250%: 1
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.112% < 0.250%: 1
+- Sideways regime: recent range 0.100% < 0.300% and 20-bar move 0.131% < 0.250%: 1
+- Sideways regime: recent range 0.101% < 0.300% and 20-bar move 0.242% < 0.250%: 1
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.006% < 0.250%: 1
+- Sideways regime: recent range 0.102% < 0.300% and 20-bar move 0.019% < 0.250%: 1
+- Sideways regime: recent range 0.103% < 0.300% and 20-bar move 0.049% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.012% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.045% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.087% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.089% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.105% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.108% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.118% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.185% < 0.250%: 1
+- Sideways regime: recent range 0.104% < 0.300% and 20-bar move 0.225% < 0.250%: 1
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.030% < 0.250%: 1
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.123% < 0.250%: 1
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.149% < 0.250%: 1
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.150% < 0.250%: 1
+- Sideways regime: recent range 0.105% < 0.300% and 20-bar move 0.217% < 0.250%: 1
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.045% < 0.250%: 1
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.046% < 0.250%: 1
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.187% < 0.250%: 1
+- Sideways regime: recent range 0.106% < 0.300% and 20-bar move 0.218% < 0.250%: 1
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.076% < 0.250%: 1
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.143% < 0.250%: 1
+- Sideways regime: recent range 0.107% < 0.300% and 20-bar move 0.216% < 0.250%: 1
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.000% < 0.250%: 1
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.013% < 0.250%: 1
+- Sideways regime: recent range 0.108% < 0.300% and 20-bar move 0.086% < 0.250%: 1
+- Sideways regime: recent range 0.109% < 0.300% and 20-bar move 0.035% < 0.250%: 1
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.082% < 0.250%: 1
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.088% < 0.250%: 1
+- Sideways regime: recent range 0.111% < 0.300% and 20-bar move 0.157% < 0.250%: 1
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.025% < 0.250%: 1
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.087% < 0.250%: 1
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.167% < 0.250%: 1
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.193% < 0.250%: 1
+- Sideways regime: recent range 0.112% < 0.300% and 20-bar move 0.209% < 0.250%: 1
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.083% < 0.250%: 1
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.106% < 0.250%: 1
+- Sideways regime: recent range 0.113% < 0.300% and 20-bar move 0.202% < 0.250%: 1
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.088% < 0.250%: 1
+- Sideways regime: recent range 0.114% < 0.300% and 20-bar move 0.089% < 0.250%: 1
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.077% < 0.250%: 1
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.128% < 0.250%: 1
+- Sideways regime: recent range 0.115% < 0.300% and 20-bar move 0.232% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.025% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.033% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.083% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.112% < 0.250%: 1
+- Sideways regime: recent range 0.116% < 0.300% and 20-bar move 0.124% < 0.250%: 1
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.135% < 0.250%: 1
+- Sideways regime: recent range 0.118% < 0.300% and 20-bar move 0.178% < 0.250%: 1
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.109% < 0.250%: 1
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.156% < 0.250%: 1
+- Sideways regime: recent range 0.119% < 0.300% and 20-bar move 0.167% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.000% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.007% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.012% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.108% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.130% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.154% < 0.250%: 1
+- Sideways regime: recent range 0.120% < 0.300% and 20-bar move 0.202% < 0.250%: 1
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.025% < 0.250%: 1
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.057% < 0.250%: 1
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.106% < 0.250%: 1
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.129% < 0.250%: 1
+- Sideways regime: recent range 0.121% < 0.300% and 20-bar move 0.157% < 0.250%: 1
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.144% < 0.250%: 1
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.155% < 0.250%: 1
+- Sideways regime: recent range 0.122% < 0.300% and 20-bar move 0.168% < 0.250%: 1
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.111% < 0.250%: 1
+- Sideways regime: recent range 0.123% < 0.300% and 20-bar move 0.206% < 0.250%: 1
+- Sideways regime: recent range 0.124% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.005% < 0.250%: 1
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.019% < 0.250%: 1
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.125% < 0.300% and 20-bar move 0.148% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.024% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.071% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.131% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.184% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.194% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.217% < 0.250%: 1
+- Sideways regime: recent range 0.126% < 0.300% and 20-bar move 0.244% < 0.250%: 1
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.020% < 0.250%: 1
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.133% < 0.250%: 1
+- Sideways regime: recent range 0.127% < 0.300% and 20-bar move 0.187% < 0.250%: 1
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.008% < 0.250%: 1
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.088% < 0.250%: 1
+- Sideways regime: recent range 0.128% < 0.300% and 20-bar move 0.209% < 0.250%: 1
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.006% < 0.250%: 1
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.041% < 0.250%: 1
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.045% < 0.250%: 1
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.091% < 0.250%: 1
+- Sideways regime: recent range 0.129% < 0.300% and 20-bar move 0.181% < 0.250%: 1
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.007% < 0.250%: 1
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.036% < 0.250%: 1
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.079% < 0.250%: 1
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.100% < 0.250%: 1
+- Sideways regime: recent range 0.133% < 0.300% and 20-bar move 0.129% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.015% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.067% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.075% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.104% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.121% < 0.250%: 1
+- Sideways regime: recent range 0.134% < 0.300% and 20-bar move 0.195% < 0.250%: 1
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.155% < 0.250%: 1
+- Sideways regime: recent range 0.135% < 0.300% and 20-bar move 0.205% < 0.250%: 1
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.062% < 0.250%: 1
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.066% < 0.250%: 1
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.151% < 0.250%: 1
+- Sideways regime: recent range 0.136% < 0.300% and 20-bar move 0.175% < 0.250%: 1
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.012% < 0.250%: 1
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.062% < 0.250%: 1
+- Sideways regime: recent range 0.137% < 0.300% and 20-bar move 0.067% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.019% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.023% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.049% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.056% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.069% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.104% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.111% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.153% < 0.250%: 1
+- Sideways regime: recent range 0.139% < 0.300% and 20-bar move 0.190% < 0.250%: 1
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.095% < 0.250%: 1
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.102% < 0.250%: 1
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.176% < 0.250%: 1
+- Sideways regime: recent range 0.140% < 0.300% and 20-bar move 0.211% < 0.250%: 1
+- Sideways regime: recent range 0.141% < 0.300% and 20-bar move 0.091% < 0.250%: 1
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.034% < 0.250%: 1
+- Sideways regime: recent range 0.142% < 0.300% and 20-bar move 0.053% < 0.250%: 1
+- Sideways regime: recent range 0.144% < 0.300% and 20-bar move 0.225% < 0.250%: 1
+- Sideways regime: recent range 0.146% < 0.300% and 20-bar move 0.122% < 0.250%: 1
+- Sideways regime: recent range 0.146% < 0.300% and 20-bar move 0.178% < 0.250%: 1
+- Sideways regime: recent range 0.146% < 0.300% and 20-bar move 0.203% < 0.250%: 1
+- Sideways regime: recent range 0.147% < 0.300% and 20-bar move 0.096% < 0.250%: 1
+- Sideways regime: recent range 0.147% < 0.300% and 20-bar move 0.143% < 0.250%: 1
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.070% < 0.250%: 1
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.194% < 0.250%: 1
+- Sideways regime: recent range 0.149% < 0.300% and 20-bar move 0.201% < 0.250%: 1
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.047% < 0.250%: 1
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.069% < 0.250%: 1
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.081% < 0.250%: 1
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.152% < 0.250%: 1
+- Sideways regime: recent range 0.150% < 0.300% and 20-bar move 0.162% < 0.250%: 1
+- Sideways regime: recent range 0.151% < 0.300% and 20-bar move 0.050% < 0.250%: 1
+- Sideways regime: recent range 0.152% < 0.300% and 20-bar move 0.202% < 0.250%: 1
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.021% < 0.250%: 1
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.051% < 0.250%: 1
+- Sideways regime: recent range 0.153% < 0.300% and 20-bar move 0.153% < 0.250%: 1
+- Sideways regime: recent range 0.154% < 0.300% and 20-bar move 0.008% < 0.250%: 1
+- Sideways regime: recent range 0.154% < 0.300% and 20-bar move 0.155% < 0.250%: 1
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.007% < 0.250%: 1
+- Sideways regime: recent range 0.157% < 0.300% and 20-bar move 0.148% < 0.250%: 1
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.096% < 0.250%: 1
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.138% < 0.250%: 1
+- Sideways regime: recent range 0.158% < 0.300% and 20-bar move 0.246% < 0.250%: 1
+- Sideways regime: recent range 0.159% < 0.300% and 20-bar move 0.130% < 0.250%: 1
+- Sideways regime: recent range 0.160% < 0.300% and 20-bar move 0.138% < 0.250%: 1
+- Sideways regime: recent range 0.162% < 0.300% and 20-bar move 0.188% < 0.250%: 1
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.043% < 0.250%: 1
+- Sideways regime: recent range 0.164% < 0.300% and 20-bar move 0.097% < 0.250%: 1
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.038% < 0.250%: 1
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.053% < 0.250%: 1
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.070% < 0.250%: 1
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.133% < 0.250%: 1
+- Sideways regime: recent range 0.166% < 0.300% and 20-bar move 0.174% < 0.250%: 1
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.200% < 0.250%: 1
+- Sideways regime: recent range 0.167% < 0.300% and 20-bar move 0.212% < 0.250%: 1
+- Sideways regime: recent range 0.169% < 0.300% and 20-bar move 0.181% < 0.250%: 1
+- Sideways regime: recent range 0.170% < 0.300% and 20-bar move 0.162% < 0.250%: 1
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.057% < 0.250%: 1
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.179% < 0.250%: 1
+- Sideways regime: recent range 0.171% < 0.300% and 20-bar move 0.190% < 0.250%: 1
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.234% < 0.250%: 1
+- Sideways regime: recent range 0.172% < 0.300% and 20-bar move 0.241% < 0.250%: 1
+- Sideways regime: recent range 0.175% < 0.300% and 20-bar move 0.218% < 0.250%: 1
+- Sideways regime: recent range 0.177% < 0.300% and 20-bar move 0.103% < 0.250%: 1
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.082% < 0.250%: 1
+- Sideways regime: recent range 0.179% < 0.300% and 20-bar move 0.232% < 0.250%: 1
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.052% < 0.250%: 1
+- Sideways regime: recent range 0.183% < 0.300% and 20-bar move 0.091% < 0.250%: 1
+- Sideways regime: recent range 0.184% < 0.300% and 20-bar move 0.141% < 0.250%: 1
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.104% < 0.250%: 1
+- Sideways regime: recent range 0.187% < 0.300% and 20-bar move 0.240% < 0.250%: 1
+- Sideways regime: recent range 0.188% < 0.300% and 20-bar move 0.070% < 0.250%: 1
+- Sideways regime: recent range 0.190% < 0.300% and 20-bar move 0.061% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.041% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.046% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.059% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.146% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.187% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.192% < 0.250%: 1
+- Sideways regime: recent range 0.191% < 0.300% and 20-bar move 0.233% < 0.250%: 1
+- Sideways regime: recent range 0.192% < 0.300% and 20-bar move 0.149% < 0.250%: 1
+- Sideways regime: recent range 0.193% < 0.300% and 20-bar move 0.210% < 0.250%: 1
+- Sideways regime: recent range 0.194% < 0.300% and 20-bar move 0.062% < 0.250%: 1
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.052% < 0.250%: 1
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.175% < 0.250%: 1
+- Sideways regime: recent range 0.195% < 0.300% and 20-bar move 0.237% < 0.250%: 1
+- Sideways regime: recent range 0.197% < 0.300% and 20-bar move 0.057% < 0.250%: 1
+- Sideways regime: recent range 0.197% < 0.300% and 20-bar move 0.070% < 0.250%: 1
+- Sideways regime: recent range 0.201% < 0.300% and 20-bar move 0.196% < 0.250%: 1
+- Sideways regime: recent range 0.203% < 0.300% and 20-bar move 0.028% < 0.250%: 1
+- Sideways regime: recent range 0.209% < 0.300% and 20-bar move 0.090% < 0.250%: 1
+- Sideways regime: recent range 0.209% < 0.300% and 20-bar move 0.201% < 0.250%: 1
+- Sideways regime: recent range 0.215% < 0.300% and 20-bar move 0.029% < 0.250%: 1
+- Sideways regime: recent range 0.215% < 0.300% and 20-bar move 0.039% < 0.250%: 1
+- Sideways regime: recent range 0.221% < 0.300% and 20-bar move 0.201% < 0.250%: 1
+- Sideways regime: recent range 0.222% < 0.300% and 20-bar move 0.031% < 0.250%: 1
+- Sideways regime: recent range 0.230% < 0.300% and 20-bar move 0.242% < 0.250%: 1
+- Sideways regime: recent range 0.242% < 0.300% and 20-bar move 0.203% < 0.250%: 1
+- Sideways regime: recent range 0.245% < 0.300% and 20-bar move 0.200% < 0.250%: 1
+- Sideways regime: recent range 0.245% < 0.300% and 20-bar move 0.201% < 0.250%: 1
+- Sideways regime: recent range 0.245% < 0.300% and 20-bar move 0.241% < 0.250%: 1
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.037% < 0.250%: 1
+- Sideways regime: recent range 0.261% < 0.300% and 20-bar move 0.143% < 0.250%: 1
+- Sideways regime: recent range 0.267% < 0.300% and 20-bar move 0.178% < 0.250%: 1
+- Sideways regime: recent range 0.268% < 0.300% and 20-bar move 0.248% < 0.250%: 1
+- Sideways regime: recent range 0.269% < 0.300% and 20-bar move 0.192% < 0.250%: 1
+- Sideways regime: recent range 0.272% < 0.300% and 20-bar move 0.240% < 0.250%: 1
+- Sideways regime: recent range 0.272% < 0.300% and 20-bar move 0.246% < 0.250%: 1
+- Sideways regime: recent range 0.277% < 0.300% and 20-bar move 0.248% < 0.250%: 1
+- Sideways regime: recent range 0.295% < 0.300% and 20-bar move 0.200% < 0.250%: 1
+- Sideways regime: recent range 0.298% < 0.300% and 20-bar move 0.209% < 0.250%: 1
+
+## Paper Shadow
+- Directional candidates: 0
+- Rejection reasons:
+- None recorded
+
+## Stop-Out Re-entry Diagnostics
+- Stop events: 3
+- Stop events followed by a re-entry: 0
+- Recovered above entry within 30 / 60 minutes: 0 / 0
+- Stop events with missing option candles: 0
+- First failed condition by stop event: {"accuracy filter": 0, "cooldown": 0, "lock": 0, "no EMA cross": 1, "option filter": 0, "other": 0, "premium-low cancel": 2, "risk guard": 0, "score": 0}
+
+## Review Notes
+- Reason counts are mentions; one decision may contain multiple reasons.
+- Stop-loss exits count only records whose reason is exactly STOP_LOSS; TRAILING_STOP is excluded even when exit_reason_category is SL.
+- The 4 closed-trade daily sample is below the 10-trade screening minimum; do not infer a durable edge.
+- Change at most one paper-only strategy/filter variable after a cost-aware, out-of-sample review.
