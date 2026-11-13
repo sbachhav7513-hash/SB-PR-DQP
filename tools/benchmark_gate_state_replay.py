@@ -8,6 +8,7 @@ import csv
 import gzip
 import json
 import os
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -348,6 +349,11 @@ def _tick_replay(
         if durations
         else 0.0
     )
+    counts["callback_p99_ms"] = (
+        sorted(durations)[int((len(durations) - 1) * 0.99)] * 1000
+        if durations
+        else 0.0
+    )
     return counts
 
 
@@ -424,6 +430,7 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline")
     parser.add_argument("--final")
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--source-root")
@@ -439,6 +446,8 @@ def _main() -> None:
         return
     if not args.baseline or not args.final:
         parser.error("--baseline and --final are required")
+    if args.repeats < 1:
+        parser.error("--repeats must be at least 1")
 
     repo_root = Path(args.repo_root).resolve()
     data_paths = {
@@ -455,9 +464,13 @@ def _main() -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="gate-state-replay-"))
     worktrees: list[Path] = []
     results = []
+    baseline_worktree = temp_root / "baseline"
+    final_worktree = temp_root / "final"
     try:
-        for label, revision in (("baseline", args.baseline), ("final", args.final)):
-            worktree = temp_root / label
+        for worktree, revision in (
+            (baseline_worktree, args.baseline),
+            (final_worktree, args.final),
+        ):
             subprocess.run(
                 [
                     "git",
@@ -473,17 +486,134 @@ def _main() -> None:
                 text=True,
             )
             worktrees.append(worktree)
+        for index in range(args.repeats):
             results.append(
-                _run_revision(
-                    Path(__file__).resolve(),
-                    worktree,
-                    repo_root,
-                    temp_root / f"output-{label}",
-                    revision,
-                    data_paths,
-                )
+                {
+                    "group": "comparison",
+                    "label": "baseline",
+                    "iteration": index + 1,
+                    **_run_revision(
+                        Path(__file__).resolve(),
+                        baseline_worktree,
+                        repo_root,
+                        temp_root / f"output-baseline-{index + 1}",
+                        args.baseline,
+                        data_paths,
+                    ),
+                }
             )
-        print(json.dumps(results, indent=2))
+            results.append(
+                {
+                    "group": "comparison",
+                    "label": "final",
+                    "iteration": index + 1,
+                    **_run_revision(
+                        Path(__file__).resolve(),
+                        final_worktree,
+                        repo_root,
+                        temp_root / f"output-final-{index + 1}",
+                        args.final,
+                        data_paths,
+                    ),
+                }
+            )
+            results.append(
+                {
+                    "group": "aa_noise",
+                    "label": "baseline",
+                    "iteration": index + 1,
+                    **_run_revision(
+                        Path(__file__).resolve(),
+                        baseline_worktree,
+                        repo_root,
+                        temp_root / f"output-aa-{index + 1}-a",
+                        args.baseline,
+                        data_paths,
+                    ),
+                }
+            )
+            results.append(
+                {
+                    "group": "aa_noise",
+                    "label": "baseline",
+                    "iteration": index + 1,
+                    **_run_revision(
+                        Path(__file__).resolve(),
+                        baseline_worktree,
+                        repo_root,
+                        temp_root / f"output-aa-{index + 1}-b",
+                        args.baseline,
+                        data_paths,
+                    ),
+                }
+            )
+
+        def summarize(group: str, label: str | None, metrics: tuple[str, ...]) -> dict[str, Any]:
+            selected = [
+                result
+                for result in results
+                if result["group"] == group
+                and (label is None or result["label"] == label)
+            ]
+            summaries = {}
+            for metric in metrics:
+                values = [
+                    result["writer"][metric]
+                    if metric.startswith("jsonl_") or metric == "writer_cpu_ms"
+                    else result["ticks"][metric]
+                    for result in selected
+                ]
+                summaries[metric] = {
+                    "median": statistics.median(values),
+                    "min": min(values),
+                    "max": max(values),
+                }
+            return {"runs": len(selected), "metrics": summaries}
+
+        output = {
+            "run_order": [
+                f'{result["group"]}:{result["label"]}:{result["iteration"]}'
+                for result in results
+            ],
+            "comparison": {
+                label: summarize(
+                    "comparison",
+                    label,
+                    (
+                        "jsonl_bytes_per_decision",
+                        "writer_cpu_ms",
+                        "callback_p95_ms",
+                        "callback_p99_ms",
+                    ),
+                )
+                for label in ("baseline", "final")
+            },
+            "aa_noise": summarize(
+                "aa_noise",
+                None,
+                ("writer_cpu_ms", "callback_p95_ms", "callback_p99_ms"),
+            ),
+            "comparison_runs": [
+                {
+                    "label": result["label"],
+                    "iteration": result["iteration"],
+                    "callback_max_ms": result["ticks"]["callback_max_ms"],
+                }
+                for result in results
+                if result["group"] == "comparison"
+            ],
+            "aa_runs": [
+                {
+                    "iteration": result["iteration"],
+                    "writer_cpu_ms": result["writer"]["writer_cpu_ms"],
+                    "callback_p95_ms": result["ticks"]["callback_p95_ms"],
+                    "callback_p99_ms": result["ticks"]["callback_p99_ms"],
+                }
+                for result in results
+                if result["group"] == "aa_noise"
+            ],
+        }
+        print(json.dumps(output, indent=2))
     finally:
         for worktree in reversed(worktrees):
             subprocess.run(
