@@ -7084,17 +7084,25 @@ class KiteTradingBot:
             if range_outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
                 self.accuracy_filters.record_entry(symbol, time.time())
                 return
+        if len(bars) < 30:
+            logger.debug(f"[{symbol}] Not enough bars yet ({len(bars)}/30)")
+            self._record_decision(
+                symbol,
+                bar,
+                bars,
+                None,
+                "HOLD",
+                "not_enough_bars",
+            )
+            return
+
         signal_bars = bars
         support_underlying_bars: list[Bar] = []
         if self._options_enabled() and "_" in symbol:
             underlying = symbol.rsplit("_", 1)[0].upper()
             underlying_token = self.config["instrument_tokens"].get(underlying)
             underlying_bars = (
-                self.bar_builder.get_bars(
-                    underlying_token,
-                    limit=50,
-                    include_prior_sessions=True,
-                )
+                self.bar_builder.get_bars(underlying_token, limit=50)
                 if underlying_token is not None
                 else []
             )
@@ -7107,7 +7115,7 @@ class KiteTradingBot:
                 self._record_decision(
                     symbol,
                     bar,
-                    underlying_bars,
+                    bars,
                     None,
                     "HOLD",
                     "underlying_signal_unavailable",
@@ -7118,20 +7126,6 @@ class KiteTradingBot:
                 support_underlying_bars = self.bar_builder.get_bars(
                     underlying_token, limit=100
                 )
-        else:
-            if len(signal_bars) < 30:
-                logger.debug(
-                    f"[{symbol}] Not enough bars yet ({len(signal_bars)}/30)"
-                )
-                self._record_decision(
-                    symbol,
-                    bar,
-                    signal_bars,
-                    None,
-                    "HOLD",
-                    "not_enough_bars",
-                )
-                return
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in signal_bars]

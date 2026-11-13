@@ -79,10 +79,8 @@ decision rows also include their scorer window and gate-pass timestamps;
 trade rows include `order_time`. The engine's returned score object is not
 modified by this telemetry.
 
-At live startup, option signal evaluation retains recent prior-session
-underlying bars for its 30-bar warm-up; regular-session bar reads remain
-session-scoped. Post-confirmation filter failures record the specific
-`filter_name` alongside `cancellation_sub_reason`.
+Post-confirmation filter failures record the specific `filter_name` alongside
+`cancellation_sub_reason`.
 
 The observer uses the existing asynchronous paper-journal writer and fails
 open: a telemetry or persistence error is counted/logged without interrupting
