@@ -17,7 +17,7 @@ import threading
 import time
 from uuid import uuid4
 from collections import deque
-from datetime import datetime, time as time_type, timedelta, timezone
+from datetime import date, datetime, time as time_type, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
@@ -61,7 +61,10 @@ from .strategy_config import (
 from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
 from .scorer_observability import (
+    DIRECTIONAL_GATE_STATE_NAMES,
     GATE_STATE_NAMES,
+    OPTION_SIDE_GATE_NAMES,
+    SYMBOL_STATE_GATE_NAMES,
     add_score_adjustment,
     build_independent_bar_gate_state,
     build_gate_state,
@@ -3584,6 +3587,1051 @@ class KiteTradingBot:
             )
         )
 
+    @staticmethod
+    def _gate_evaluation(
+        passed: Optional[bool],
+        observed_value: Any,
+        threshold: Any,
+        reason_code: Optional[str] = None,
+    ) -> dict:
+        return {
+            "passed": passed,
+            "observed_value": observed_value,
+            "threshold": threshold,
+            "reason_code": reason_code,
+        }
+
+    def _gate_evaluation_time(self, timestamp: datetime) -> datetime:
+        callback_time = self._journal_datetime(
+            getattr(self, "_bar_callback_time", None)
+        )
+        if callback_time is not None:
+            return callback_time
+        bar_time = self._journal_datetime(timestamp) or timestamp
+        interval = int(
+            (getattr(self, "config", {}) or {}).get(
+                "bar_interval_seconds", 60
+            )
+        )
+        if bar_time.tzinfo is None:
+            bar_time = bar_time.replace(tzinfo=IST)
+        return bar_time + timedelta(seconds=max(interval, 0))
+
+    def _symbol_account_gate_measurements(
+        self, symbol: str, now: datetime
+    ) -> dict:
+        manager = getattr(self, "intraday_manager", None)
+        if manager is None:
+            return {
+                "blocker_results": {
+                    name: self._gate_evaluation(
+                        None, None, None, "account_state_unavailable"
+                    )
+                    for name in SYMBOL_STATE_GATE_NAMES
+                },
+                "stop_reentry_result": self._gate_evaluation(
+                    None, None, None, "account_state_unavailable"
+                ),
+                "ema_reentry_result": self._gate_evaluation(
+                    None, None, None, "account_state_unavailable"
+                ),
+            }
+
+        config = getattr(self, "config", {}) or {}
+        active_positions = getattr(manager, "active_positions", {}) or {}
+        session_trades = getattr(manager, "session_trade_symbols", set())
+        has_position = symbol in active_positions
+        was_traded = symbol in session_trades
+        stop_time = getattr(manager, "session_loss_stop_times", {}).get(symbol)
+        trade_count = int(
+            getattr(manager, "session_trade_counts", {}).get(
+                symbol, int(was_traded)
+            )
+        )
+        stop_reentry_enabled = bool(
+            config.get("stop_reentry_enabled", False)
+            and self._options_enabled()
+            and symbol.endswith(("_CE", "_PE"))
+        )
+        stop_cooldown = float(
+            getattr(self, "stop_reentry_cooldown_minutes", 15) * 60
+        )
+        stop_elapsed = (
+            (now - stop_time).total_seconds() if stop_time is not None else None
+        )
+        stop_reentry_available = (
+            stop_reentry_enabled
+            and was_traded
+            and trade_count == 1
+            and stop_time is not None
+            and stop_elapsed is not None
+            and stop_elapsed >= stop_cooldown
+        )
+        ema_state = getattr(self, "_ema_reentry_states", {}).get(symbol, {})
+        ema_reentry_enabled = self._ema_reentry_enabled()
+        ema_reentry_available = (
+            ema_state.get("status") in {"observing", "triggered"}
+            and ema_reentry_enabled
+        )
+        symbol_unlocked = (
+            not has_position
+            and (
+                not was_traded
+                or stop_reentry_available
+                or ema_reentry_available
+            )
+            and symbol not in getattr(manager, "session_reversal_symbols", set())
+        )
+
+        cooldown_reasons = {}
+        accuracy_filters = getattr(self, "accuracy_filters", None)
+        last_entry = getattr(accuracy_filters, "last_entry_time", {}).get(symbol)
+        if last_entry is not None:
+            remaining = float(
+                getattr(accuracy_filters, "COOLDOWN_SECONDS", 300)
+            ) - (now.timestamp() - float(last_entry))
+            if remaining > 0:
+                cooldown_reasons["entry_cooldown_seconds"] = remaining
+        recent_loss = getattr(manager, "recent_loss_symbols", {}).get(symbol)
+        consecutive_losses = int(getattr(manager, "consecutive_losses", 0))
+        if recent_loss is not None and consecutive_losses >= 2:
+            remaining = float(
+                getattr(manager, "loss_cooldown_seconds", 1800)
+            ) - (now - recent_loss).total_seconds()
+            if remaining > 0:
+                cooldown_reasons["recent_loss_cooldown_seconds"] = remaining
+        if stop_reentry_enabled and was_traded and stop_elapsed is not None:
+            remaining = stop_cooldown - stop_elapsed
+            if remaining > 0:
+                cooldown_reasons["stop_reentry_cooldown_seconds"] = remaining
+
+        daily_max_loss = float(getattr(manager, "daily_max_loss", 0.0))
+        daily_pnl = float(getattr(manager, "daily_pnl", 0.0))
+        realized_losses = float(getattr(manager, "daily_realized_losses", 0.0))
+        try:
+            open_risk = float(manager.open_position_risk())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            open_risk = None
+        account_size = float(
+            config.get("account_size", getattr(manager, "account_size", 100000.0))
+        )
+        open_risk_cap = (
+            account_size * float(config.get("max_open_risk_pct", 4.0)) / 100.0
+        )
+        performance = getattr(manager, "symbol_performance", {}).get(symbol, {})
+        trades = int(performance.get("trades", 0))
+        win_rate = float(performance.get("win_rate", 100.0))
+        minimum_trades = int(getattr(manager, "min_symbol_trades_for_cap", 5))
+        minimum_win_rate = float(getattr(manager, "symbol_min_win_rate", 35.0))
+        daily_loss_ok = (
+            daily_pnl > -daily_max_loss
+            and realized_losses < daily_max_loss
+            and open_risk is not None
+            and realized_losses + open_risk <= daily_max_loss + 1e-6
+        )
+        return {
+            "blocker_results": {
+                "session_trade_lock": self._gate_evaluation(
+                    symbol_unlocked,
+                    {
+                        "active_position": has_position,
+                        "session_trade_count": trade_count,
+                        "stop_reentry_available": stop_reentry_available,
+                        "ema_reentry_available": ema_reentry_available,
+                    },
+                    "unused trade slot or eligible reentry",
+                ),
+                "cooldown": self._gate_evaluation(
+                    not cooldown_reasons,
+                    cooldown_reasons or {"active": False},
+                    {
+                        "entry_seconds": getattr(
+                            accuracy_filters, "COOLDOWN_SECONDS", 300
+                        ),
+                        "loss_seconds": getattr(
+                            manager, "loss_cooldown_seconds", 1800
+                        ),
+                        "stop_reentry_seconds": stop_cooldown,
+                    },
+                ),
+                "daily_loss": self._gate_evaluation(
+                    daily_loss_ok,
+                    {
+                        "daily_pnl": daily_pnl,
+                        "realized_losses": realized_losses,
+                        "open_risk": open_risk,
+                    },
+                    {"max_loss": daily_max_loss},
+                ),
+                "consecutive_loss": self._gate_evaluation(
+                    consecutive_losses
+                    < int(getattr(manager, "max_consecutive_losses", 3)),
+                    consecutive_losses,
+                    int(getattr(manager, "max_consecutive_losses", 3)),
+                ),
+                "open_risk_limit": self._gate_evaluation(
+                    open_risk is not None
+                    and open_risk < open_risk_cap + 1e-9
+                    and daily_loss_ok,
+                    open_risk,
+                    open_risk_cap,
+                    "open_risk_unavailable" if open_risk is None else None,
+                ),
+                "symbol_win_rate": self._gate_evaluation(
+                    trades < minimum_trades or win_rate >= minimum_win_rate,
+                    {"trades": trades, "win_rate_pct": win_rate},
+                    {
+                        "minimum_trades": minimum_trades,
+                        "minimum_win_rate_pct": minimum_win_rate,
+                    },
+                ),
+            },
+            "stop_reentry_result": (
+                self._gate_evaluation(
+                    stop_reentry_available,
+                    {
+                        "elapsed_seconds": stop_elapsed,
+                        "cooldown_seconds": stop_cooldown,
+                    },
+                    "stop re-entry lock expired",
+                )
+                if stop_reentry_enabled and stop_time is not None
+                else self._gate_evaluation(
+                    None, None, None, "no_stop_reentry_candidate"
+                )
+            ),
+            "ema_reentry_result": (
+                self._gate_evaluation(
+                    ema_reentry_available,
+                    ema_state.get("status"),
+                    "observing or triggered EMA re-entry",
+                )
+                if ema_reentry_enabled
+                else self._gate_evaluation(
+                    None, None, None, "ema_reentry_disabled"
+                )
+            ),
+        }
+
+    def _bar_blocker_measurements(
+        self,
+        symbol: str,
+        direction: str,
+        timestamp: datetime,
+        history: list[dict],
+        scorer_inputs: dict,
+        reasons: list[str],
+        support_evaluation: Optional[dict] = None,
+        benchmark_context: Optional[dict] = None,
+        account_measurements: Optional[dict] = None,
+    ) -> dict:
+        config = getattr(self, "config", {}) or {}
+        local_time = self._gate_evaluation_time(timestamp)
+        local_time = (
+            local_time.replace(tzinfo=IST)
+            if local_time.tzinfo is None
+            else local_time.astimezone(IST)
+        )
+        minutes = local_time.hour * 60 + local_time.minute
+        manager = getattr(self, "intraday_manager", None)
+        market_open = getattr(
+            manager, "MARKET_OPEN", time_type(9, 15)
+        )
+        market_close = getattr(
+            manager, "MARKET_CLOSE", time_type(15, 30)
+        )
+        market_open_minutes = market_open.hour * 60 + market_open.minute
+        market_close_minutes = market_close.hour * 60 + market_close.minute
+        regular_session = (
+            market_session_state([], now=local_time) == "REGULAR_SESSION"
+        )
+        cutoff_minutes = int(
+            config.get("entry_cutoff_minutes_before_close", 45)
+        )
+        cutoff_block = (
+            cutoff_minutes > 0
+            and market_open_minutes <= minutes < market_close_minutes
+            and minutes >= market_close_minutes - cutoff_minutes
+        )
+        cutoff_at = market_close_minutes - cutoff_minutes
+        cutoff_time = (
+            f"{cutoff_at // 60:02d}:{cutoff_at % 60:02d}"
+            if cutoff_minutes > 0
+            else None
+        )
+        late_block = self._late_window_blocked(local_time)
+        results = {
+            "entry_window": self._gate_evaluation(
+                regular_session
+                and not cutoff_block
+                and not late_block,
+                {
+                    "time": local_time.isoformat(),
+                    "regular_session": regular_session,
+                    "cutoff_block": cutoff_block,
+                    "late_window_block": late_block,
+                },
+                {
+                    "market_close_time": market_close.strftime("%H:%M"),
+                    "late_window_enabled": bool(
+                        config.get("late_window_enabled", True)
+                    ),
+                    "late_window_start": config.get("late_window_start", "12:00"),
+                    "late_window_end": config.get("late_window_end", "13:00"),
+                    "entry_cutoff_minutes_before_close": cutoff_minutes,
+                    "entry_cutoff_time": cutoff_time,
+                },
+            )
+        }
+        gate_reasons = {}
+        breakout_key = (
+            "near_recent_high" if direction == "BUY" else "near_recent_low"
+        )
+        breakout_value = scorer_inputs.get(breakout_key)
+        if isinstance(breakout_value, bool):
+            results["breakout_quality"] = self._gate_evaluation(
+                breakout_value,
+                breakout_value,
+                f"{breakout_key}=true",
+            )
+        else:
+            gate_reasons["breakout_quality"] = "breakout_inputs_unavailable"
+        bar_count = len(history)
+        if bar_count < 30:
+            gate_reasons["bar_warmup"] = "insufficient_bars"
+
+        required = (
+            "ema_fast_value", "ema_slow_value", "rsi_value",
+            "macd_value", "macd_previous_value",
+        )
+        available = [
+            name for name in required if scorer_inputs.get(name) is not None
+        ]
+        results["indicator_availability"] = self._gate_evaluation(
+            len(available) == len(required),
+            available,
+            required,
+            "evaluated" if len(available) == len(required)
+            else "missing_required_indicators",
+        )
+        if bar_count >= 30:
+            closes = [
+                float(item["close"]) for item in history if "close" in item
+            ]
+            fast = scorer_inputs.get("ema_fast_value")
+            slow = scorer_inputs.get("ema_slow_value")
+            macd = scorer_inputs.get("macd_value")
+            previous_macd = scorer_inputs.get("macd_previous_value")
+            if len(closes) >= 20 and all(
+                value is not None for value in (fast, slow, macd, previous_macd)
+            ):
+                strength = abs(closes[-1] - closes[-20]) / max(closes[-20], 1e-9)
+                proximity = float(config.get("signal_proximity_pct", 0.005))
+                recent = closes[-11:-1]
+                passed = (
+                    direction == "BUY"
+                    and fast > slow
+                    and closes[-1] > closes[-20]
+                    and strength > float(config.get("min_trend_strength", 0.02))
+                    and macd >= 0
+                    and macd >= previous_macd - 1e-9
+                    and recent
+                    and closes[-1] >= max(recent) * (1.0 - proximity)
+                ) or (
+                    direction == "SELL"
+                    and fast < slow
+                    and closes[-1] < closes[-20]
+                    and strength > float(config.get("min_trend_strength", 0.02))
+                    and macd <= 0
+                    and macd <= previous_macd + 1e-9
+                    and recent
+                    and closes[-1] <= min(recent) * (1.0 + proximity)
+                )
+                results["trend_setup"] = self._gate_evaluation(
+                    bool(passed),
+                    {"trend_strength": strength, "direction": direction},
+                    {
+                        "minimum_trend_strength": config.get(
+                            "min_trend_strength", 0.02
+                        ),
+                        "price_proximity_pct": proximity,
+                    },
+                )
+            else:
+                gate_reasons["trend_setup"] = "required_trend_inputs_unavailable"
+        else:
+            gate_reasons["trend_setup"] = "insufficient_bars"
+
+        reason_text = " ".join(str(item) for item in reasons).lower()
+        if isinstance(benchmark_context, dict):
+            context_result = benchmark_context.get(direction, {})
+            if isinstance(context_result, dict) and isinstance(
+                context_result.get("passed"), bool
+            ):
+                results["benchmark_context"] = context_result
+            else:
+                gate_reasons["benchmark_context"] = (
+                    context_result.get("reason_code", "benchmark_context_unavailable")
+                    if isinstance(context_result, dict)
+                    else "benchmark_context_unavailable"
+                )
+        elif (
+            "benchmark trend bearish; buy blocked" in reason_text
+            or "benchmark trend bullish; sell blocked" in reason_text
+        ):
+            results["benchmark_context"] = self._gate_evaluation(
+                False,
+                "opposing_benchmark_trend",
+                "direction aligned with benchmark",
+                "opposing_benchmark_context",
+            )
+        else:
+            gate_reasons["benchmark_context"] = "benchmark_history_unavailable"
+        news_rejection = any(
+            "news" in str(item).lower() and "block" in str(item).lower()
+            for item in reasons
+        )
+        results["news_filter"] = self._gate_evaluation(
+            not news_rejection,
+            "blocked" if news_rejection else "not_blocked",
+            "no news rejection",
+            "evaluated" if getattr(self, "news_monitor", None) else "news_filter_disabled",
+        )
+        if bar_count >= 2:
+            current_close = float(history[-1].get("close", 0) or 0)
+            previous_close = float(history[-2].get("close", 0) or 0)
+            results["accuracy_confirmation"] = self._gate_evaluation(
+                current_close > previous_close
+                if direction == "BUY"
+                else current_close < previous_close,
+                {
+                    "current_close": current_close,
+                    "previous_close": previous_close,
+                },
+                "current close above previous for BUY; below for SELL",
+            )
+        else:
+            gate_reasons["accuracy_confirmation"] = "confirmation_bars_unavailable"
+
+        option_symbol = (
+            symbol
+            if symbol.endswith(("_CE", "_PE"))
+            else f"{symbol}_{'CE' if direction == 'BUY' else 'PE'}"
+        )
+        pending_key = (
+            option_symbol,
+            "CE" if direction == "BUY" else "PE",
+        )
+        pending = getattr(self, "_pending_entries", {})
+        results["pending_entry_lock"] = self._gate_evaluation(
+            pending_key not in pending,
+            pending_key in pending,
+            "no pending signal for selected leg",
+        )
+        pending_entry = pending.get(pending_key)
+        if isinstance(pending_entry, dict):
+            confirmation_start = self._journal_datetime(
+                pending_entry.get("confirmation_start")
+            )
+            if confirmation_start is None:
+                gate_reasons["confirmation_window"] = (
+                    "confirmation_start_unavailable"
+                )
+            else:
+                confirmation_deadline = confirmation_start + timedelta(
+                    minutes=1, seconds=5
+                )
+                results["confirmation_window"] = self._gate_evaluation(
+                    local_time <= confirmation_deadline,
+                    local_time.isoformat(),
+                    confirmation_deadline.isoformat(),
+                    "evaluated",
+                )
+        else:
+            gate_reasons["confirmation_window"] = "confirmation_not_pending"
+        results["manual_entry_pause"] = self._gate_evaluation(
+            not bool(getattr(self, "_telegram_entries_paused", False)),
+            bool(getattr(self, "_telegram_entries_paused", False)),
+            False,
+        )
+        support = support_evaluation or getattr(
+            self, "_support_reversal_eval_by_symbol", {}
+        ).get(symbol, {})
+        if support.get("evaluated"):
+            if not config.get("support_reversal_enabled", False):
+                gate_reasons["support_reversal_eligibility"] = (
+                    "support_reversal_disabled"
+                )
+            else:
+                results["support_reversal_eligibility"] = self._gate_evaluation(
+                    bool(
+                        support.get("candidate")
+                        and support.get("signal") == direction
+                    ),
+                    support.get("signal"),
+                    f"eligible {direction} support/reversal candidate",
+                )
+        else:
+            gate_reasons["support_reversal_eligibility"] = (
+                support.get("reason_code")
+                or "support_reversal_not_evaluated"
+            )
+        if "option_range_breakout" not in reason_text:
+            gate_reasons["option_range_breakout"] = "range_breakout_not_applicable"
+        else:
+            results["option_range_breakout"] = self._gate_evaluation(
+                "rejected" not in reason_text and "invalid" not in reason_text,
+                reason_text,
+                "valid enabled range-breakout setup",
+            )
+        gate_reasons["stop_reentry"] = "no_stop_reentry_candidate"
+        account = (
+            account_measurements
+            if isinstance(account_measurements, dict)
+            else self._symbol_account_gate_measurements(
+                option_symbol, local_time
+            )
+        )
+        results.update(account["blocker_results"])
+        results["stop_reentry"] = account["stop_reentry_result"]
+        results["ema_stop_reentry"] = account["ema_reentry_result"]
+        return {
+            "blocker_results": results,
+            "gate_reasons": gate_reasons,
+            "bar_count": bar_count,
+            "warmup_min_bars": 30,
+            "indicator_availability": {
+                "required": list(required),
+                "available": available,
+            },
+        }
+
+    def _benchmark_context_gate_measurements(self, symbol: str) -> dict:
+        config = getattr(self, "config", {}) or {}
+        if not bool(
+            getattr(self, "use_market_context", config.get("use_market_context", True))
+        ):
+            return {
+                direction: self._gate_evaluation(
+                    None, None, None, "market_context_disabled"
+                )
+                for direction in ("BUY", "SELL")
+            }
+        builder = getattr(self, "bar_builder", None)
+        tokens = config.get("instrument_tokens", {}) or {}
+        benchmark_symbols = config.get(
+            "benchmark_symbols",
+            [
+                getattr(self, "benchmark_symbol", config.get("benchmark_symbol", "NIFTY")),
+                "BANKNIFTY",
+            ],
+        )
+        ema_fast = int(config.get("ema_fast", 9))
+        ema_slow = int(config.get("ema_slow", 21))
+        hard_block = bool(config.get("hard_context_filter", True))
+        cache = getattr(self, "_benchmark_context_gate_cache", None)
+        if cache is None:
+            cache = {}
+            self._benchmark_context_gate_cache = cache
+        contexts = []
+        for benchmark_symbol in dict.fromkeys(benchmark_symbols):
+            token = tokens.get(benchmark_symbol)
+            if token is None or benchmark_symbol == symbol or builder is None:
+                continue
+            bars = builder.get_bars(token, limit=100)
+            if bars:
+                first_time = self._journal_datetime(bars[0].timestamp)
+                last_time = self._journal_datetime(bars[-1].timestamp)
+                cache_key = (
+                    len(bars),
+                    first_time.isoformat() if first_time is not None else None,
+                    last_time.isoformat() if last_time is not None else None,
+                    float(bars[-1].close),
+                    ema_fast,
+                    ema_slow,
+                    hard_block,
+                )
+                cached = cache.get(benchmark_symbol)
+                if cached is not None and cached[0] == cache_key:
+                    directional_results = cached[1]
+                else:
+                    context_history = [item.to_dict() for item in bars]
+                    directional_results = {}
+                    for direction in ("BUY", "SELL"):
+                        filtered_signal, reason = filter_signal_by_context(
+                            direction,
+                            context_history,
+                            ema_fast=ema_fast,
+                            ema_slow=ema_slow,
+                            hard_block=hard_block,
+                        )
+                        directional_results[direction] = {
+                            "filtered_signal": filtered_signal,
+                            "reason": reason,
+                        }
+                    cache[benchmark_symbol] = (
+                        cache_key,
+                        directional_results,
+                    )
+                contexts.append((benchmark_symbol, directional_results))
+        if not contexts:
+            return {
+                direction: self._gate_evaluation(
+                    None,
+                    None,
+                    "benchmark history available",
+                    "benchmark_history_unavailable",
+                )
+                for direction in ("BUY", "SELL")
+            }
+        results = {}
+        for direction in ("BUY", "SELL"):
+            observations = []
+            blocked = False
+            for name, directional_results in contexts:
+                context_result = directional_results[direction]
+                filtered_signal = context_result["filtered_signal"]
+                observations.append(
+                    {
+                        "benchmark": name,
+                        "filtered_signal": filtered_signal,
+                        "reason": context_result["reason"],
+                    }
+                )
+                blocked = blocked or filtered_signal != direction
+            results[direction] = self._gate_evaluation(
+                not blocked,
+                observations,
+                "no opposing hard benchmark context",
+                "opposing_benchmark_context" if blocked else "evaluated",
+            )
+        return results
+
+    def _option_bar_gate_measurements(
+        self,
+        symbol: str,
+        direction: str,
+        timestamp: datetime,
+        option_bar: Optional[Bar],
+    ) -> dict:
+        config = getattr(self, "config", {}) or {}
+        token = (config.get("instrument_tokens", {}) or {}).get(symbol)
+        stream = getattr(self, "kite_stream", None)
+        quote = (getattr(self, "option_quote_cache", {}) or {}).get(symbol, {})
+        now = self._gate_evaluation_time(timestamp)
+        quote_metrics = self._option_quote_metrics(quote, now=now)
+        premium = quote_metrics["ltp"]
+        if premium is None and option_bar is not None:
+            premium = self._positive_quote_value(option_bar.close)
+        contract = bool(
+            token is not None
+            and symbol in getattr(stream, "contract_symbols", {})
+        )
+        results = {
+            "option_leg": self._gate_evaluation(
+                True if token is not None else None,
+                symbol if token is not None else None,
+                "configured instrument token",
+                None if token is not None else "no_option_leg",
+            ),
+            "option_contract": self._gate_evaluation(
+                True if contract else None,
+                symbol if contract else None,
+                "resolved contract metadata",
+                None if contract else "contract_metadata_unavailable",
+            ),
+        }
+        gate_reasons = {}
+        if token is None:
+            for name in (
+                "option_candle_momentum_direction",
+                "option_candle_momentum_body",
+                "option_expiry",
+                "option_market_quality",
+                "premium_range",
+                "quote_freshness",
+                "risk_cap",
+                "capital_cap",
+                "position_size",
+            ):
+                results[name] = self._gate_evaluation(
+                    None, None, None, "no_option_leg"
+                )
+            gate_reasons["option_leg"] = "no_option_leg"
+            return {
+                "blocker_results": results,
+                "gate_reasons": gate_reasons,
+                "body_ratio_gate_applies": True,
+                "body_ratio_direction_matches": None,
+                "body_ratio": None,
+                "body_ratio_threshold": None,
+                "premium_missing_reason": "no_option_leg",
+                "quote_missing_reason": "no_option_leg",
+                "option_candle_missing_reason": "no_option_leg",
+            }
+        expiry = getattr(stream, "contract_expiries", {}).get(symbol)
+        if expiry is None:
+            results["option_expiry"] = self._gate_evaluation(
+                None, None, "expiry after trade date", "expiry_metadata_unavailable"
+            )
+        else:
+            expiry_date = expiry.date() if isinstance(expiry, datetime) else expiry
+            if not isinstance(expiry_date, date):
+                try:
+                    expiry_date = date.fromisoformat(str(expiry_date))
+                except (TypeError, ValueError):
+                    expiry_date = None
+            if expiry_date is None:
+                results["option_expiry"] = self._gate_evaluation(
+                    None, str(expiry), "expiry after trade date",
+                    "invalid_expiry_metadata",
+                )
+            else:
+                expired = bool(
+                    config.get("avoid_option_expiry_day", True)
+                    and expiry_date <= now.date()
+                )
+                results["option_expiry"] = self._gate_evaluation(
+                    not expired,
+                    expiry_date.isoformat(),
+                    "expiry after trade date when configured",
+                )
+        if option_bar is None:
+            gate_reasons.update({
+                "option_candle_momentum_direction": "no_candle",
+                "option_candle_momentum_body": "no_candle",
+            })
+        else:
+            minimum_body = float(
+                config.get(
+                    "option_min_candle_body_ratio",
+                    OPTION_MIN_CANDLE_BODY_RATIO,
+                )
+            )
+            up_candle = float(option_bar.close) > float(option_bar.open)
+            direction_ok = (
+                up_candle
+                if direction == "BUY"
+                or self._paper_change_enabled("option_premium_rising_momentum_v2")
+                else not up_candle
+            )
+            candle_range = float(option_bar.high) - float(option_bar.low)
+            valid_candle = (
+                candle_range > 0
+                and float(option_bar.high)
+                >= max(float(option_bar.open), float(option_bar.close))
+                and float(option_bar.low)
+                <= min(float(option_bar.open), float(option_bar.close))
+            )
+            body_ratio = (
+                abs(float(option_bar.close) - float(option_bar.open)) / candle_range
+                if valid_candle else None
+            )
+            results["option_candle_momentum_direction"] = self._gate_evaluation(
+                direction_ok,
+                {"open": option_bar.open, "close": option_bar.close},
+                "directional option premium candle",
+            )
+            results["option_candle_momentum_body"] = self._gate_evaluation(
+                body_ratio is not None and body_ratio >= minimum_body,
+                body_ratio,
+                minimum_body,
+            )
+        try:
+            lot_size = int(
+                getattr(self, "intraday_manager", None)
+                .contract_specs.get(symbol, {})
+                .get("lot_size", 0)
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            lot_size = 0
+        results["lot_size"] = self._gate_evaluation(
+            lot_size > 0,
+            lot_size if lot_size > 0 else None,
+            "positive contract lot size",
+            None if lot_size > 0 else "lot_size_unavailable",
+        )
+        if premium is None:
+            missing = (
+                "quote_premium_unavailable"
+                if quote
+                else "no_quote"
+            )
+            for name in ("premium_range", "risk_cap", "capital_cap"):
+                results[name] = self._gate_evaluation(
+                    None, None, None, missing
+                )
+            results["position_size"] = self._gate_evaluation(
+                None, None, None, missing
+            )
+        else:
+            minimum = float(config.get("option_min_premium", 12.0))
+            if self._paper_change_enabled("premium_floor_v2"):
+                minimum = max(minimum, 15.0)
+            maximum = float(config.get("option_max_premium", 800.0))
+            if (
+                self._underlying_symbol(symbol) == "BANKNIFTY"
+                and (
+                    self._paper_change_enabled("banknifty_caps_v2")
+                    or self._paper_change_enabled("capital_based_risk_v2")
+                )
+            ):
+                maximum = 1000.0
+            results["premium_range"] = self._gate_evaluation(
+                minimum <= premium <= maximum,
+                premium,
+                {"minimum": minimum, "maximum": maximum},
+            )
+            account_size = float(config.get("account_size", 100000.0))
+            is_banknifty = self._underlying_symbol(symbol) == "BANKNIFTY"
+            capital_pct = float(
+                config.get(
+                    "banknifty_max_capital_per_trade_pct" if is_banknifty
+                    else "max_capital_per_trade_pct",
+                    30.0 if is_banknifty else 20.0,
+                )
+            )
+            capital_cap = account_size * capital_pct / 100.0
+            investment = premium * lot_size if lot_size > 0 else None
+            results["capital_cap"] = self._gate_evaluation(
+                investment <= capital_cap if investment is not None else None,
+                investment,
+                capital_cap,
+                None if investment is not None else "lot_size_unavailable",
+            )
+            stop_pct = _configured_option_premium_stop_pct(config)
+            one_lot_risk = premium * lot_size * stop_pct if lot_size > 0 else None
+            manager = getattr(self, "intraday_manager", None)
+            per_lot_limit = (
+                premium * lot_size
+                * float(config.get("option_max_risk_per_lot_pct", 10.0))
+                / 100.0
+            )
+            if self._paper_change_enabled("capital_based_risk_v2"):
+                open_risk = (
+                    float(manager.open_position_risk())
+                    if manager is not None else float("inf")
+                )
+                daily_remaining = max(
+                    0.0,
+                    float(getattr(manager, "daily_max_loss", 0.0))
+                    - float(getattr(manager, "daily_realized_losses", 0.0))
+                    - open_risk,
+                )
+                risk_budget = min(per_lot_limit, daily_remaining)
+            else:
+                risk_budget = min(
+                    float(getattr(manager, "max_risk_per_trade", float("inf"))),
+                    per_lot_limit,
+                )
+            if lot_size <= 0:
+                risk_budget = None
+            results["risk_cap"] = self._gate_evaluation(
+                one_lot_risk <= risk_budget if one_lot_risk is not None else None,
+                one_lot_risk,
+                risk_budget,
+                None if one_lot_risk is not None else "lot_size_unavailable",
+            )
+            minimum_lots = int(config.get("option_min_lots", 1))
+            maximum_lots = int(config.get("option_max_lots", 3))
+            available_lots = (
+                min(
+                    maximum_lots,
+                    int(capital_cap // investment) if investment else 0,
+                    int(risk_budget // one_lot_risk)
+                    if one_lot_risk and risk_budget is not None
+                    else 0,
+                )
+                if investment is not None and one_lot_risk is not None
+                else None
+            )
+            results["position_size"] = self._gate_evaluation(
+                available_lots >= minimum_lots
+                if available_lots is not None else None,
+                available_lots,
+                {"minimum_lots": minimum_lots, "maximum_lots": maximum_lots},
+                None if available_lots is not None else "position_size_inputs_unavailable",
+            )
+        candle_age = self._option_candle_age_seconds(option_bar, now)
+        can_use_candle = (
+            quote_metrics["age_seconds"] is not None
+            and quote_metrics["age_seconds"] > 60.0
+            and self._paper_change_enabled("stale_quote_candle_fallback")
+            and option_bar is not None
+            and candle_age is not None
+            and 0 <= candle_age <= OPTION_STALE_CANDLE_MAX_AGE_SECONDS
+            and self._positive_quote_value(option_bar.close) is not None
+        )
+        if quote_metrics["timestamp"] is None:
+            results["quote_freshness"] = self._gate_evaluation(
+                None,
+                None,
+                quote_metrics["max_age_seconds"],
+                "quote_timestamp_missing" if quote else "no_quote",
+            )
+        elif quote_metrics["age_seconds"] is not None and quote_metrics[
+            "age_seconds"
+        ] < 0:
+            results["quote_freshness"] = self._gate_evaluation(
+                None,
+                quote_metrics["age_seconds"],
+                quote_metrics["max_age_seconds"],
+                "future_quote",
+            )
+        else:
+            results["quote_freshness"] = self._gate_evaluation(
+                quote_metrics["fresh"] or can_use_candle,
+                quote_metrics["age_seconds"],
+                quote_metrics["max_age_seconds"],
+                "stale_quote_candle_fallback" if can_use_candle else None,
+            )
+        if not quote:
+            results["option_market_quality"] = self._gate_evaluation(
+                None, None, None, "no_quote"
+            )
+        else:
+            volume = int(quote.get("volume", 0) or 0)
+            min_volume = int(config.get("option_min_volume", 200))
+            oi = quote.get("oi")
+            min_oi = int(config.get("option_min_oi", 400))
+            iv = quote.get("iv")
+            iv_min = float(config.get("option_iv_min", 0.08))
+            iv_max = float(config.get("option_iv_max", 1.20))
+            quality_ok = (
+                volume >= min_volume
+                and (oi is None or int(oi) >= min_oi)
+                and (iv is None or iv_min <= float(iv) <= iv_max)
+            )
+            results["option_market_quality"] = self._gate_evaluation(
+                quality_ok,
+                {"volume": volume, "oi": oi, "iv": iv},
+                {
+                    "minimum_volume": min_volume,
+                    "minimum_oi_if_present": min_oi,
+                    "iv_range_if_present": [iv_min, iv_max],
+                },
+            )
+        return {
+            "blocker_results": results,
+            "gate_reasons": gate_reasons,
+            "body_ratio_gate_applies": True,
+            "body_ratio_direction_matches": results.get(
+                "option_candle_momentum_direction", {}
+            ).get("passed"),
+            "body_ratio": results.get(
+                "option_candle_momentum_body", {}
+            ).get("observed_value"),
+            "body_ratio_threshold": results.get(
+                "option_candle_momentum_body", {}
+            ).get("threshold"),
+            "quote_age_seconds": quote_metrics["age_seconds"],
+            "quote_age_threshold_seconds": quote_metrics["max_age_seconds"],
+            "ltp": premium,
+            "bid": quote_metrics["bid"],
+            "ask": quote_metrics["ask"],
+            "option_bar_close": (
+                float(option_bar.close) if option_bar is not None else None
+            ),
+            "option_bar_time": (
+                option_bar.timestamp.isoformat()
+                if option_bar is not None else None
+            ),
+            "premium_missing_reason": (
+                "no_quote" if not quote else "quote_premium_unavailable"
+            ),
+            "quote_missing_reason": (
+                "no_quote" if not quote else "quote_timestamp_missing"
+            ),
+            "option_candle_missing_reason": "no_candle",
+        }
+
+    def _support_reversal_timing(
+        self,
+        history: list[dict],
+        timestamp: datetime,
+        *,
+        completed_aggregation_bars: int,
+        minimum_aggregation_bars: int,
+    ) -> dict:
+        interval = int(
+            (getattr(self, "config", {}) or {}).get(
+                "bar_interval_seconds", 60
+            )
+        )
+        if interval <= 0 or interval >= 300 or 300 % interval:
+            return {
+                "enabled": bool(
+                    (getattr(self, "config", {}) or {}).get(
+                        "support_reversal_enabled", False
+                    )
+                ),
+                "aggregation_interval_minutes": 5,
+                "reason_code": "invalid_source_bar_interval",
+                "completed_bars": [],
+                "completed_aggregation_bars": completed_aggregation_bars,
+                "minimum_aggregation_bars": minimum_aggregation_bars,
+            }
+        completed_at = self._journal_datetime(timestamp) or timestamp
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=IST)
+        else:
+            completed_at = completed_at.astimezone(IST)
+        current_start = completed_at
+        if history:
+            value = history[-1].get("time")
+            parsed = self._journal_datetime(value)
+            if parsed is not None:
+                current_start = parsed
+        bucket_seconds = 300
+        bucket_start_epoch = (
+            int(current_start.timestamp()) // bucket_seconds
+        ) * bucket_seconds
+        bucket_start = datetime.fromtimestamp(bucket_start_epoch, tz=IST)
+        bucket_items = []
+        for item in history:
+            bar_time = self._journal_datetime(item.get("time"))
+            if bar_time is None or int(bar_time.timestamp()) // bucket_seconds != (
+                bucket_start_epoch // bucket_seconds
+            ):
+                continue
+            bucket_items.append((bar_time, item))
+        bucket_offset = (
+            (min(bar_time for bar_time, _ in bucket_items) - bucket_start).total_seconds()
+            if bucket_items
+            else 0.0
+        )
+        next_evaluation = bucket_start + timedelta(
+            seconds=bucket_seconds + bucket_offset
+        )
+        current_bar_end = current_start + timedelta(seconds=interval)
+        completed_bars = []
+        for bar_time, _ in bucket_items:
+            bar_end = bar_time + timedelta(seconds=interval)
+            completed_bars.append(
+                {
+                    "bar_time": bar_time.isoformat(),
+                    "minutes_to_next_evaluation": max(
+                        0.0, (next_evaluation - bar_end).total_seconds() / 60.0
+                    ),
+                }
+            )
+        return {
+            "enabled": bool(
+                (getattr(self, "config", {}) or {}).get(
+                    "support_reversal_enabled", False
+                )
+            ),
+            "aggregation_interval_minutes": 5,
+            "completed_aggregation_bars": completed_aggregation_bars,
+            "minimum_aggregation_bars": minimum_aggregation_bars,
+            "boundary_time": bucket_start.isoformat(),
+            "next_evaluation_time": next_evaluation.isoformat(),
+            "minutes_to_next_evaluation": max(
+                0.0, (next_evaluation - current_bar_end).total_seconds() / 60.0
+            ),
+            "completed_bars": completed_bars,
+        }
+
     def _record_completed_scorer_bar(self, symbol: str, bar: Bar) -> None:
         scorer_logging = self._scorer_input_logging_enabled()
         gate_logging = self._gate_state_logging_enabled()
@@ -3672,6 +4720,15 @@ class KiteTradingBot:
                         support_diagnostics.get("evaluated", False)
                     ),
                     "candidate": support_candidate is not None,
+                    "bar_count": len(pivot_history),
+                    "minimum_bars": 10,
+                    "reason_code": (
+                        None
+                        if support_diagnostics.get("evaluated", False)
+                        else "insufficient_aggregated_bars"
+                        if len(pivot_history) < 10
+                        else "support_reversal_inputs_unavailable"
+                    ),
                     "signal": (
                         support_candidate.signal
                         if support_candidate is not None
@@ -3684,9 +4741,40 @@ class KiteTradingBot:
                     ),
                     "touches": support_diagnostics.get("pivot_touches"),
                 }
+                benchmark_context = self._benchmark_context_gate_measurements(
+                    symbol
+                )
                 scorer_context = {"scorer_inputs": inputs}
+                option_symbols = (
+                    (f"{symbol.upper()}_CE", f"{symbol.upper()}_PE")
+                    if self._options_enabled()
+                    else ()
+                )
+                account_measurements_by_symbol = {
+                    option_symbol: self._symbol_account_gate_measurements(
+                        option_symbol,
+                        self._gate_evaluation_time(timestamp),
+                    )
+                    for option_symbol in option_symbols
+                }
                 gate_states = {}
                 for direction in ("BUY", "SELL"):
+                    option_symbol = (
+                        f"{symbol.upper()}_CE"
+                        if direction == "BUY"
+                        else f"{symbol.upper()}_PE"
+                    )
+                    blocker_measurements = self._bar_blocker_measurements(
+                        symbol,
+                        direction,
+                        timestamp,
+                        history,
+                        inputs,
+                        observation["reasons"],
+                        support_evaluation,
+                        benchmark_context,
+                        account_measurements_by_symbol.get(option_symbol),
+                    )
                     gate_states[direction] = self._gate_state_for_decision(
                         symbol=symbol,
                         signal=direction,
@@ -3700,6 +4788,88 @@ class KiteTradingBot:
                         independent_bar_history=history,
                         support_evaluation=support_evaluation,
                         cache_namespace="directional",
+                        gate_names=DIRECTIONAL_GATE_STATE_NAMES,
+                        extra_measurements=blocker_measurements,
+                    )
+
+                account_states = {}
+                option_states = {}
+                if option_symbols:
+                    for option_symbol in option_symbols:
+                        direction = (
+                            "BUY" if option_symbol.endswith("_CE") else "SELL"
+                        )
+                        option_bar = self._latest_completed_option_candle(
+                            option_symbol
+                        )
+                        option_measurements = self._option_bar_gate_measurements(
+                            option_symbol,
+                            direction,
+                            timestamp,
+                            option_bar,
+                        )
+                        account_measurements = (
+                            account_measurements_by_symbol[option_symbol]
+                        )
+                        option_blockers = option_measurements.get(
+                            "blocker_results", {}
+                        )
+                        option_blockers["stop_reentry"] = (
+                            account_measurements["stop_reentry_result"]
+                        )
+                        option_blockers["ema_stop_reentry"] = (
+                            account_measurements["ema_reentry_result"]
+                        )
+                        option_measurements["blocker_results"] = option_blockers
+                        option_states[option_symbol] = (
+                            self._gate_state_for_decision(
+                                symbol=option_symbol,
+                                signal=direction,
+                                outcome="independent_option_bar_evaluation",
+                                timestamp=timestamp.isoformat(),
+                                score=observation["score"],
+                                reasons=observation["reasons"],
+                                scorer_context=scorer_context,
+                                measurements={},
+                                entry_evaluation=None,
+                                support_evaluation=support_evaluation,
+                                cache_namespace="directional",
+                                gate_names=OPTION_SIDE_GATE_NAMES,
+                                extra_measurements=option_measurements,
+                            )
+                        )
+                        account_states[option_symbol] = (
+                            self._gate_state_for_decision(
+                                symbol=option_symbol,
+                                signal="HOLD",
+                                outcome="independent_symbol_bar_evaluation",
+                                timestamp=timestamp.isoformat(),
+                                score=None,
+                                reasons=[],
+                                scorer_context={},
+                                measurements=account_measurements,
+                                entry_evaluation=None,
+                                cache_namespace="symbol",
+                                gate_names=SYMBOL_STATE_GATE_NAMES,
+                            )
+                        )
+                else:
+                    account_states[symbol.upper()] = (
+                        self._gate_state_for_decision(
+                            symbol=symbol,
+                            signal="HOLD",
+                            outcome="independent_symbol_bar_evaluation",
+                            timestamp=timestamp.isoformat(),
+                            score=None,
+                            reasons=[],
+                            scorer_context={},
+                            measurements=self._symbol_account_gate_measurements(
+                                symbol, timestamp
+                            ),
+                            entry_evaluation=None,
+                            cache_namespace="symbol",
+                            gate_names=SYMBOL_STATE_GATE_NAMES,
+                        )
                     )
                 pending = getattr(self, "_gate_state_v2_by_bar", None)
                 if pending is None:
@@ -3707,6 +4877,18 @@ class KiteTradingBot:
                     self._gate_state_v2_by_bar = pending
                 pending[key] = {
                     "gate_state_v2_by_direction": gate_states,
+                    "gate_state_v2_by_option_leg": option_states,
+                    "gate_state_v2_account_by_symbol": account_states,
+                    "gate_state_v2_warmup": {
+                        "completed_bars_available": len(history),
+                        "minimum_bars_required": 30,
+                    },
+                    "support_reversal_timing": self._support_reversal_timing(
+                        history,
+                        timestamp,
+                        completed_aggregation_bars=len(pivot_history),
+                        minimum_aggregation_bars=10,
+                    ),
                 }
 
             recorder = getattr(
@@ -10596,6 +11778,8 @@ class KiteTradingBot:
         independent_bar_history: Optional[list[dict]] = None,
         support_evaluation: Optional[dict] = None,
         cache_namespace: str = "decision",
+        gate_names: tuple[str, ...] = GATE_STATE_NAMES,
+        extra_measurements: Optional[dict] = None,
     ) -> Optional[dict]:
         if not self._gate_state_logging_enabled():
             return None
@@ -10622,14 +11806,18 @@ class KiteTradingBot:
                 else str(timestamp or "unknown")[:10]
             )
             symbol_key = str(symbol).upper()
+            day_key = (symbol_key, cache_namespace)
             direction = str(signal or "").upper()
             if direction not in {"BUY", "SELL"}:
                 direction = "HOLD"
             previous_attr = (
                 "_gate_state_v2_directional_previous"
                 if cache_namespace == "directional"
+                else "_gate_state_v2_symbol_previous"
+                if cache_namespace == "symbol"
                 else "_gate_state_v2_previous"
             )
+            reason_attr = f"{previous_attr}_reason_codes"
 
             lock = getattr(self, "_gate_state_v2_lock", None)
             if lock is None:
@@ -10642,6 +11830,10 @@ class KiteTradingBot:
                 if previous_by_symbol_direction is None:
                     previous_by_symbol_direction = {}
                     setattr(self, previous_attr, previous_by_symbol_direction)
+                previous_reasons = getattr(self, reason_attr, None)
+                if previous_reasons is None:
+                    previous_reasons = {}
+                    setattr(self, reason_attr, previous_reasons)
                 day_by_symbol = getattr(
                     self, "_gate_state_v2_day_by_symbol", None
                 )
@@ -10649,7 +11841,7 @@ class KiteTradingBot:
                     day_by_symbol = {}
                     self._gate_state_v2_day_by_symbol = day_by_symbol
 
-                first_seen = day_by_symbol.get(symbol_key) != day
+                first_seen = day_by_symbol.get(day_key) != day
                 previous_states = (
                     None
                     if first_seen
@@ -10657,11 +11849,18 @@ class KiteTradingBot:
                         (symbol_key, direction)
                     )
                 )
-                fields, current_states = encode_gate_state_v2(
+                previous_reason_codes = (
+                    None
+                    if first_seen
+                    else previous_reasons.get((symbol_key, direction))
+                )
+                fields, current_states, current_reason_codes = encode_gate_state_v2(
                     state,
                     timestamp,
                     previous_states,
                     first_seen=first_seen,
+                    previous_reason_codes=previous_reason_codes,
+                    gate_names=gate_names,
                 )
                 if validate_serialization:
                     json.dumps(
@@ -10671,18 +11870,18 @@ class KiteTradingBot:
                         allow_nan=False,
                     )
                 if first_seen:
-                    for attr in (
-                        "_gate_state_v2_previous",
-                        "_gate_state_v2_directional_previous",
-                    ):
-                        previous = getattr(self, attr, {})
-                        for key in tuple(previous):
-                            if key[0] == symbol_key:
-                                del previous[key]
+                        for previous in (
+                            previous_by_symbol_direction,
+                            previous_reasons,
+                        ):
+                            for key in tuple(previous):
+                                if key[0] == symbol_key:
+                                    del previous[key]
                 previous_by_symbol_direction[(symbol_key, direction)] = (
                     current_states
                 )
-                day_by_symbol[symbol_key] = day
+                previous_reasons[(symbol_key, direction)] = current_reason_codes
+                day_by_symbol[day_key] = day
                 return fields
 
         try:
@@ -10706,6 +11905,7 @@ class KiteTradingBot:
                     history=independent_bar_history,
                     support_evaluation=selected_support_evaluation,
                     config=config,
+                    extra_measurements=extra_measurements,
                 )
             else:
                 gate_state = build_gate_state(
@@ -10716,7 +11916,14 @@ class KiteTradingBot:
                     score=score,
                     reasons=reasons,
                     scorer_inputs=scorer_inputs,
-                    measurements=measurements,
+                    measurements={
+                        **(measurements if isinstance(measurements, dict) else {}),
+                        **(
+                            extra_measurements
+                            if isinstance(extra_measurements, dict)
+                            else {}
+                        ),
+                    },
                     support_evaluation=selected_support_evaluation,
                     entry_evaluation=entry_evaluation or {},
                     config=config,
@@ -10737,7 +11944,7 @@ class KiteTradingBot:
                 return {
                     "gate_state_v2": (
                         f"{timestamp or ''}|"
-                        + "N" * len(GATE_STATE_NAMES)
+                        + "N" * len(gate_names)
                     )
                 }
 
@@ -10891,6 +12098,7 @@ class KiteTradingBot:
             scorer_context=scorer_context,
             measurements=gate_measurements,
             entry_evaluation=entry_evaluation,
+            gate_names=DIRECTIONAL_GATE_STATE_NAMES,
         )
         directional_gate_state = self._take_gate_state_for_bar(symbol, bar)
         callback_time = self._journal_datetime(

@@ -175,23 +175,79 @@ def add_score_adjustment(
 
 
 GATE_STATE_NAMES = (
+    "entry_window",
+    "bar_warmup",
+    "indicator_availability",
+    "trend_setup",
+    "breakout_quality",
     "regime_breakout",
     "ema",
     "adx",
     "rsi",
     "macd",
     "score_threshold",
+    "benchmark_context",
+    "news_filter",
     "pivot_touches",
     "support_reversal_detector",
+    "support_reversal_eligibility",
+    "ema_stop_reentry",
     "option_candle_momentum_direction",
     "option_candle_momentum_body",
+    "option_leg",
+    "option_contract",
+    "option_expiry",
+    "option_market_quality",
     "volatility_band",
     "premium_range",
     "quote_freshness",
+    "accuracy_confirmation",
+    "cooldown",
+    "pending_entry_lock",
+    "confirmation_window",
+    "manual_entry_pause",
+    "stop_reentry",
+    "option_range_breakout",
+    "position_size",
+    "lot_size",
     "risk_cap",
     "capital_cap",
+    "session_trade_lock",
+    "daily_loss",
+    "consecutive_loss",
+    "open_risk_limit",
+    "symbol_win_rate",
     "confirmation",
     "order",
+)
+
+SYMBOL_STATE_GATE_NAMES = (
+    "session_trade_lock",
+    "cooldown",
+    "daily_loss",
+    "consecutive_loss",
+    "open_risk_limit",
+    "symbol_win_rate",
+)
+OPTION_SIDE_GATE_NAMES = (
+    "option_candle_momentum_direction",
+    "option_candle_momentum_body",
+    "option_leg",
+    "option_contract",
+    "option_expiry",
+    "option_market_quality",
+    "premium_range",
+    "quote_freshness",
+    "stop_reentry",
+    "ema_stop_reentry",
+    "option_range_breakout",
+    "position_size",
+    "lot_size",
+    "risk_cap",
+    "capital_cap",
+)
+DIRECTIONAL_GATE_STATE_NAMES = tuple(
+    name for name in GATE_STATE_NAMES if name not in SYMBOL_STATE_GATE_NAMES
 )
 
 GATE_STATE_CODES = {
@@ -201,6 +257,53 @@ GATE_STATE_CODES = {
 }
 GATE_STATE_LABELS = {code: state for state, code in GATE_STATE_CODES.items()}
 
+_GATE_MISSING_REASON_CODES = {
+    "entry_window": "entry_window_not_checked",
+    "bar_warmup": "bar_count_unavailable",
+    "indicator_availability": "required_indicators_unavailable",
+    "trend_setup": "no_candidate_signal",
+    "breakout_quality": "no_candidate_signal",
+    "regime_breakout": "regime_unavailable",
+    "ema": "ema_unavailable",
+    "adx": "adx_unavailable",
+    "rsi": "rsi_unavailable",
+    "macd": "macd_unavailable",
+    "score_threshold": "score_unavailable",
+    "benchmark_context": "benchmark_context_unavailable",
+    "news_filter": "news_context_unavailable",
+    "pivot_touches": "pivot_data_unavailable",
+    "support_reversal_detector": "support_reversal_not_evaluated",
+    "support_reversal_eligibility": "support_reversal_not_applicable",
+    "ema_stop_reentry": "ema_reentry_not_applicable",
+    "option_candle_momentum_direction": "no_option_candle",
+    "option_candle_momentum_body": "no_option_candle",
+    "option_leg": "no_option_leg",
+    "option_contract": "option_contract_unavailable",
+    "option_expiry": "option_expiry_unavailable",
+    "option_market_quality": "no_quote",
+    "volatility_band": "volatility_unavailable",
+    "premium_range": "no_quote",
+    "quote_freshness": "no_quote",
+    "accuracy_confirmation": "confirmation_bars_unavailable",
+    "cooldown": "cooldown_state_unavailable",
+    "pending_entry_lock": "pending_entry_state_unavailable",
+    "confirmation_window": "confirmation_not_pending",
+    "manual_entry_pause": "entry_pause_state_unavailable",
+    "stop_reentry": "stop_reentry_state_unavailable",
+    "option_range_breakout": "range_breakout_not_applicable",
+    "position_size": "position_size_unavailable",
+    "lot_size": "lot_size_unavailable",
+    "risk_cap": "risk_inputs_unavailable",
+    "capital_cap": "capital_inputs_unavailable",
+    "session_trade_lock": "session_trade_state_unavailable",
+    "daily_loss": "daily_loss_state_unavailable",
+    "consecutive_loss": "loss_streak_state_unavailable",
+    "open_risk_limit": "open_risk_state_unavailable",
+    "symbol_win_rate": "symbol_performance_unavailable",
+    "confirmation": "confirmation_not_evaluated",
+    "order": "paper_order_not_attempted",
+}
+
 
 def empty_gate_state(timestamp: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return {
@@ -209,6 +312,7 @@ def empty_gate_state(timestamp: Optional[str]) -> Dict[str, Dict[str, Any]]:
             "observed_value": None,
             "threshold": None,
             "evaluation_timestamp": timestamp,
+            "reason_code": _GATE_MISSING_REASON_CODES[name],
         }
         for name in GATE_STATE_NAMES
     }
@@ -220,26 +324,33 @@ def encode_gate_state_v2(
     previous_states: Optional[Dict[str, str]],
     *,
     first_seen: bool,
-) -> tuple[Dict[str, Any], Dict[str, str]]:
+    previous_reason_codes: Optional[Dict[str, str]] = None,
+    gate_names: tuple[str, ...] = GATE_STATE_NAMES,
+) -> tuple[Dict[str, Any], Dict[str, str], Dict[str, str]]:
     """Encode fixed-order gate states and sparse value/threshold details."""
     current_states: Dict[str, str] = {}
+    current_reason_codes: Dict[str, str] = {}
     ordered_gates = {}
-    for name in GATE_STATE_NAMES:
+    for name in gate_names:
         gate = gate_state.get(name, {})
         gate = gate if isinstance(gate, dict) else {}
         state = gate.get("state", "not_evaluated")
         code = GATE_STATE_CODES.get(state, "N")
         current_states[name] = code
+        current_reason_codes[name] = str(
+            gate.get("reason_code") or _GATE_MISSING_REASON_CODES[name]
+        )
         ordered_gates[name] = {
             "state": GATE_STATE_LABELS[code],
             "observed_value": gate.get("observed_value"),
             "threshold": gate.get("threshold"),
+            "reason_code": current_reason_codes[name],
         }
 
     fields: Dict[str, Any] = {
         "gate_state_v2": (
             f"{timestamp or ''}|"
-            + "".join(current_states[name] for name in GATE_STATE_NAMES)
+            + "".join(current_states[name] for name in gate_names)
         )
     }
     if first_seen:
@@ -250,13 +361,29 @@ def encode_gate_state_v2(
                 "observed_value": ordered_gates[name]["observed_value"],
                 "threshold": ordered_gates[name]["threshold"],
             }
-            for name in GATE_STATE_NAMES
+            for name in gate_names
             if previous_states is None
             or previous_states.get(name) != current_states[name]
+            or (
+                previous_reason_codes is not None
+                and previous_reason_codes.get(name) != current_reason_codes[name]
+            )
         }
         if changed:
-            fields["gate_state_v2_changes"] = changed
-    return fields, current_states
+            fields["gate_state_v2_changes"] = {
+                name: (
+                    {
+                        "observed_value": ordered_gates[name]["observed_value"],
+                        "threshold": ordered_gates[name]["threshold"],
+                        "reason_code": current_reason_codes[name],
+                    }
+                    if previous_states is None
+                    or previous_states.get(name) != current_states[name]
+                    else {"reason_code": current_reason_codes[name]}
+                )
+                for name in changed
+            }
+    return fields, current_states, current_reason_codes
 
 
 def build_gate_state(
@@ -297,14 +424,18 @@ def build_gate_state(
         threshold: Any,
         *,
         evaluated: bool = True,
+        reason_code: Optional[str] = None,
     ) -> None:
         if not evaluated or passed is None:
+            if reason_code:
+                result[name]["reason_code"] = reason_code
             return
         result[name] = {
             "state": "pass" if passed else "fail",
             "observed_value": observed,
             "threshold": threshold,
             "evaluation_timestamp": timestamp,
+            "reason_code": reason_code or "evaluated",
         }
 
     regime = scorer_inputs.get("regime_label")
@@ -458,6 +589,10 @@ def build_gate_state(
                 pivot_touches,
                 config.get("support_reversal_min_touches", 2),
             )
+    elif support_evaluation.get("reason_code"):
+        result["support_reversal_detector"]["reason_code"] = str(
+            support_evaluation["reason_code"]
+        )
 
     body_applies = (
         symbol.endswith(("_CE", "_PE"))
@@ -543,6 +678,17 @@ def build_gate_state(
             premium,
             {"minimum": premium_floor, "maximum": premium_cap},
         )
+    elif not symbol.endswith(("_CE", "_PE")):
+        for name in ("option_leg", "option_contract", "option_expiry",
+                     "option_market_quality", "premium_range",
+                     "quote_freshness", "option_candle_momentum_direction",
+                     "option_candle_momentum_body", "risk_cap", "capital_cap",
+                     "position_size", "lot_size"):
+            result[name]["reason_code"] = "not_option_contract"
+    elif premium is None:
+        result["premium_range"]["reason_code"] = str(
+            measurements.get("premium_missing_reason", "no_quote_and_no_candle")
+        )
 
     quote_age = measurements.get("quote_age_seconds")
     quote_age_threshold = measurements.get(
@@ -560,6 +706,19 @@ def build_gate_state(
             quote_age,
             quote_age_threshold,
         )
+    elif symbol.endswith(("_CE", "_PE")):
+        result["quote_freshness"]["reason_code"] = str(
+            measurements.get("quote_missing_reason", "no_quote")
+        )
+    if symbol.endswith(("_CE", "_PE")) and body_applies:
+        if direction_matches is None:
+            result["option_candle_momentum_direction"]["reason_code"] = str(
+                measurements.get("option_candle_missing_reason", "no_candle")
+            )
+        if body_ratio is None or body_threshold is None:
+            result["option_candle_momentum_body"]["reason_code"] = str(
+                measurements.get("option_candle_missing_reason", "no_candle")
+            )
 
     risk_amount = next(
         (
@@ -670,6 +829,61 @@ def build_gate_state(
     ):
         set_gate("order", False, outcome, "order accepted")
 
+    gate_reasons = measurements.get("gate_reasons")
+    if isinstance(gate_reasons, dict):
+        for name, reason_code in gate_reasons.items():
+            if name in result and result[name]["state"] == "not_evaluated":
+                result[name]["reason_code"] = str(reason_code)
+
+    blocker_results = measurements.get("blocker_results")
+    if isinstance(blocker_results, dict):
+        for name, evaluation in blocker_results.items():
+            if name not in result or not isinstance(evaluation, dict):
+                continue
+            passed = evaluation.get("passed")
+            set_gate(
+                name,
+                passed if isinstance(passed, bool) else None,
+                evaluation.get("observed_value"),
+                evaluation.get("threshold"),
+                reason_code=evaluation.get("reason_code"),
+            )
+
+    bar_count = measurements.get("bar_count")
+    if bar_count is not None:
+        minimum_bars = measurements.get("warmup_min_bars", 30)
+        set_gate(
+            "bar_warmup",
+            int(bar_count) >= int(minimum_bars),
+            bar_count,
+            minimum_bars,
+        )
+    indicator_availability = measurements.get("indicator_availability")
+    if isinstance(indicator_availability, dict):
+        required = indicator_availability.get("required", [])
+        available = indicator_availability.get("available", [])
+        set_gate(
+            "indicator_availability",
+            len(required) > 0 and len(required) == len(available),
+            available,
+            required,
+            reason_code=(
+                "evaluated"
+                if len(required) == len(available)
+                else "missing_required_indicators"
+            ),
+        )
+
+    if normalized_signal not in {"BUY", "SELL"}:
+        for name in (
+            "trend_setup",
+            "breakout_quality",
+            "accuracy_confirmation",
+            "pending_entry_lock",
+        ):
+            if result[name]["state"] == "not_evaluated":
+                result[name]["reason_code"] = "no_candidate_signal"
+
     return result
 
 
@@ -684,6 +898,7 @@ def build_independent_bar_gate_state(
     history: List[Dict[str, Any]],
     support_evaluation: Dict[str, Any],
     config: Dict[str, Any],
+    extra_measurements: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Evaluate gates derivable from a completed underlying bar without entry flow."""
     measurements: Dict[str, Any] = {
@@ -691,6 +906,8 @@ def build_independent_bar_gate_state(
             0, min(int(config.get("min_entry_score", 70)), 85)
         )
     }
+    if isinstance(extra_measurements, dict):
+        measurements.update(extra_measurements)
     if history:
         volatility_min = max(float(config.get("min_volatility_pct", 0.05)), 0.0)
         volatility_max = max(
@@ -726,6 +943,17 @@ def build_independent_bar_gate_state(
         measurements["confirmation_result"] = (
             "passed" if confirmation_passed else "failed"
         )
+        measurements["accuracy_confirmation_passed"] = confirmation_passed
+        measurements["accuracy_confirmation_observed"] = {
+            "current_close": history[-1].get("close"),
+            "previous_close": history[-2].get("close"),
+            "direction": direction,
+        }
+    else:
+        measurements.setdefault("gate_reasons", {})[
+            "accuracy_confirmation"
+        ] = "confirmation_bars_unavailable"
+    measurements["bar_count"] = len(history)
 
     return build_gate_state(
         symbol=symbol,

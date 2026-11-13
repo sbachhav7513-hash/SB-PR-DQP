@@ -366,6 +366,8 @@ class PaperTradingRecorder:
         "gate_passed_at", "gate_state", "gate_state_v2",
         "gate_state_v2_changes", "gate_state_v2_full",
         "gate_state_v2_by_direction",
+        "gate_state_v2_by_option_leg", "gate_state_v2_account_by_symbol",
+        "gate_state_v2_warmup", "support_reversal_timing",
         "scorer_bar_payload",
         "signal_time", "signal_close", "signal_bar", "signal_premium",
         "signal_bid", "signal_ask", "signal_ltp", "signal_quote_age_seconds",

@@ -13,9 +13,12 @@ from market_bot.bar_builder import Bar
 from market_bot.engine import score_market
 from market_bot.kite_main import KiteTradingBot
 from market_bot.scorer_observability import (
+    DIRECTIONAL_GATE_STATE_NAMES,
     GATE_STATE_NAMES,
+    OPTION_SIDE_GATE_NAMES,
     build_independent_bar_gate_state,
     build_gate_state,
+    encode_gate_state_v2,
     empty_gate_state,
     score_observation,
     scorer_inputs,
@@ -456,6 +459,7 @@ def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
     assert set(records[1]["gate_state_v2_changes"]["ema"]) == {
         "observed_value",
         "threshold",
+        "reason_code",
     }
     assert set(records[2]["gate_state_v2_changes"]) == {"order"}
     assert "gate_state" not in records[0]
@@ -516,6 +520,7 @@ def test_gate_state_records_failed_score_for_hold_evaluation():
         "observed_value": 62,
         "threshold": 70,
         "evaluation_timestamp": timestamp,
+        "reason_code": "evaluated",
     }
 
 
@@ -680,11 +685,219 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
     assert "gate_state_v2_full" not in directions["SELL"]
     for direction_state in directions.values():
         _, codes = direction_state["gate_state_v2"].split("|", 1)
-        assert len(codes) == len(GATE_STATE_NAMES)
+        assert len(codes) == len(DIRECTIONAL_GATE_STATE_NAMES)
         assert direction_state.get("gate_state_v2_changes") or direction_state.get(
             "gate_state_v2_full"
         )
     assert bot._take_gate_state_for_bar("NIFTY", bars[-1]) == {}
+
+
+def test_support_reversal_timing_and_warmup_are_recorded_per_bar():
+    timestamp = datetime(2026, 11, 12, 9, 15, tzinfo=IST)
+    history = [
+        {
+            "time": timestamp + pd.Timedelta(minutes=index),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1,
+        }
+        for index in range(5)
+    ]
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "bar_interval_seconds": 60,
+        "support_reversal_enabled": True,
+    }
+
+    timing = bot._support_reversal_timing(
+        history,
+        history[-1]["time"],
+        completed_aggregation_bars=1,
+        minimum_aggregation_bars=10,
+    )
+
+    assert timing["boundary_time"] == "2026-11-12T09:15:00+05:30"
+    assert timing["next_evaluation_time"] == "2026-11-12T09:20:00+05:30"
+    assert timing["minutes_to_next_evaluation"] == 0
+    assert [
+        item["minutes_to_next_evaluation"]
+        for item in timing["completed_bars"]
+    ] == [4, 3, 2, 1, 0]
+    assert timing["completed_aggregation_bars"] == 1
+    assert timing["minimum_aggregation_bars"] == 10
+
+
+def test_option_gate_logging_reports_missing_inputs_and_available_lot_size():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "bar_interval_seconds": 60,
+        "instrument_tokens": {"NIFTY_CE": 101},
+        "options_underlyings": ["NIFTY"],
+    }
+    bot.option_quote_cache = {}
+    bot.kite_stream = SimpleNamespace(contract_symbols={})
+    bot.intraday_manager = SimpleNamespace(
+        contract_specs={"NIFTY_CE": {"lot_size": 50}},
+    )
+
+    measured = bot._option_bar_gate_measurements(
+        "NIFTY_CE",
+        "BUY",
+        datetime(2026, 11, 12, 9, 30, tzinfo=IST),
+        None,
+    )
+    results = measured["blocker_results"]
+
+    assert results["option_leg"]["passed"] is True
+    assert results["lot_size"]["passed"] is True
+    assert results["premium_range"]["reason_code"] == "no_quote"
+    assert results["risk_cap"]["reason_code"] == "no_quote"
+    assert results["capital_cap"]["reason_code"] == "no_quote"
+    assert results["position_size"]["reason_code"] == "no_quote"
+    assert results["option_contract"]["reason_code"] == (
+        "contract_metadata_unavailable"
+    )
+    assert measured["option_candle_missing_reason"] == "no_candle"
+
+
+def test_entry_window_observation_matches_actual_session_and_cutoff_rules():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "entry_cutoff_minutes_before_close": 45,
+        "late_window_enabled": False,
+    }
+
+    def entry_window_at(bar_minute):
+        return bot._bar_blocker_measurements(
+            "NIFTY",
+            "BUY",
+            datetime(2026, 11, 12, 9, 0, tzinfo=IST)
+            + pd.Timedelta(minutes=bar_minute),
+            [],
+            {},
+            [],
+            support_evaluation={},
+            benchmark_context={},
+        )["blocker_results"]["entry_window"]
+
+    during_open = entry_window_at(19)
+    at_cutoff = entry_window_at(344)
+
+    assert during_open["passed"] is True
+    assert "opening_block" not in during_open["observed_value"]
+    assert "closing_block" not in during_open["observed_value"]
+    assert during_open["threshold"]["entry_cutoff_time"] == "14:45"
+    assert at_cutoff["passed"] is False
+
+
+def test_selected_option_legs_evaluate_candle_quote_risk_and_capital_gates():
+    evaluation_time = datetime(2026, 11, 12, 9, 31, tzinfo=IST)
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "instrument_tokens": {"NIFTY_CE": 101, "NIFTY_PE": 102},
+        "account_size": 100_000,
+        "option_min_premium": 12,
+        "option_max_premium": 800,
+        "option_premium_stop_pct": 0.05,
+        "option_max_risk_per_lot_pct": 10,
+        "option_min_lots": 1,
+        "option_max_lots": 3,
+        "option_min_candle_body_ratio": 0.6,
+        "option_min_volume": 200,
+        "option_min_oi": 400,
+        "option_iv_min": 0.08,
+        "option_iv_max": 1.2,
+        "option_quote_max_age_seconds": 60,
+        "option_premium_rising_momentum_v2": True,
+        "premium_floor_v2": False,
+        "banknifty_caps_v2": False,
+        "capital_based_risk_v2": False,
+    }
+    bot.option_quote_cache = {
+        symbol: {
+            "last_price": 100,
+            "bid": 99.5,
+            "ask": 100.5,
+            "volume": 500,
+            "oi": 1_000,
+            "iv": 0.5,
+            "timestamp": evaluation_time,
+        }
+        for symbol in ("NIFTY_CE", "NIFTY_PE")
+    }
+    bot.kite_stream = SimpleNamespace(
+        contract_symbols={"NIFTY_CE": "NIFTY26NOV25000CE", "NIFTY_PE": "NIFTY26NOV25000PE"},
+        contract_expiries={
+            "NIFTY_CE": datetime(2026, 11, 17).date(),
+            "NIFTY_PE": datetime(2026, 11, 17).date(),
+        },
+    )
+    bot.intraday_manager = SimpleNamespace(
+        contract_specs={
+            "NIFTY_CE": {"lot_size": 50},
+            "NIFTY_PE": {"lot_size": 50},
+        },
+        max_risk_per_trade=1_000,
+        open_position_risk=lambda: 0,
+    )
+    option_bar = Bar(
+        datetime(2026, 11, 12, 9, 30, tzinfo=IST),
+        100,
+        112,
+        98,
+        110,
+        500,
+    )
+
+    for symbol, direction in (("NIFTY_CE", "BUY"), ("NIFTY_PE", "SELL")):
+        measured = bot._option_bar_gate_measurements(
+            symbol,
+            direction,
+            option_bar.timestamp,
+            option_bar,
+        )
+        results = measured["blocker_results"]
+
+        assert results["option_candle_momentum_direction"]["passed"] is True
+        assert results["option_candle_momentum_body"]["passed"] is True
+        assert results["option_expiry"]["passed"] is True
+        assert results["option_market_quality"]["passed"] is True
+        assert results["premium_range"]["passed"] is True
+        assert results["quote_freshness"]["passed"] is True
+        assert results["risk_cap"]["passed"] is True
+        assert results["capital_cap"]["passed"] is True
+        assert results["position_size"]["passed"] is True
+        assert results["lot_size"]["passed"] is True
+
+        state = build_gate_state(
+            symbol=symbol,
+            signal=direction,
+            outcome="independent_option_bar_evaluation",
+            timestamp=option_bar.timestamp.isoformat(),
+            score=75,
+            reasons=[],
+            scorer_inputs={},
+            measurements=measured,
+            support_evaluation={},
+            entry_evaluation={},
+            config=bot.config,
+        )
+        fields, _, _ = encode_gate_state_v2(
+            state,
+            option_bar.timestamp.isoformat(),
+            None,
+            first_seen=True,
+            gate_names=OPTION_SIDE_GATE_NAMES,
+        )
+        assert len(fields["gate_state_v2"].split("|", 1)[1]) == len(
+            OPTION_SIDE_GATE_NAMES
+        )
 
 
 def test_gate_state_assembly_exception_is_fail_open(monkeypatch):
