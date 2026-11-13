@@ -1,8 +1,11 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from market_bot.trade_journal import PaperTradingRecorder, TradeJournal
+from market_bot.trade_journal import read_decisions
 from market_bot.weekly_report import (
     _daily_record_columns,
     _option_capture_window_status,
@@ -387,6 +390,82 @@ def test_daily_and_weekly_reviews_group_modeled_fees_net_pnl_and_r(tmp_path):
     assert "| exit_trigger | bot stop | 1 | 100.00 | 10.00 (1/1) | 90.00" in weekly_review
     assert weekly_report["cost_performance"]["CE/PE"]["CE"]["average_r"] == 1.5
     assert weekly_report["human_command_affected_trade"] is True
+
+
+def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(second=0, microsecond=0)
+    day_dir = (
+        tmp_path
+        / "paper"
+        / now.strftime("%Y-%m")
+        / f"week_{now.isocalendar().week:02d}"
+        / f"day_{now.day:02d}"
+    )
+    parts = day_dir / "decisions"
+    parts.mkdir(parents=True)
+    old_timestamp = now.isoformat()
+    new_timestamp = (now + timedelta(minutes=1)).isoformat()
+    old = pd.DataFrame(
+        [
+            {
+                "timestamp": old_timestamp,
+                "ticker": "NIFTY_CE",
+                "signal": "HOLD",
+                "outcome": "hold",
+                "reasons": "[]",
+            }
+        ]
+    )
+    new_gate_state = {
+        "ema": {
+            "state": "pass",
+            "observed_value": {"fast": 101, "slow": 100},
+            "threshold": "fast > slow for BUY",
+            "evaluation_timestamp": new_timestamp,
+        }
+    }
+    new = pd.DataFrame(
+        [
+            {
+                "timestamp": new_timestamp,
+                "ticker": "NIFTY_CE",
+                "signal": "BUY",
+                "outcome": "hold",
+                "reasons": "[]",
+                "gate_state": json.dumps(new_gate_state),
+            }
+        ]
+    )
+    old.to_parquet(
+        parts / f"decisions_{now.hour:02d}_000000_000001.parquet",
+        engine="fastparquet",
+    )
+    new.to_parquet(
+        parts / f"decisions_{now.hour:02d}_000001_000002.parquet",
+        engine="fastparquet",
+    )
+
+    projected = read_decisions(
+        day_dir, columns=["timestamp", "ticker", "signal", "gate_state"]
+    )
+    assert len(projected) == 2
+    assert pd.isna(projected.iloc[0]["gate_state"])
+    assert json.loads(projected.iloc[1]["gate_state"]) == new_gate_state
+
+    daily_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+    weekly_report = build_weekly_report(
+        str(tmp_path),
+        days=7,
+        paper_data_dir=str(tmp_path / "paper"),
+    )
+
+    assert "- Decisions: 2" in daily_path.read_text(encoding="utf-8")
+    assert weekly_report["decisions_recorded"] == 2
 
 
 def test_daily_review_marks_successful_human_command_from_command_archive(tmp_path):

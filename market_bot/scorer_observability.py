@@ -173,6 +173,445 @@ def add_score_adjustment(
     return updated
 
 
+GATE_STATE_NAMES = (
+    "regime_breakout",
+    "ema",
+    "adx",
+    "rsi",
+    "macd",
+    "score_threshold",
+    "pivot_touches",
+    "support_reversal_detector",
+    "option_candle_momentum_direction",
+    "option_candle_momentum_body",
+    "volatility_band",
+    "premium_range",
+    "quote_freshness",
+    "risk_cap",
+    "capital_cap",
+    "confirmation",
+    "order",
+)
+
+
+def empty_gate_state(timestamp: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    return {
+        name: {
+            "state": "not_evaluated",
+            "observed_value": None,
+            "threshold": None,
+            "evaluation_timestamp": timestamp,
+        }
+        for name in GATE_STATE_NAMES
+    }
+
+
+def build_gate_state(
+    *,
+    symbol: str,
+    signal: str,
+    outcome: str,
+    timestamp: Optional[str],
+    score: Optional[int],
+    reasons: List[str],
+    scorer_inputs: Dict[str, Any],
+    measurements: Dict[str, Any],
+    support_evaluation: Dict[str, Any],
+    entry_evaluation: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Build read-only, per-evaluation status for the existing entry gates."""
+    result = empty_gate_state(timestamp)
+    scorer_inputs = scorer_inputs if isinstance(scorer_inputs, dict) else {}
+    measurements = measurements if isinstance(measurements, dict) else {}
+    support_evaluation = (
+        support_evaluation if isinstance(support_evaluation, dict) else {}
+    )
+    entry_evaluation = (
+        entry_evaluation if isinstance(entry_evaluation, dict) else {}
+    )
+    config = config if isinstance(config, dict) else {}
+    reasons = reasons if isinstance(reasons, list) else []
+    reason_text = " ".join(str(reason) for reason in reasons).lower()
+    normalized_signal = str(signal or "").upper()
+    normalized_outcome = str(outcome or "").lower()
+    candidate = normalized_signal in {"BUY", "SELL"}
+
+    def set_gate(
+        name: str,
+        passed: Optional[bool],
+        observed: Any,
+        threshold: Any,
+        *,
+        evaluated: bool = True,
+    ) -> None:
+        if not evaluated or passed is None:
+            return
+        result[name] = {
+            "state": "pass" if passed else "fail",
+            "observed_value": observed,
+            "threshold": threshold,
+            "evaluation_timestamp": timestamp,
+        }
+
+    regime = scorer_inputs.get("regime_label")
+    breakout_outcome = normalized_outcome.startswith("paper_range_breakout")
+    regime_blocked = any(
+        marker in reason_text for marker in ("sideways regime", "extended move")
+    )
+    if breakout_outcome:
+        set_gate(
+            "regime_breakout",
+            normalized_outcome == "paper_range_breakout_trade_opened",
+            {"regime": regime, "outcome": outcome},
+            {
+                "sideways_range_pct": config.get("sideways_range_pct"),
+                "sideways_net_move_pct": config.get("sideways_net_move_pct"),
+                "lookback_bars": config.get("option_range_lookback_bars"),
+                "confirmation_bars": config.get("option_range_confirmation_bars"),
+            },
+        )
+    elif regime is not None:
+        set_gate(
+            "regime_breakout",
+            not regime_blocked and str(regime).upper() not in {"SIDEWAYS", "EXTENDED"},
+            {"regime": regime, "blocked_by_reason": regime_blocked},
+            {
+                "sideways_range_pct": config.get("sideways_range_pct"),
+                "sideways_net_move_pct": config.get("sideways_net_move_pct"),
+            },
+        )
+
+    fast = scorer_inputs.get("ema_fast_value")
+    slow = scorer_inputs.get("ema_slow_value")
+    if candidate and fast is not None and slow is not None:
+        aligned = fast > slow if normalized_signal == "BUY" else fast < slow
+        set_gate(
+            "ema",
+            aligned,
+            {"fast": fast, "slow": slow, "direction": normalized_signal},
+            "fast > slow for BUY; fast < slow for SELL",
+        )
+
+    adx = scorer_inputs.get("adx_value", measurements.get("adx"))
+    adx_threshold = measurements.get(
+        "adx_threshold", config.get("min_adx", 18.0)
+    )
+    if adx is not None and score is not None:
+        set_gate(
+            "adx",
+            float(adx) >= float(adx_threshold),
+            adx,
+            adx_threshold,
+        )
+
+    rsi_value = scorer_inputs.get("rsi_value")
+    rsi_direction = normalized_signal
+    if not candidate:
+        if "rsi overbought against buy" in reason_text:
+            rsi_direction = "BUY"
+        elif "rsi oversold against sell" in reason_text:
+            rsi_direction = "SELL"
+        else:
+            rsi_direction = ""
+    rsi_threshold = (
+        config.get("rsi_buy_block_above", 80.0)
+        if rsi_direction == "BUY"
+        else config.get("rsi_sell_block_below", 25.0)
+    )
+    if rsi_direction and rsi_value is not None:
+        set_gate(
+            "rsi",
+            (
+                float(rsi_value) <= float(rsi_threshold)
+                if rsi_direction == "BUY"
+                else float(rsi_value) >= float(rsi_threshold)
+            ),
+            {"value": rsi_value, "direction": rsi_direction},
+            {"block_above_buy": config.get("rsi_buy_block_above", 80.0),
+             "block_below_sell": config.get("rsi_sell_block_below", 25.0)},
+        )
+
+    macd = scorer_inputs.get("macd_value")
+    previous_macd = scorer_inputs.get("macd_previous_value")
+    if candidate and macd is not None and previous_macd is not None:
+        macd_passed = (
+            float(macd) >= 0 and float(macd) >= float(previous_macd) - 1e-9
+            if normalized_signal == "BUY"
+            else float(macd) <= 0 and float(macd) <= float(previous_macd) + 1e-9
+        )
+        set_gate(
+            "macd",
+            macd_passed,
+            {"value": macd, "previous_value": previous_macd,
+             "direction": normalized_signal},
+            "nonnegative and nondecreasing for BUY; nonpositive and nonincreasing for SELL",
+        )
+
+    score_threshold = measurements.get(
+        "score_threshold", config.get("min_entry_score", 70)
+    )
+    score_gate_evaluated = candidate or (
+        score is not None
+        and score_threshold is not None
+        and float(score) < float(score_threshold)
+    ) or "score" in reason_text
+    if score_gate_evaluated and score is not None and score_threshold is not None:
+        set_gate(
+            "score_threshold",
+            float(score) >= float(score_threshold),
+            score,
+            score_threshold,
+        )
+
+    pivot_levels = scorer_inputs.get("pivot_levels") or []
+    pivot_touches = support_evaluation.get("touches")
+    if pivot_touches is None and pivot_levels:
+        pivot_touches = max(
+            (
+                level.get("touches")
+                for level in pivot_levels
+                if isinstance(level, dict) and level.get("touches") is not None
+            ),
+            default=None,
+        )
+    if pivot_touches is not None:
+        set_gate(
+            "pivot_touches",
+            int(pivot_touches) >= 2,
+            pivot_touches,
+            config.get("support_reversal_min_touches", 2),
+        )
+    support_was_evaluated = bool(support_evaluation.get("evaluated"))
+    if support_was_evaluated:
+        detected = bool(support_evaluation.get("candidate"))
+        set_gate(
+            "support_reversal_detector",
+            detected,
+            {
+                "detected": detected,
+                "signal": support_evaluation.get("signal"),
+                "level": support_evaluation.get("level"),
+                "touches": support_evaluation.get("touches"),
+            },
+            "support/reversal candidate detected",
+        )
+        if pivot_touches is None and detected:
+            pivot_touches = support_evaluation.get("touches")
+        if pivot_touches is not None:
+            set_gate(
+                "pivot_touches",
+                int(pivot_touches) >= 2,
+                pivot_touches,
+                config.get("support_reversal_min_touches", 2),
+            )
+
+    body_applies = (
+        symbol.endswith(("_CE", "_PE"))
+        and measurements.get("body_ratio_gate_applies") is True
+    )
+    direction_matches = measurements.get("body_ratio_direction_matches")
+    if body_applies and direction_matches is not None:
+        set_gate(
+            "option_candle_momentum_direction",
+            bool(direction_matches),
+            direction_matches,
+            True,
+        )
+    body_ratio = measurements.get("body_ratio")
+    body_threshold = measurements.get("body_ratio_threshold")
+    if body_applies and body_ratio is not None and body_threshold is not None:
+        set_gate(
+            "option_candle_momentum_body",
+            float(body_ratio) >= float(body_threshold),
+            body_ratio,
+            body_threshold,
+        )
+
+    volatility = measurements.get("volatility_pct")
+    volatility_min = measurements.get(
+        "volatility_min_pct", config.get("min_volatility_pct", 0.05)
+    )
+    volatility_max = measurements.get(
+        "volatility_max_pct", config.get("max_volatility_pct", 5.0)
+    )
+    if candidate and volatility is not None:
+        volatility_rejected = "accuracy_filter_rejected:volatility" in normalized_outcome
+        set_gate(
+            "volatility_band",
+            (
+                False
+                if volatility_rejected
+                else float(volatility_min) <= float(volatility) <= float(volatility_max)
+            ),
+            volatility,
+            {"minimum_pct": volatility_min, "maximum_pct": volatility_max},
+        )
+
+    change_gates = measurements.get("paper_change_gate_evaluations")
+    change_gates = change_gates if isinstance(change_gates, dict) else {}
+    premium_eval = change_gates.get("premium_floor_v2")
+    premium_eval = premium_eval if isinstance(premium_eval, dict) else {}
+    banknifty_eval = change_gates.get("banknifty_caps_v2")
+    banknifty_eval = banknifty_eval if isinstance(banknifty_eval, dict) else {}
+    premium = premium_eval.get(
+        "premium", measurements.get("ltp", measurements.get("signal_premium"))
+    )
+    premium_floor = premium_eval.get(
+        "floor", config.get("option_min_premium", 12.0)
+    )
+    premium_cap = (
+        banknifty_eval.get("premium_cap")
+        if banknifty_eval.get("applies")
+        else config.get("option_max_premium", 800.0)
+    )
+    if (
+        symbol.endswith(("_CE", "_PE"))
+        and premium is not None
+        and premium_floor is not None
+        and premium_cap is not None
+    ):
+        premium_passed = float(premium) >= float(premium_floor) and float(
+            premium
+        ) <= float(premium_cap)
+        if premium_eval.get("applies") and premium_eval.get("passed") is False:
+            premium_passed = False
+        set_gate(
+            "premium_range",
+            premium_passed,
+            premium,
+            {"minimum": premium_floor, "maximum": premium_cap},
+        )
+
+    quote_age = measurements.get("quote_age_seconds")
+    quote_age_threshold = measurements.get(
+        "quote_age_threshold_seconds",
+        config.get("option_quote_max_age_seconds", 60),
+    )
+    if (
+        symbol.endswith(("_CE", "_PE"))
+        and quote_age is not None
+        and quote_age_threshold is not None
+    ):
+        set_gate(
+            "quote_freshness",
+            float(quote_age) <= float(quote_age_threshold),
+            quote_age,
+            quote_age_threshold,
+        )
+
+    risk_amount = next(
+        (
+            entry_evaluation.get(key)
+            for key in (
+                "risk_amount", "risk_inr", "option_risk_per_lot_rupees",
+                "proposed_risk_amount",
+            )
+            if entry_evaluation.get(key) is not None
+        ),
+        None,
+    )
+    risk_cap = next(
+        (
+            entry_evaluation.get(key)
+            for key in ("risk_cap_rupees", "risk_cap_inr", "hard_risk_cap_inr")
+            if entry_evaluation.get(key) is not None
+        ),
+        banknifty_eval.get("risk_cap_inr"),
+    )
+    rejection = str(entry_evaluation.get("rejection_reason") or normalized_outcome)
+    risk_rejected = any(
+        marker in rejection.lower()
+        for marker in (
+            "risk",
+            "one_lot_exceeds",
+            "loss_cap",
+        )
+    )
+    if risk_amount is not None and risk_cap is not None:
+        set_gate(
+            "risk_cap",
+            float(risk_amount) <= float(risk_cap),
+            risk_amount,
+            risk_cap,
+        )
+    elif entry_evaluation.get("accepted") is True:
+        set_gate("risk_cap", True, risk_amount, risk_cap)
+    elif risk_rejected:
+        set_gate("risk_cap", False, risk_amount, risk_cap)
+
+    invested = next(
+        (
+            entry_evaluation.get(key)
+            for key in (
+                "proposed_invested_amount", "invested_amount",
+                "max_capital_per_trade_used_amount",
+            )
+            if entry_evaluation.get(key) is not None
+        ),
+        None,
+    )
+    capital_cap = next(
+        (
+            entry_evaluation.get(key)
+            for key in (
+                "max_capital_per_trade_used_amount",
+                "banknifty_max_capital_per_trade_amount",
+                "max_capital_per_trade_amount",
+            )
+            if entry_evaluation.get(key) is not None
+        ),
+        None,
+    )
+    capital_rejected = any(
+        marker in rejection.lower()
+        for marker in ("capital_cap", "capital limit", "invested amount")
+    )
+    if invested is not None and capital_cap is not None:
+        set_gate(
+            "capital_cap",
+            float(invested) <= float(capital_cap),
+            invested,
+            capital_cap,
+        )
+    elif entry_evaluation.get("accepted") is True:
+        set_gate("capital_cap", True, invested, capital_cap)
+    elif capital_rejected:
+        set_gate("capital_cap", False, invested, capital_cap)
+
+    confirmation = (
+        entry_evaluation.get("confirmation_result")
+        or measurements.get("confirmation_result")
+    )
+    if confirmation in {"passed", "failed"}:
+        set_gate(
+            "confirmation",
+            confirmation == "passed",
+            confirmation,
+            "passed",
+        )
+    elif "rejected_by_confirmation" in normalized_outcome:
+        set_gate("confirmation", False, "rejected", "passed")
+
+    if normalized_outcome in {
+        "trade_opened",
+        "paper_range_breakout_trade_opened",
+    } or measurements.get("order_time"):
+        set_gate(
+            "order",
+            True,
+            measurements.get("order_time") or outcome,
+            "order accepted",
+        )
+    elif any(
+        marker in normalized_outcome
+        for marker in ("execution_failed", "live_order_failed", "order_failed")
+    ):
+        set_gate("order", False, outcome, "order accepted")
+
+    return result
+
+
 def first_passed_gate_times(
     *,
     signal: str,

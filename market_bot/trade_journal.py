@@ -363,7 +363,7 @@ class PaperTradingRecorder:
         "scorer_first_bar_time", "scorer_last_bar_time",
         "scorer_last_bar_ohlc", "scorer_last_bar_complete",
         "scorer_inputs", "score_components", "component_score",
-        "gate_passed_at",
+        "gate_passed_at", "gate_state",
         "scorer_bar_payload",
         "signal_time", "signal_close", "signal_bar", "signal_premium",
         "signal_bid", "signal_ask", "signal_ltp", "signal_quote_age_seconds",
@@ -1996,6 +1996,10 @@ class DecisionJournal:
         except (OSError, TypeError, ValueError):
             # Observability must never interrupt live order handling.
             logger.exception("Could not write decision audit record to %s", self.path)
+        except Exception:
+            logger.exception(
+                "Unexpected error writing decision audit record to %s", self.path
+            )
         try:
             self.rejected_signal_journal.record_rejection(entry)
         except (
@@ -2009,6 +2013,11 @@ class DecisionJournal:
         ):
             logger.exception(
                 "Could not record rejected-signal telemetry for %s",
+                entry.get("ticker"),
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error recording rejected-signal telemetry for %s",
                 entry.get("ticker"),
             )
 

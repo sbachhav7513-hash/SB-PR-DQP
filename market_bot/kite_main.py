@@ -62,6 +62,8 @@ from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
 from .scorer_observability import (
     add_score_adjustment,
+    build_gate_state,
+    empty_gate_state,
     first_passed_gate_times,
     score_components,
     score_observation,
@@ -108,6 +110,8 @@ def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
         "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": False,
     }
+    if mode == "PAPER":
+        defaults["gate_state_logging_v1"] = True
     configured_flags = {
         key: bool(config.get(key, default)) for key, default in defaults.items()
     }
@@ -1827,6 +1831,7 @@ class KiteTradingBot:
         self._tick_duration_samples = deque(maxlen=10000)
         self._last_telemetry_at = time.monotonic()
         self._feature_observation_error_counts = {}
+        self._feature_observation_exception_counts = {}
         self._feature_observation_warning_times = {}
         self._feature_observation_error_lock = threading.Lock()
         self._scorer_context_by_symbol = {}
@@ -1862,6 +1867,8 @@ class KiteTradingBot:
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
         if self.simulation_mode:
             self.mode = "PAPER"
+        if self.mode == "PAPER":
+            self.config.setdefault("gate_state_logging_v1", True)
         _log_runtime_flags(self.config, self.mode)
         self.config_hash = strategy_config_hash(self.config)
         self.git_identity = log_startup_identity(
@@ -3766,6 +3773,16 @@ class KiteTradingBot:
                 counts = {}
                 self._feature_observation_error_counts = counts
             counts[call_site] = counts.get(call_site, 0) + 1
+            exception_counts = getattr(
+                self, "_feature_observation_exception_counts", None
+            )
+            if exception_counts is None:
+                exception_counts = {}
+                self._feature_observation_exception_counts = exception_counts
+            exception_key = f"feature_error:{type(error).__name__}"
+            exception_counts[exception_key] = (
+                exception_counts.get(exception_key, 0) + 1
+            )
             warning_times = getattr(
                 self, "_feature_observation_warning_times", None
             )
@@ -5739,6 +5756,9 @@ class KiteTradingBot:
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
         getattr(self, "_scorer_context_by_symbol", {}).pop(symbol, None)
+        getattr(self, "_support_reversal_eval_by_symbol", {}).pop(
+            symbol, None
+        )
         if not symbol.endswith(("_CE", "_PE")):
             writer = getattr(self, "option_capture_writer", None)
             if writer is not None:
@@ -5945,6 +5965,31 @@ class KiteTradingBot:
             support_candidate = self._support_reversal_candidate(
                 symbol, support_underlying_bars
             )
+            support_evaluations = getattr(
+                self, "_support_reversal_eval_by_symbol", None
+            )
+            if support_evaluations is None:
+                support_evaluations = {}
+                self._support_reversal_eval_by_symbol = support_evaluations
+            support_evaluations[symbol] = {
+                "evaluated": True,
+                "candidate": support_candidate is not None,
+                "signal": (
+                    support_candidate.signal
+                    if support_candidate is not None
+                    else None
+                ),
+                "level": (
+                    support_candidate.level
+                    if support_candidate is not None
+                    else None
+                ),
+                "touches": (
+                    support_candidate.touches
+                    if support_candidate is not None
+                    else None
+                ),
+            }
             active_positions = getattr(
                 getattr(self, "intraday_manager", None), "active_positions", {}
             )
@@ -7611,6 +7656,9 @@ class KiteTradingBot:
             self, "_feature_observation_error_counts", {}
         )
         feature_observation_errors = sum(feature_error_counts.values())
+        feature_exception_counts = getattr(
+            self, "_feature_observation_exception_counts", {}
+        )
         trade_feature_errors = (
             trade_recorder.feature_telemetry()["trade_feature_write_errors"]
             if trade_recorder is not None
@@ -7657,6 +7705,7 @@ class KiteTradingBot:
             "option_capture_last_flush_rows=%d option_capture_last_flush_ms=%.3f "
             "option_capture_dropped_rows=%d shadow_latest=%d option_capture_sizes=%s "
             "feature_observation_errors=%d paper_trade_feature_write_errors=%d "
+            "feature_error_counts=%s "
             "scorer_bar_rows=%d scorer_bar_payload_bytes=%d "
             "scorer_bar_written_bytes=%d scorer_bar_observation_cpu_us=%.3f "
             "telegram_queue_depth=%d telegram_sent=%d telegram_failed=%d "
@@ -7684,6 +7733,7 @@ class KiteTradingBot:
             json.dumps(option_sizes, sort_keys=True),
             feature_observation_errors,
             trade_feature_errors,
+            json.dumps(feature_exception_counts, sort_keys=True),
             decision.get("scorer_bar_rows_enqueued", 0),
             decision.get("scorer_bar_payload_bytes_enqueued", 0),
             decision.get("scorer_bar_written_bytes", 0),
@@ -10449,6 +10499,72 @@ class KiteTradingBot:
             still_tracking.append(item)
         self._stop_event_check_state[symbol] = still_tracking
 
+    def _gate_state_logging_enabled(self) -> bool:
+        paper_mode = getattr(
+            self,
+            "mode",
+            "PAPER" if getattr(self, "paper_trading_enabled", False) else None,
+        )
+        return (
+            bool(getattr(self, "paper_trading_enabled", False))
+            and not bool(getattr(self, "live_orders_enabled", False))
+            and paper_mode == "PAPER"
+            and bool(
+                (getattr(self, "config", {}) or {}).get(
+                    "gate_state_logging_v1", True
+                )
+            )
+        )
+
+    def _gate_state_for_decision(
+        self,
+        *,
+        symbol: str,
+        signal: str,
+        outcome: str,
+        timestamp: Optional[str],
+        score: Optional[int],
+        reasons: list[str],
+        scorer_context: dict,
+        measurements: dict,
+        entry_evaluation: Optional[dict],
+    ) -> Optional[dict]:
+        if not self._gate_state_logging_enabled():
+            return None
+        try:
+            gate_state = build_gate_state(
+                symbol=symbol,
+                signal=signal,
+                outcome=outcome,
+                timestamp=timestamp,
+                score=score,
+                reasons=reasons,
+                scorer_inputs=scorer_context.get("scorer_inputs", {}),
+                measurements=measurements,
+                support_evaluation=getattr(
+                    self, "_support_reversal_eval_by_symbol", {}
+                ).get(symbol, {}),
+                entry_evaluation=entry_evaluation or {},
+                config=getattr(self, "config", {}) or {},
+            )
+            json.dumps(
+                gate_state,
+                default=str,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            return gate_state
+        except Exception as error:
+            try:
+                self._record_feature_observation_error(
+                    "gate_state_logging", error, symbol
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] Could not count gate-state logging failure", symbol
+                )
+            return empty_gate_state(timestamp)
+
     def _record_decision(
         self,
         symbol: str,
@@ -10589,6 +10705,17 @@ class KiteTradingBot:
                 or getattr(self, "_candidate_order_times", {}).get(signal_uid)
                 or decision_time
             )
+        gate_state = self._gate_state_for_decision(
+            symbol=symbol,
+            signal=signal,
+            outcome=outcome,
+            timestamp=decision_time,
+            score=market_score.score if market_score else None,
+            reasons=reasons,
+            scorer_context=scorer_context,
+            measurements=gate_measurements,
+            entry_evaluation=entry_evaluation,
+        )
         callback_time = self._journal_datetime(
             getattr(self, "_bar_callback_time", None)
         )
@@ -10644,6 +10771,11 @@ class KiteTradingBot:
                 ),
                 "component_score": scorer_context.get("component_score"),
                 "gate_passed_at": gate_passed_at,
+                **(
+                    {"gate_state": gate_state}
+                    if gate_state is not None
+                    else {}
+                ),
                 "order_time": gate_passed_at.get("order"),
                 "strategy_variant": (
                     variant

@@ -12,8 +12,14 @@ import market_bot.kite_main as kite_main
 from market_bot.bar_builder import Bar
 from market_bot.engine import score_market
 from market_bot.kite_main import KiteTradingBot
-from market_bot.scorer_observability import score_observation, scorer_inputs
+from market_bot.scorer_observability import (
+    build_gate_state,
+    empty_gate_state,
+    score_observation,
+    scorer_inputs,
+)
 from market_bot.trade_journal import (
+    DecisionJournal,
     PaperTradingRecorder,
     read_decisions,
     read_scorer_bars,
@@ -358,3 +364,174 @@ def test_scorer_adjustments_are_exposed_without_changing_score_values():
     assert context["scorer_inputs"]["pivot_levels"] == [
         {"kind": "support", "level": 4098.0, "touches": 2}
     ]
+
+
+def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
+    tmp_path,
+):
+    journal_path = tmp_path / "decision_log.jsonl"
+    journal = DecisionJournal(str(journal_path))
+    timestamps = [
+        "2026-11-12T09:30:00+05:30",
+        "2026-11-12T09:31:00+05:30",
+        "2026-11-12T09:32:00+05:30",
+    ]
+    for index, timestamp in enumerate(timestamps):
+        state = build_gate_state(
+            symbol="NIFTY_CE",
+            signal="BUY",
+            outcome="trade_opened" if index == 2 else "hold",
+            timestamp=timestamp,
+            score=75,
+            reasons=[],
+            scorer_inputs={
+                "regime_label": "TRENDING",
+                "ema_fast_value": 101 if index else 99,
+                "ema_slow_value": 100,
+                "adx_value": 25,
+                "rsi_value": 60,
+                "macd_value": 2,
+                "macd_previous_value": 1,
+            },
+            measurements={
+                "adx_threshold": 18,
+                "score_threshold": 70,
+                "quote_age_seconds": 70 if index == 0 else 10,
+                "quote_age_threshold_seconds": 60,
+            },
+            support_evaluation={},
+            entry_evaluation={},
+            config={},
+        )
+        journal.log_decision(
+            {
+                "event": "bar_decision",
+                "timestamp": timestamp,
+                "ticker": "NIFTY_CE",
+                "signal": "BUY",
+                "outcome": "hold",
+                "gate_state": state,
+            }
+        )
+    assert journal.close()
+
+    records = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    first_passed = {}
+    for record in records:
+        for name, gate in record["gate_state"].items():
+            if gate["state"] == "pass":
+                first_passed.setdefault(name, gate["evaluation_timestamp"])
+
+    assert first_passed["regime_breakout"] == timestamps[0]
+    assert first_passed["ema"] == timestamps[1]
+    assert first_passed["quote_freshness"] == timestamps[1]
+    assert first_passed["order"] == timestamps[2]
+    assert set(records[0]["gate_state"]) == set(empty_gate_state(timestamps[0]))
+
+
+def test_gate_state_records_failed_score_for_hold_evaluation():
+    timestamp = "2026-11-12T09:30:00+05:30"
+    state = build_gate_state(
+        symbol="NIFTY",
+        signal="HOLD",
+        outcome="hold",
+        timestamp=timestamp,
+        score=62,
+        reasons=["score below entry threshold"],
+        scorer_inputs={},
+        measurements={"score_threshold": 70},
+        support_evaluation={},
+        entry_evaluation={},
+        config={},
+    )
+
+    assert state["score_threshold"] == {
+        "state": "fail",
+        "observed_value": 62,
+        "threshold": 70,
+        "evaluation_timestamp": timestamp,
+    }
+
+
+def test_gate_state_assembly_exception_is_fail_open(monkeypatch):
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {"gate_state_logging_v1": True}
+
+    def fail_assembly(**_kwargs):
+        raise RuntimeError("injected gate-state failure")
+
+    monkeypatch.setattr(kite_main, "build_gate_state", fail_assembly)
+    timestamp = "2026-11-12T09:30:00+05:30"
+
+    state = bot._gate_state_for_decision(
+        symbol="NIFTY_CE",
+        signal="HOLD",
+        outcome="hold",
+        timestamp=timestamp,
+        score=None,
+        reasons=[],
+        scorer_context={},
+        measurements={},
+        entry_evaluation=None,
+    )
+
+    assert state == empty_gate_state(timestamp)
+    assert bot._feature_observation_error_counts["gate_state_logging"] == 1
+    assert bot._feature_observation_exception_counts[
+        "feature_error:RuntimeError"
+    ] == 1
+
+
+def test_gate_state_serialization_exception_is_fail_open(monkeypatch):
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {"gate_state_logging_v1": True}
+
+    def fail_serialization(*_args, **_kwargs):
+        raise RuntimeError("injected gate-state serialization failure")
+
+    monkeypatch.setattr(kite_main.json, "dumps", fail_serialization)
+    timestamp = "2026-11-12T09:30:00+05:30"
+
+    state = bot._gate_state_for_decision(
+        symbol="NIFTY_CE",
+        signal="HOLD",
+        outcome="hold",
+        timestamp=timestamp,
+        score=None,
+        reasons=[],
+        scorer_context={},
+        measurements={},
+        entry_evaluation=None,
+    )
+
+    assert state == empty_gate_state(timestamp)
+    assert bot._feature_observation_exception_counts[
+        "feature_error:RuntimeError"
+    ] == 1
+
+
+def test_gate_state_logging_is_paper_only_and_kill_switch_defaults_on():
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {}
+    assert bot._gate_state_logging_enabled()
+
+    bot.config["gate_state_logging_v1"] = False
+    assert not bot._gate_state_logging_enabled()
+
+    bot.config["gate_state_logging_v1"] = True
+    bot.mode = "LIVE"
+    bot.paper_trading_enabled = False
+    bot.live_orders_enabled = True
+    assert not bot._gate_state_logging_enabled()
