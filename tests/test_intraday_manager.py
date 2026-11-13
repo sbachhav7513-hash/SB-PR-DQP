@@ -3530,10 +3530,8 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         datetime(2026, 9, 24, 10, 29), 25000, 25020, 24990, 25020, 100
     )
     bot.bar_builder = Mock()
-    bot.bar_builder.get_bars.side_effect = (
-        lambda token, limit, include_prior_sessions=False: (
-            underlying_bars if token == 1 else option_bars
-        )
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
     )
     bot.intraday_manager = Mock()
     bot.intraday_manager.should_exit_all_positions.return_value = False
@@ -3570,9 +3568,6 @@ def test_option_entry_uses_one_strategy_in_both_modes(
         ) as score_market_mock:
         bot.on_bar_complete("100", option_bars[-1])
 
-    bot.bar_builder.get_bars.assert_any_call(
-        1, limit=50, include_prior_sessions=True
-    )
     assert score_market_mock.call_args.kwargs[
         "volume_confirmation_history"
     ] == [{"volume": 10}] * len(underlying_bars)
@@ -3677,10 +3672,8 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         datetime(2026, 9, 24, 10, 29), 25000, 25030, 24990, 25020, 100
     )
     bot.bar_builder = Mock()
-    bot.bar_builder.get_bars.side_effect = (
-        lambda token, limit, include_prior_sessions=False: (
-            underlying_bars if token == 1 else option_bars
-        )
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
     )
     bot.intraday_manager = Mock()
     bot.intraday_manager.active_positions = existing_positions
@@ -3864,10 +3857,8 @@ def test_rising_pe_momentum_v2_is_attributed_when_it_changes_the_gate():
         datetime(2026, 9, 24, 10, 29), 25000, 25020, 24990, 25020, 100
     )
     bot.bar_builder = Mock()
-    bot.bar_builder.get_bars.side_effect = (
-        lambda token, limit, include_prior_sessions=False: (
-            underlying_bars if token == 1 else option_bars
-        )
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
     )
     bot.intraday_manager = Mock()
     bot.intraday_manager.active_positions = {}
@@ -3959,10 +3950,8 @@ def test_options_only_skips_entry_when_directional_option_leg_is_unavailable():
         for index in range(30)
     ]
     bot.bar_builder = Mock()
-    bot.bar_builder.get_bars.side_effect = (
-        lambda token, limit, include_prior_sessions=False: (
-            underlying_bars if token == 1 else option_bars
-        )
+    bot.bar_builder.get_bars.side_effect = lambda token, limit: (
+        underlying_bars if token == 1 else option_bars
     )
     bot.intraday_manager = Mock()
     bot.intraday_manager.should_exit_all_positions.return_value = False
