@@ -13,6 +13,7 @@ from market_bot.bar_builder import Bar
 from market_bot.engine import score_market
 from market_bot.kite_main import KiteTradingBot
 from market_bot.scorer_observability import (
+    GATE_STATE_NAMES,
     build_gate_state,
     empty_gate_state,
     score_observation,
@@ -371,27 +372,34 @@ def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
 ):
     journal_path = tmp_path / "decision_log.jsonl"
     journal = DecisionJournal(str(journal_path))
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {}
     timestamps = [
         "2026-11-12T09:30:00+05:30",
         "2026-11-12T09:31:00+05:30",
         "2026-11-12T09:32:00+05:30",
     ]
     for index, timestamp in enumerate(timestamps):
-        state = build_gate_state(
+        state = bot._gate_state_for_decision(
             symbol="NIFTY_CE",
             signal="BUY",
             outcome="trade_opened" if index == 2 else "hold",
             timestamp=timestamp,
             score=75,
             reasons=[],
-            scorer_inputs={
-                "regime_label": "TRENDING",
-                "ema_fast_value": 101 if index else 99,
-                "ema_slow_value": 100,
-                "adx_value": 25,
-                "rsi_value": 60,
-                "macd_value": 2,
-                "macd_previous_value": 1,
+            scorer_context={
+                "scorer_inputs": {
+                    "regime_label": "TRENDING",
+                    "ema_fast_value": 101 if index else 99,
+                    "ema_slow_value": 100,
+                    "adx_value": 25,
+                    "rsi_value": 60,
+                    "macd_value": 2,
+                    "macd_previous_value": 1,
+                }
             },
             measurements={
                 "adx_threshold": 18,
@@ -399,9 +407,7 @@ def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
                 "quote_age_seconds": 70 if index == 0 else 10,
                 "quote_age_threshold_seconds": 60,
             },
-            support_evaluation={},
-            entry_evaluation={},
-            config={},
+            entry_evaluation=None,
         )
         journal.log_decision(
             {
@@ -409,8 +415,8 @@ def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
                 "timestamp": timestamp,
                 "ticker": "NIFTY_CE",
                 "signal": "BUY",
-                "outcome": "hold",
-                "gate_state": state,
+                "outcome": "trade_opened" if index == 2 else "hold",
+                **state,
             }
         )
     assert journal.close()
@@ -421,15 +427,71 @@ def test_gate_state_reconstructs_first_pass_time_for_one_logged_option_leg(
     ]
     first_passed = {}
     for record in records:
-        for name, gate in record["gate_state"].items():
-            if gate["state"] == "pass":
-                first_passed.setdefault(name, gate["evaluation_timestamp"])
+        timestamp, codes = record["gate_state_v2"].split("|", 1)
+        assert len(codes) == len(GATE_STATE_NAMES)
+        for name, code in zip(GATE_STATE_NAMES, codes):
+            if code == "P":
+                first_passed.setdefault(name, timestamp)
 
-    assert first_passed["regime_breakout"] == timestamps[0]
-    assert first_passed["ema"] == timestamps[1]
-    assert first_passed["quote_freshness"] == timestamps[1]
-    assert first_passed["order"] == timestamps[2]
-    assert set(records[0]["gate_state"]) == set(empty_gate_state(timestamps[0]))
+    assert first_passed == {
+        "regime_breakout": timestamps[0],
+        "adx": timestamps[0],
+        "rsi": timestamps[0],
+        "macd": timestamps[0],
+        "score_threshold": timestamps[0],
+        "ema": timestamps[1],
+        "quote_freshness": timestamps[1],
+        "order": timestamps[2],
+    }
+    assert "gate_state_v2_full" in records[0]
+    assert "gate_state_v2_full" not in records[1]
+    assert set(records[0]["gate_state_v2_full"]) == set(
+        empty_gate_state(timestamps[0])
+    )
+    assert set(records[1]["gate_state_v2_changes"]) == {
+        "ema",
+        "quote_freshness",
+    }
+    assert set(records[1]["gate_state_v2_changes"]["ema"]) == {
+        "observed_value",
+        "threshold",
+    }
+    assert set(records[2]["gate_state_v2_changes"]) == {"order"}
+    assert "gate_state" not in records[0]
+
+
+def test_gate_state_v2_scopes_prior_state_by_direction_and_day():
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {}
+
+    def evaluate(signal, timestamp):
+        return bot._gate_state_for_decision(
+            symbol="NIFTY_CE",
+            signal=signal,
+            outcome="hold",
+            timestamp=timestamp,
+            score=None,
+            reasons=[],
+            scorer_context={},
+            measurements={},
+            entry_evaluation=None,
+        )
+
+    first = evaluate("BUY", "2026-11-12T09:30:00+05:30")
+    other_direction = evaluate("SELL", "2026-11-12T09:31:00+05:30")
+    same_direction = evaluate("SELL", "2026-11-12T09:32:00+05:30")
+    next_day = evaluate("SELL", "2026-11-13T09:30:00+05:30")
+
+    assert "gate_state_v2_full" in first
+    assert "gate_state_v2_full" not in other_direction
+    assert set(other_direction["gate_state_v2_changes"]) == set(
+        GATE_STATE_NAMES
+    )
+    assert "gate_state_v2_changes" not in same_direction
+    assert "gate_state_v2_full" in next_day
 
 
 def test_gate_state_records_failed_score_for_hold_evaluation():
@@ -481,7 +543,15 @@ def test_gate_state_assembly_exception_is_fail_open(monkeypatch):
         entry_evaluation=None,
     )
 
-    assert state == empty_gate_state(timestamp)
+    assert state["gate_state_v2"] == (
+        f"{timestamp}|{'N' * len(GATE_STATE_NAMES)}"
+    )
+    assert {
+        name: gate["state"]
+        for name, gate in state["gate_state_v2_full"].items()
+    } == {
+        name: "not_evaluated" for name in GATE_STATE_NAMES
+    }
     assert bot._feature_observation_error_counts["gate_state_logging"] == 1
     assert bot._feature_observation_exception_counts[
         "feature_error:RuntimeError"
@@ -513,7 +583,10 @@ def test_gate_state_serialization_exception_is_fail_open(monkeypatch):
         entry_evaluation=None,
     )
 
-    assert state == empty_gate_state(timestamp)
+    assert state["gate_state_v2"] == (
+        f"{timestamp}|{'N' * len(GATE_STATE_NAMES)}"
+    )
+    assert "gate_state_v2_full" in state
     assert bot._feature_observation_exception_counts[
         "feature_error:RuntimeError"
     ] == 1

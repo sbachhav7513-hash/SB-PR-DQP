@@ -61,8 +61,10 @@ from .strategy_config import (
 from .paper_costs import calculate_trade_fees
 from .strategy import ema, rsi
 from .scorer_observability import (
+    GATE_STATE_NAMES,
     add_score_adjustment,
     build_gate_state,
+    encode_gate_state_v2,
     empty_gate_state,
     first_passed_gate_times,
     score_components,
@@ -10531,6 +10533,84 @@ class KiteTradingBot:
     ) -> Optional[dict]:
         if not self._gate_state_logging_enabled():
             return None
+
+        def record_error(error: Exception) -> None:
+            try:
+                self._record_feature_observation_error(
+                    "gate_state_logging", error, symbol
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] Could not count gate-state logging failure", symbol
+                )
+
+        def encode_and_store(
+            state: dict,
+            *,
+            validate_serialization: bool,
+        ) -> dict:
+            evaluated_at = self._journal_datetime(timestamp)
+            day = (
+                evaluated_at.date().isoformat()
+                if evaluated_at is not None
+                else str(timestamp or "unknown")[:10]
+            )
+            symbol_key = str(symbol).upper()
+            direction = str(signal or "").upper()
+            if direction not in {"BUY", "SELL"}:
+                direction = "HOLD"
+
+            lock = getattr(self, "_gate_state_v2_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                self._gate_state_v2_lock = lock
+            with lock:
+                previous_by_symbol_direction = getattr(
+                    self, "_gate_state_v2_previous", None
+                )
+                if previous_by_symbol_direction is None:
+                    previous_by_symbol_direction = {}
+                    self._gate_state_v2_previous = (
+                        previous_by_symbol_direction
+                    )
+                day_by_symbol = getattr(
+                    self, "_gate_state_v2_day_by_symbol", None
+                )
+                if day_by_symbol is None:
+                    day_by_symbol = {}
+                    self._gate_state_v2_day_by_symbol = day_by_symbol
+
+                first_seen = day_by_symbol.get(symbol_key) != day
+                previous_states = (
+                    None
+                    if first_seen
+                    else previous_by_symbol_direction.get(
+                        (symbol_key, direction)
+                    )
+                )
+                fields, current_states = encode_gate_state_v2(
+                    state,
+                    timestamp,
+                    previous_states,
+                    first_seen=first_seen,
+                )
+                if validate_serialization:
+                    json.dumps(
+                        fields,
+                        default=str,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                if first_seen:
+                    for key in tuple(previous_by_symbol_direction):
+                        if key[0] == symbol_key:
+                            del previous_by_symbol_direction[key]
+                previous_by_symbol_direction[(symbol_key, direction)] = (
+                    current_states
+                )
+                day_by_symbol[symbol_key] = day
+                return fields
+
         try:
             gate_state = build_gate_state(
                 symbol=symbol,
@@ -10547,23 +10627,25 @@ class KiteTradingBot:
                 entry_evaluation=entry_evaluation or {},
                 config=getattr(self, "config", {}) or {},
             )
-            json.dumps(
+            return encode_and_store(
                 gate_state,
-                default=str,
-                separators=(",", ":"),
-                allow_nan=False,
+                validate_serialization=True,
             )
-            return gate_state
         except Exception as error:
+            record_error(error)
             try:
-                self._record_feature_observation_error(
-                    "gate_state_logging", error, symbol
+                return encode_and_store(
+                    empty_gate_state(timestamp),
+                    validate_serialization=False,
                 )
-            except Exception:
-                logger.exception(
-                    "[%s] Could not count gate-state logging failure", symbol
-                )
-            return empty_gate_state(timestamp)
+            except Exception as fallback_error:
+                record_error(fallback_error)
+                return {
+                    "gate_state_v2": (
+                        f"{timestamp or ''}|"
+                        + "N" * len(GATE_STATE_NAMES)
+                    )
+                }
 
     def _record_decision(
         self,
@@ -10705,7 +10787,7 @@ class KiteTradingBot:
                 or getattr(self, "_candidate_order_times", {}).get(signal_uid)
                 or decision_time
             )
-        gate_state = self._gate_state_for_decision(
+        gate_state_v2 = self._gate_state_for_decision(
             symbol=symbol,
             signal=signal,
             outcome=outcome,
@@ -10772,8 +10854,8 @@ class KiteTradingBot:
                 "component_score": scorer_context.get("component_score"),
                 "gate_passed_at": gate_passed_at,
                 **(
-                    {"gate_state": gate_state}
-                    if gate_state is not None
+                    gate_state_v2
+                    if gate_state_v2 is not None
                     else {}
                 ),
                 "order_time": gate_passed_at.get("order"),

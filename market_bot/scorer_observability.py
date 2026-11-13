@@ -193,6 +193,13 @@ GATE_STATE_NAMES = (
     "order",
 )
 
+GATE_STATE_CODES = {
+    "pass": "P",
+    "fail": "F",
+    "not_evaluated": "N",
+}
+GATE_STATE_LABELS = {code: state for state, code in GATE_STATE_CODES.items()}
+
 
 def empty_gate_state(timestamp: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return {
@@ -204,6 +211,51 @@ def empty_gate_state(timestamp: Optional[str]) -> Dict[str, Dict[str, Any]]:
         }
         for name in GATE_STATE_NAMES
     }
+
+
+def encode_gate_state_v2(
+    gate_state: Dict[str, Dict[str, Any]],
+    timestamp: Optional[str],
+    previous_states: Optional[Dict[str, str]],
+    *,
+    first_seen: bool,
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Encode fixed-order gate states and sparse value/threshold details."""
+    current_states: Dict[str, str] = {}
+    ordered_gates = {}
+    for name in GATE_STATE_NAMES:
+        gate = gate_state.get(name, {})
+        gate = gate if isinstance(gate, dict) else {}
+        state = gate.get("state", "not_evaluated")
+        code = GATE_STATE_CODES.get(state, "N")
+        current_states[name] = code
+        ordered_gates[name] = {
+            "state": GATE_STATE_LABELS[code],
+            "observed_value": gate.get("observed_value"),
+            "threshold": gate.get("threshold"),
+        }
+
+    fields: Dict[str, Any] = {
+        "gate_state_v2": (
+            f"{timestamp or ''}|"
+            + "".join(current_states[name] for name in GATE_STATE_NAMES)
+        )
+    }
+    if first_seen:
+        fields["gate_state_v2_full"] = ordered_gates
+    else:
+        changed = {
+            name: {
+                "observed_value": ordered_gates[name]["observed_value"],
+                "threshold": ordered_gates[name]["threshold"],
+            }
+            for name in GATE_STATE_NAMES
+            if previous_states is None
+            or previous_states.get(name) != current_states[name]
+        }
+        if changed:
+            fields["gate_state_v2_changes"] = changed
+    return fields, current_states
 
 
 def build_gate_state(

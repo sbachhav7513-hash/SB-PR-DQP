@@ -414,15 +414,16 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
                 "signal": "HOLD",
                 "outcome": "hold",
                 "reasons": "[]",
+                "gate_state": json.dumps({"ema": {"state": "pass"}}),
             }
         ]
     )
-    new_gate_state = {
+    new_gate_state = f"{new_timestamp}|{'N' * 17}"
+    new_gate_state_full = {
         "ema": {
-            "state": "pass",
-            "observed_value": {"fast": 101, "slow": 100},
-            "threshold": "fast > slow for BUY",
-            "evaluation_timestamp": new_timestamp,
+            "state": "not_evaluated",
+            "observed_value": None,
+            "threshold": None,
         }
     }
     new = pd.DataFrame(
@@ -433,7 +434,8 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
                 "signal": "BUY",
                 "outcome": "hold",
                 "reasons": "[]",
-                "gate_state": json.dumps(new_gate_state),
+                "gate_state_v2": new_gate_state,
+                "gate_state_v2_full": json.dumps(new_gate_state_full),
             }
         ]
     )
@@ -447,11 +449,26 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
     )
 
     projected = read_decisions(
-        day_dir, columns=["timestamp", "ticker", "signal", "gate_state"]
+        day_dir,
+        columns=[
+            "timestamp",
+            "ticker",
+            "signal",
+            "gate_state",
+            "gate_state_v2",
+            "gate_state_v2_full",
+        ],
     )
     assert len(projected) == 2
-    assert pd.isna(projected.iloc[0]["gate_state"])
-    assert json.loads(projected.iloc[1]["gate_state"]) == new_gate_state
+    assert json.loads(projected.iloc[0]["gate_state"]) == {
+        "ema": {"state": "pass"}
+    }
+    assert pd.isna(projected.iloc[0]["gate_state_v2"])
+    assert projected.iloc[1]["gate_state_v2"] == new_gate_state
+    assert pd.isna(projected.iloc[1]["gate_state"])
+    assert json.loads(projected.iloc[1]["gate_state_v2_full"]) == (
+        new_gate_state_full
+    )
 
     daily_path = write_daily_review(
         str(tmp_path),
