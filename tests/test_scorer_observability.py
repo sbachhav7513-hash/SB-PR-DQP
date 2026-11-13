@@ -14,6 +14,7 @@ from market_bot.engine import score_market
 from market_bot.kite_main import KiteTradingBot
 from market_bot.scorer_observability import (
     GATE_STATE_NAMES,
+    build_independent_bar_gate_state,
     build_gate_state,
     empty_gate_state,
     score_observation,
@@ -516,6 +517,174 @@ def test_gate_state_records_failed_score_for_hold_evaluation():
         "threshold": 70,
         "evaluation_timestamp": timestamp,
     }
+
+
+def test_independent_gate_evaluation_does_not_short_circuit_on_score_failure():
+    history = [
+        {
+            "time": datetime(2026, 11, 12, 9, 15 + index, tzinfo=IST),
+            "open": 100.0 + index * 0.1,
+            "high": 100.2 + index * 0.1,
+            "low": 99.9 + index * 0.1,
+            "close": 100.1 + index * 0.1,
+            "volume": 1,
+        }
+        for index in range(15)
+    ]
+    scorer_inputs = {
+        "regime_label": "TRENDING",
+        "ema_fast_value": 101.0,
+        "ema_slow_value": 100.0,
+        "adx_value": 30.0,
+        "rsi_value": 90.0,
+        "macd_value": 2.0,
+        "macd_previous_value": 1.0,
+        "pivot_levels": [],
+    }
+    support_evaluation = {
+        "evaluated": True,
+        "candidate": False,
+        "touches": 1,
+    }
+    config = {
+        "min_entry_score": 70,
+        "min_adx": 18,
+        "rsi_buy_block_above": 80,
+        "rsi_sell_block_below": 25,
+        "support_reversal_min_touches": 2,
+    }
+
+    buy = build_independent_bar_gate_state(
+        symbol="NIFTY",
+        direction="BUY",
+        timestamp="2026-11-12T09:29:00+05:30",
+        score=45,
+        reasons=[],
+        scorer_inputs=scorer_inputs,
+        history=history,
+        support_evaluation=support_evaluation,
+        config=config,
+    )
+    sell = build_independent_bar_gate_state(
+        symbol="NIFTY",
+        direction="SELL",
+        timestamp="2026-11-12T09:29:00+05:30",
+        score=45,
+        reasons=[],
+        scorer_inputs=scorer_inputs,
+        history=history,
+        support_evaluation=support_evaluation,
+        config=config,
+    )
+
+    for state in (buy, sell):
+        assert state["score_threshold"]["state"] == "fail"
+        assert state["ema"]["state"] != "not_evaluated"
+        assert state["adx"]["state"] == "pass"
+        assert state["rsi"]["state"] != "not_evaluated"
+        assert state["macd"]["state"] != "not_evaluated"
+        assert state["pivot_touches"]["state"] == "fail"
+        assert state["support_reversal_detector"]["state"] == "fail"
+        assert state["volatility_band"]["state"] != "not_evaluated"
+        assert state["confirmation"]["state"] != "not_evaluated"
+    assert buy["ema"]["state"] == "pass"
+    assert buy["rsi"]["state"] == "fail"
+    assert buy["confirmation"]["state"] == "pass"
+    assert sell["ema"]["state"] == "fail"
+    assert sell["rsi"]["state"] == "pass"
+    assert sell["confirmation"]["state"] == "fail"
+    for name in (
+        "option_candle_momentum_direction",
+        "option_candle_momentum_body",
+        "premium_range",
+        "quote_freshness",
+        "risk_cap",
+        "capital_cap",
+        "order",
+    ):
+        assert buy[name]["state"] == "not_evaluated"
+        assert sell[name]["state"] == "not_evaluated"
+
+
+def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
+    monkeypatch,
+):
+    timestamp = datetime(2026, 11, 12, 9, 15, tzinfo=IST)
+    bars = [
+        Bar(
+            timestamp + pd.Timedelta(minutes=index),
+            100 + index,
+            101 + index,
+            99 + index,
+            100.5 + index,
+            1,
+        )
+        for index in range(30)
+    ]
+    observation = {
+        "ema_fast_value": 120.0,
+        "ema_slow_value": 119.0,
+        "rsi_value": 60.0,
+        "adx_value": 25.0,
+        "macd_value": 2.0,
+        "macd_previous_value": 1.0,
+        "regime_label": "TRENDING",
+        "regime_range_pct": 0.2,
+        "regime_20_bar_move_pct": 0.5,
+        "near_recent_high": False,
+        "near_recent_low": False,
+        "recent_high": 129.0,
+        "recent_low": 120.0,
+        "pivot_levels": [],
+        "score_components": {},
+        "component_score": 0,
+        "score": 45,
+        "signal": "HOLD",
+        "reasons": [],
+    }
+
+    def detect_without_candidate(_history, *, diagnostics=None):
+        diagnostics.update({"evaluated": True, "pivot_touches": 1})
+        return None
+
+    bot = object.__new__(KiteTradingBot)
+    bot.mode = "PAPER"
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.config = {
+        "bar_interval_seconds": 60,
+        "instrument_tokens": {"NIFTY": 1},
+        "scorer_input_logging_v1": False,
+        "gate_state_logging_v1": True,
+        "min_entry_score": 70,
+    }
+    bot.bar_builder = SimpleNamespace(
+        get_bars=lambda _token, limit: bars[-limit:]
+    )
+    bot.decision_journal = SimpleNamespace(paper_recorder=None)
+
+    monkeypatch.setattr(kite_main, "score_observation", lambda *_args: observation)
+    monkeypatch.setattr(kite_main, "aggregate_ohlcv_bars", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        kite_main,
+        "detect_support_resistance_reversal",
+        detect_without_candidate,
+    )
+
+    bot._record_completed_scorer_bar("NIFTY", bars[-1])
+    recorded = bot._take_gate_state_for_bar("NIFTY", bars[-1])
+    directions = recorded["gate_state_v2_by_direction"]
+
+    assert set(directions) == {"BUY", "SELL"}
+    assert "gate_state_v2_full" in directions["BUY"]
+    assert "gate_state_v2_full" not in directions["SELL"]
+    for direction_state in directions.values():
+        _, codes = direction_state["gate_state_v2"].split("|", 1)
+        assert len(codes) == len(GATE_STATE_NAMES)
+        assert direction_state.get("gate_state_v2_changes") or direction_state.get(
+            "gate_state_v2_full"
+        )
+    assert bot._take_gate_state_for_bar("NIFTY", bars[-1]) == {}
 
 
 def test_gate_state_assembly_exception_is_fail_open(monkeypatch):

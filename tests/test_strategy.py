@@ -173,12 +173,16 @@ def test_support_reversal_requires_two_pivots_and_a_confirmed_reclaim():
         {"open": 99.9, "high": 100.25, "low": 99.8, "close": 100.15},
     ]
 
-    result = detect_support_resistance_reversal(history)
+    diagnostics = {}
+    result = detect_support_resistance_reversal(
+        history, diagnostics=diagnostics
+    )
 
     assert result is not None
     assert result.signal == "BUY"
     assert result.level == pytest.approx(99.825)
     assert result.touches == 2
+    assert diagnostics == {"evaluated": True, "pivot_touches": 2}
 
     inverse_history = [
         {
@@ -200,7 +204,11 @@ def test_support_reversal_requires_two_pivots_and_a_confirmed_reclaim():
         "low": 99.7,
         "close": 99.8,
     }
-    assert detect_support_resistance_reversal(history) is None
+    diagnostics = {}
+    assert detect_support_resistance_reversal(
+        history, diagnostics=diagnostics
+    ) is None
+    assert diagnostics["evaluated"] is True
 
 
 def test_support_reversal_rejects_a_single_support_pivot():
@@ -217,7 +225,11 @@ def test_support_reversal_rejects_a_single_support_pivot():
         {"open": 100.0, "high": 100.3, "low": 99.95, "close": 100.2},
     ]
 
-    assert detect_support_resistance_reversal(history) is None
+    diagnostics = {}
+    assert detect_support_resistance_reversal(
+        history, diagnostics=diagnostics
+    ) is None
+    assert diagnostics == {"evaluated": True, "pivot_touches": 1}
 
 
 def test_lower_sideways_net_move_threshold_admits_modest_directional_move():

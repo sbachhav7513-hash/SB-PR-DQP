@@ -426,6 +426,15 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
             "threshold": None,
         }
     }
+    new_directional_states = {
+        "BUY": {
+            "gate_state_v2": f"{new_timestamp}|{'P' * 17}",
+            "gate_state_v2_full": new_gate_state_full,
+        },
+        "SELL": {
+            "gate_state_v2": f"{new_timestamp}|{'F' * 17}",
+        },
+    }
     new = pd.DataFrame(
         [
             {
@@ -436,6 +445,9 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
                 "reasons": "[]",
                 "gate_state_v2": new_gate_state,
                 "gate_state_v2_full": json.dumps(new_gate_state_full),
+                "gate_state_v2_by_direction": json.dumps(
+                    new_directional_states
+                ),
             }
         ]
     )
@@ -457,6 +469,7 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
             "gate_state",
             "gate_state_v2",
             "gate_state_v2_full",
+            "gate_state_v2_by_direction",
         ],
     )
     assert len(projected) == 2
@@ -468,6 +481,10 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
     assert pd.isna(projected.iloc[1]["gate_state"])
     assert json.loads(projected.iloc[1]["gate_state_v2_full"]) == (
         new_gate_state_full
+    )
+    assert pd.isna(projected.iloc[0]["gate_state_v2_by_direction"])
+    assert json.loads(projected.iloc[1]["gate_state_v2_by_direction"]) == (
+        new_directional_states
     )
 
     daily_path = write_daily_review(

@@ -273,8 +273,11 @@ def detect_support_resistance_reversal(
     touch_lookback_bars: int = 4,
     confirmation_bars: int = 1,
     maximum_entry_distance_pct: float = 0.004,
+    diagnostics: Optional[Dict] = None,
 ) -> Optional[SupportResistanceReversal]:
     """Detect a confirmed underlying reversal at a repeatedly tested price level."""
+    if diagnostics is not None:
+        diagnostics.update({"evaluated": False, "pivot_touches": None})
     history = _current_session_history(history)
     if (
         lookback_bars < 2 * pivot_window + confirmation_bars + 3
@@ -306,6 +309,8 @@ def detect_support_resistance_reversal(
         for value in bar.values()
     ):
         return None
+    if diagnostics is not None:
+        diagnostics["evaluated"] = True
     prior_bars = bars[:-1]
     current = bars[-1]
     low_pivots: List[tuple[int, float]] = []
@@ -340,8 +345,6 @@ def detect_support_resistance_reversal(
 
         result = []
         for group in groups:
-            if len(group) < minimum_touches:
-                continue
             level = sum(value for _, value in group) / len(group)
             if kind == "support" and level < float(current["close"]):
                 result.append((level, len(group)))
@@ -369,6 +372,13 @@ def detect_support_resistance_reversal(
 
     close = float(current["close"])
     open_price = float(current["open"])
+    support_levels = tested_levels(low_pivots, "support")
+    resistance_levels = tested_levels(high_pivots, "resistance")
+    if diagnostics is not None:
+        diagnostics["pivot_touches"] = max(
+            (count for _, count in support_levels + resistance_levels),
+            default=0,
+        )
     value = history[-1].get("time")
     try:
         bar_time = (
@@ -381,7 +391,9 @@ def detect_support_resistance_reversal(
     previous = prior_bars[-confirmation_bars:]
     distance_limit = maximum_entry_distance_pct
     support_candidates = []
-    for level, count in tested_levels(low_pivots, "support"):
+    for level, count in support_levels:
+        if count < minimum_touches:
+            continue
         touch_index = touches_level(level, "support")
         if (
             touch_index is not None
@@ -402,7 +414,9 @@ def detect_support_resistance_reversal(
         )
 
     resistance_candidates = []
-    for level, count in tested_levels(high_pivots, "resistance"):
+    for level, count in resistance_levels:
+        if count < minimum_touches:
+            continue
         touch_index = touches_level(level, "resistance")
         if (
             touch_index is not None

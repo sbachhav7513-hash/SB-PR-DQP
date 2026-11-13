@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional
 
+from .accuracy_filters import AccuracyFilters
 from .engine import (
     _current_session_history,
     calculate_adx,
@@ -487,7 +488,15 @@ def build_gate_state(
     volatility_max = measurements.get(
         "volatility_max_pct", config.get("max_volatility_pct", 5.0)
     )
-    if candidate and volatility is not None:
+    volatility_passed = measurements.get("volatility_passed")
+    if candidate and isinstance(volatility_passed, bool):
+        set_gate(
+            "volatility_band",
+            volatility_passed,
+            measurements.get("volatility_observed", volatility),
+            {"minimum_pct": volatility_min, "maximum_pct": volatility_max},
+        )
+    elif candidate and volatility is not None:
         volatility_rejected = "accuracy_filter_rejected:volatility" in normalized_outcome
         set_gate(
             "volatility_band",
@@ -662,6 +671,75 @@ def build_gate_state(
         set_gate("order", False, outcome, "order accepted")
 
     return result
+
+
+def build_independent_bar_gate_state(
+    *,
+    symbol: str,
+    direction: str,
+    timestamp: Optional[str],
+    score: Optional[int],
+    reasons: List[str],
+    scorer_inputs: Dict[str, Any],
+    history: List[Dict[str, Any]],
+    support_evaluation: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Evaluate gates derivable from a completed underlying bar without entry flow."""
+    measurements: Dict[str, Any] = {
+        "score_threshold": max(
+            0, min(int(config.get("min_entry_score", 70)), 85)
+        )
+    }
+    if history:
+        volatility_min = max(float(config.get("min_volatility_pct", 0.05)), 0.0)
+        volatility_max = max(
+            float(config.get("max_volatility_pct", 5.0)), volatility_min
+        )
+        measurements["volatility_min_pct"] = volatility_min
+        measurements["volatility_max_pct"] = volatility_max
+        if len(history) < 14:
+            measurements["volatility_passed"] = True
+            measurements["volatility_observed"] = {
+                "reason": "insufficient_history",
+                "bars": len(history),
+            }
+        else:
+            atr = AccuracyFilters.calculate_atr(history, period=14)
+            close = float(history[-1].get("close", 1))
+            if close == 0:
+                volatility_pct = None
+                volatility_passed = False
+            else:
+                volatility_pct = atr / close * 100.0
+                volatility_passed = (
+                    volatility_min <= volatility_pct <= volatility_max
+                )
+            measurements["volatility_pct"] = volatility_pct
+            measurements["volatility_passed"] = volatility_passed
+            measurements["volatility_observed"] = volatility_pct
+
+    if len(history) >= 2:
+        confirmation_passed = AccuracyFilters.has_confirmation(
+            direction, history[-1], history[-2]
+        )
+        measurements["confirmation_result"] = (
+            "passed" if confirmation_passed else "failed"
+        )
+
+    return build_gate_state(
+        symbol=symbol,
+        signal=direction,
+        outcome="independent_bar_evaluation",
+        timestamp=timestamp,
+        score=score,
+        reasons=reasons,
+        scorer_inputs=scorer_inputs,
+        measurements=measurements,
+        support_evaluation=support_evaluation,
+        entry_evaluation={},
+        config=config,
+    )
 
 
 def first_passed_gate_times(

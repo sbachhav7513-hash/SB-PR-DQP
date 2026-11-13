@@ -63,6 +63,7 @@ from .strategy import ema, rsi
 from .scorer_observability import (
     GATE_STATE_NAMES,
     add_score_adjustment,
+    build_independent_bar_gate_state,
     build_gate_state,
     encode_gate_state_v2,
     empty_gate_state,
@@ -3584,7 +3585,9 @@ class KiteTradingBot:
         )
 
     def _record_completed_scorer_bar(self, symbol: str, bar: Bar) -> None:
-        if not self._scorer_input_logging_enabled():
+        scorer_logging = self._scorer_input_logging_enabled()
+        gate_logging = self._gate_state_logging_enabled()
+        if not scorer_logging and not gate_logging:
             return
         try:
             if (
@@ -3633,7 +3636,12 @@ class KiteTradingBot:
                     "pivot_levels",
                 )
             }
-            if self.config.get("support_reversal_enabled", False):
+            support_enabled = bool(
+                self.config.get("support_reversal_enabled", False)
+            )
+            support_diagnostics = {}
+            support_candidate = None
+            if gate_logging or (scorer_logging and support_enabled):
                 source_interval = int(
                     self.config.get("bar_interval_seconds", 60)
                 )
@@ -3642,51 +3650,106 @@ class KiteTradingBot:
                     source_interval_seconds=source_interval,
                     target_interval_seconds=300,
                 )
-                candidate = detect_support_resistance_reversal(pivot_history)
-                if candidate is not None:
+                support_candidate = detect_support_resistance_reversal(
+                    pivot_history,
+                    diagnostics=support_diagnostics,
+                )
+                if scorer_logging and support_enabled and support_candidate is not None:
                     inputs["pivot_levels"] = [
                         {
                             "kind": (
-                                "support" if candidate.signal == "BUY"
+                                "support" if support_candidate.signal == "BUY"
                                 else "resistance"
                             ),
-                            "level": candidate.level,
-                            "touches": candidate.touches,
+                            "level": support_candidate.level,
+                            "touches": support_candidate.touches,
                         }
                     ]
+
+            if gate_logging:
+                support_evaluation = {
+                    "evaluated": bool(
+                        support_diagnostics.get("evaluated", False)
+                    ),
+                    "candidate": support_candidate is not None,
+                    "signal": (
+                        support_candidate.signal
+                        if support_candidate is not None
+                        else None
+                    ),
+                    "level": (
+                        support_candidate.level
+                        if support_candidate is not None
+                        else None
+                    ),
+                    "touches": support_diagnostics.get("pivot_touches"),
+                }
+                scorer_context = {"scorer_inputs": inputs}
+                gate_states = {}
+                for direction in ("BUY", "SELL"):
+                    gate_states[direction] = self._gate_state_for_decision(
+                        symbol=symbol,
+                        signal=direction,
+                        outcome="independent_bar_evaluation",
+                        timestamp=timestamp.isoformat(),
+                        score=observation["score"],
+                        reasons=observation["reasons"],
+                        scorer_context=scorer_context,
+                        measurements={},
+                        entry_evaluation=None,
+                        independent_bar_history=history,
+                        support_evaluation=support_evaluation,
+                        cache_namespace="directional",
+                    )
+                pending = getattr(self, "_gate_state_v2_by_bar", None)
+                if pending is None:
+                    pending = {}
+                    self._gate_state_v2_by_bar = pending
+                pending[key] = {
+                    "gate_state_v2_by_direction": gate_states,
+                }
+
             recorder = getattr(
                 getattr(self, "decision_journal", None), "paper_recorder", None
             )
-            if recorder is None or not hasattr(recorder, "record_scorer_bar"):
-                raise RuntimeError("scorer-bar recorder is unavailable")
-            last_bar = history[-1]
-            recorder.record_scorer_bar(
-                {
-                    "timestamp": timestamp.isoformat(),
-                    "ticker": symbol.upper(),
-                    "first_bar_time": str(history[0].get("time", "")),
-                    "last_bar_time": str(last_bar.get("time", "")),
-                    "last_bar_ohlc": {
-                        key: last_bar.get(key)
-                        for key in ("open", "high", "low", "close")
-                    },
-                    "bar_complete": True,
-                    "inputs": inputs,
-                    "score_components": observation["score_components"],
-                    "component_score": observation["component_score"],
-                    "score": observation["score"],
-                    "signal": observation["signal"],
-                    "reasons": observation["reasons"],
-                    "observation_cpu_us": (
-                        time.thread_time() - started
-                    ) * 1_000_000,
-                }
-            )
+            if scorer_logging:
+                if recorder is None or not hasattr(recorder, "record_scorer_bar"):
+                    raise RuntimeError("scorer-bar recorder is unavailable")
+                last_bar = history[-1]
+                recorder.record_scorer_bar(
+                    {
+                        "timestamp": timestamp.isoformat(),
+                        "ticker": symbol.upper(),
+                        "first_bar_time": str(history[0].get("time", "")),
+                        "last_bar_time": str(last_bar.get("time", "")),
+                        "last_bar_ohlc": {
+                            key: last_bar.get(key)
+                            for key in ("open", "high", "low", "close")
+                        },
+                        "bar_complete": True,
+                        "inputs": inputs,
+                        "score_components": observation["score_components"],
+                        "component_score": observation["component_score"],
+                        "score": observation["score"],
+                        "signal": observation["signal"],
+                        "reasons": observation["reasons"],
+                        "observation_cpu_us": (
+                            time.thread_time() - started
+                        ) * 1_000_000,
+                    }
+                )
             seen.add(key)
         except Exception as error:
             self._record_feature_observation_error(
                 "scorer_bar_observation", error, symbol
             )
+
+    def _take_gate_state_for_bar(self, symbol: str, bar: Bar) -> dict:
+        timestamp = self._journal_datetime(bar.timestamp)
+        if timestamp is None:
+            return {}
+        pending = getattr(self, "_gate_state_v2_by_bar", {})
+        return pending.pop((symbol.upper(), timestamp.isoformat()), {})
 
     def _capture_scorer_context(
         self, symbol: str, history: list[dict], market_score
@@ -10530,6 +10593,9 @@ class KiteTradingBot:
         scorer_context: dict,
         measurements: dict,
         entry_evaluation: Optional[dict],
+        independent_bar_history: Optional[list[dict]] = None,
+        support_evaluation: Optional[dict] = None,
+        cache_namespace: str = "decision",
     ) -> Optional[dict]:
         if not self._gate_state_logging_enabled():
             return None
@@ -10559,6 +10625,11 @@ class KiteTradingBot:
             direction = str(signal or "").upper()
             if direction not in {"BUY", "SELL"}:
                 direction = "HOLD"
+            previous_attr = (
+                "_gate_state_v2_directional_previous"
+                if cache_namespace == "directional"
+                else "_gate_state_v2_previous"
+            )
 
             lock = getattr(self, "_gate_state_v2_lock", None)
             if lock is None:
@@ -10566,13 +10637,11 @@ class KiteTradingBot:
                 self._gate_state_v2_lock = lock
             with lock:
                 previous_by_symbol_direction = getattr(
-                    self, "_gate_state_v2_previous", None
+                    self, previous_attr, None
                 )
                 if previous_by_symbol_direction is None:
                     previous_by_symbol_direction = {}
-                    self._gate_state_v2_previous = (
-                        previous_by_symbol_direction
-                    )
+                    setattr(self, previous_attr, previous_by_symbol_direction)
                 day_by_symbol = getattr(
                     self, "_gate_state_v2_day_by_symbol", None
                 )
@@ -10602,9 +10671,14 @@ class KiteTradingBot:
                         allow_nan=False,
                     )
                 if first_seen:
-                    for key in tuple(previous_by_symbol_direction):
-                        if key[0] == symbol_key:
-                            del previous_by_symbol_direction[key]
+                    for attr in (
+                        "_gate_state_v2_previous",
+                        "_gate_state_v2_directional_previous",
+                    ):
+                        previous = getattr(self, attr, {})
+                        for key in tuple(previous):
+                            if key[0] == symbol_key:
+                                del previous[key]
                 previous_by_symbol_direction[(symbol_key, direction)] = (
                     current_states
                 )
@@ -10612,21 +10686,41 @@ class KiteTradingBot:
                 return fields
 
         try:
-            gate_state = build_gate_state(
-                symbol=symbol,
-                signal=signal,
-                outcome=outcome,
-                timestamp=timestamp,
-                score=score,
-                reasons=reasons,
-                scorer_inputs=scorer_context.get("scorer_inputs", {}),
-                measurements=measurements,
-                support_evaluation=getattr(
+            config = getattr(self, "config", {}) or {}
+            scorer_inputs = scorer_context.get("scorer_inputs", {})
+            selected_support_evaluation = (
+                support_evaluation
+                if support_evaluation is not None
+                else getattr(
                     self, "_support_reversal_eval_by_symbol", {}
-                ).get(symbol, {}),
-                entry_evaluation=entry_evaluation or {},
-                config=getattr(self, "config", {}) or {},
+                ).get(symbol, {})
             )
+            if independent_bar_history is not None:
+                gate_state = build_independent_bar_gate_state(
+                    symbol=symbol,
+                    direction=signal,
+                    timestamp=timestamp,
+                    score=score,
+                    reasons=reasons,
+                    scorer_inputs=scorer_inputs,
+                    history=independent_bar_history,
+                    support_evaluation=selected_support_evaluation,
+                    config=config,
+                )
+            else:
+                gate_state = build_gate_state(
+                    symbol=symbol,
+                    signal=signal,
+                    outcome=outcome,
+                    timestamp=timestamp,
+                    score=score,
+                    reasons=reasons,
+                    scorer_inputs=scorer_inputs,
+                    measurements=measurements,
+                    support_evaluation=selected_support_evaluation,
+                    entry_evaluation=entry_evaluation or {},
+                    config=config,
+                )
             return encode_and_store(
                 gate_state,
                 validate_serialization=True,
@@ -10798,6 +10892,7 @@ class KiteTradingBot:
             measurements=gate_measurements,
             entry_evaluation=entry_evaluation,
         )
+        directional_gate_state = self._take_gate_state_for_bar(symbol, bar)
         callback_time = self._journal_datetime(
             getattr(self, "_bar_callback_time", None)
         )
@@ -10858,6 +10953,7 @@ class KiteTradingBot:
                     if gate_state_v2 is not None
                     else {}
                 ),
+                **directional_gate_state,
                 "order_time": gate_passed_at.get("order"),
                 "strategy_variant": (
                     variant
