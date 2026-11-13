@@ -265,6 +265,7 @@ def test_entry_confirmation_outcomes_are_normalized(tmp_path):
     assert [record["outcome_detail"] for record in records] == [
         expected for _, _, expected in cases
     ]
+    assert records[6]["filter_name"] == "premium"
     assert journal.flush_decisions()
     parquet_rows = [
         row
@@ -287,6 +288,28 @@ def test_entry_confirmation_outcomes_are_normalized(tmp_path):
     assert json.loads(parquet_rows[0]["entry_feature_null_reasons"])[
         "prior_60m_option_move_pct"
     ] == "insufficient_pre_signal_option_history"
+    assert parquet_rows[6]["filter_name"] == "premium"
+
+
+def test_entry_confirmation_other_filter_keeps_specific_filter_name(tmp_path):
+    path = tmp_path / "decisions.jsonl"
+    journal = DecisionJournal(str(path))
+
+    journal.log_decision(
+        {
+            "event": "entry_confirmation",
+            "confirmation_event": "filter_failed_after_confirmation",
+            "outcome": "UNKNOWN",
+            "cancellation_sub_reason": "option_candle_momentum",
+        }
+    )
+
+    [record] = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert record["outcome_detail"] == "other_filter"
+    assert record["filter_name"] == "option_candle_momentum"
 
 def test_decision_journal_bounds_large_history_payloads(tmp_path):
     path = tmp_path / "decisions.jsonl"

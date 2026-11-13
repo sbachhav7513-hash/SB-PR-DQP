@@ -263,6 +263,28 @@ def test_stale_quote_after_confirmation_cancels_with_specific_reason(tmp_path):
     assert event["cancellation_sub_reason"] == "stale_quote"
 
 
+def test_accuracy_filter_cancellation_records_specific_filter_name(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    now = start + timedelta(minutes=2)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], now)
+    bot.accuracy_filters.validate_entry_with_reason.return_value = (
+        False,
+        "trading_hours",
+    )
+
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 101.0, 102.0, 100.0, 101.0, 1000),
+        now,
+    )
+
+    event = _events(tmp_path / "decisions.jsonl")[-1]
+    assert event["outcome_detail"] == "other_filter"
+    assert event["cancellation_sub_reason"] == "trading_hours"
+    assert event["filter_name"] == "trading_hours"
+
+
 def test_confirmation_after_1445_expires_signal(tmp_path):
     start = datetime(2026, 10, 29, 14, 43, tzinfo=IST)
     now = datetime(2026, 10, 29, 14, 45, 1, tzinfo=IST)

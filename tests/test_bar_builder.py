@@ -21,6 +21,18 @@ def test_get_bars_does_not_fall_back_to_stale_session_data() -> None:
     assert builder.get_bars(1) == []
 
 
+def test_seeded_history_remains_available_for_warmup_without_changing_session_reads():
+    now = datetime.now(IST)
+    stale = Bar(now - timedelta(days=1), 99, 100, 98, 99, 10)
+    current = Bar(now, 100, 101, 99, 100, 10)
+    builder = BarBuilder()
+
+    builder.seed_bars(1, [stale, current])
+
+    assert builder.get_bars(1) == [current]
+    assert builder.get_bars(1, include_prior_sessions=True) == [stale, current]
+
+
 def test_process_tick_converts_cumulative_volume_to_bar_delta() -> None:
     start = datetime.now(IST)
     builder = BarBuilder(interval_seconds=60)

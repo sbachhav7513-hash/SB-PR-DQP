@@ -389,6 +389,7 @@ class PaperTradingRecorder:
         "confirmation_quote_age_seconds", "order_premium", "order_bid",
         "order_ask", "order_ltp", "order_quote_age_seconds",
         "cancellation_reason", "cancellation_sub_reason",
+        "filter_name",
         "support_resistance_level", "support_resistance_touches",
         "ema_fast_value", "ema_slow_value",
         "invested_amount", "lots", "quantity", "risk_amount", "risk_cap_rupees",
@@ -1955,6 +1956,13 @@ class DecisionJournal:
         if entry.get("event") == "entry_confirmation":
             detail = normalize_entry_confirmation_detail(entry)
             entry["outcome_detail"] = detail
+            if detail == "other_filter":
+                filter_name = (
+                    entry.get("filter_name")
+                    or entry.get("cancellation_sub_reason")
+                )
+                if filter_name and str(filter_name).lower() != "filter":
+                    entry["filter_name"] = str(filter_name)
         else:
             detail = str(entry.get("outcome", "UNKNOWN"))
             entry.setdefault("outcome_detail", detail)

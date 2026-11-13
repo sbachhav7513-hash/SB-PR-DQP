@@ -152,12 +152,23 @@ class BarBuilder:
         """Seed completed bars so a live stream can evaluate signals immediately."""
         if not bars:
             return
-        filtered = self._session_bars(list(bars), allow_stale=True)
-        self.bars[token] = list(filtered[-self.max_bars_per_symbol:])
+        ordered = sorted(bars, key=lambda bar: bar.timestamp)
+        self.bars[token] = list(ordered[-self.max_bars_per_symbol:])
 
-    def get_bars(self, token: int, limit: int = 50) -> List[Bar]:
+    def get_bars(
+        self,
+        token: int,
+        limit: int = 50,
+        *,
+        include_prior_sessions: bool = False,
+    ) -> List[Bar]:
         """Get the most recent bars for a token."""
-        bars = self._session_bars(self.bars.get(token, []))
+        stored_bars = self.bars.get(token, [])
+        bars = (
+            stored_bars
+            if include_prior_sessions
+            else self._session_bars(stored_bars)
+        )
         return bars[-limit:]
 
     def get_latest_bar(self, token: int) -> Optional[Bar]:

@@ -782,14 +782,27 @@ def test_entry_window_observation_matches_actual_session_and_cutoff_rules():
             benchmark_context={},
         )["blocker_results"]["entry_window"]
 
-    during_open = entry_window_at(19)
+    opening_start = entry_window_at(14)
+    opening_end = entry_window_at(29)
+    after_open = entry_window_at(30)
     at_cutoff = entry_window_at(344)
+    closing_start = entry_window_at(359)
+    closing_end = entry_window_at(389)
+    after_close = entry_window_at(390)
 
-    assert during_open["passed"] is True
-    assert "opening_block" not in during_open["observed_value"]
-    assert "closing_block" not in during_open["observed_value"]
-    assert during_open["threshold"]["entry_cutoff_time"] == "14:45"
+    assert opening_start["passed"] is False
+    assert opening_start["observed_value"]["accuracy_filter_block"] == "opening_block"
+    assert opening_end["passed"] is False
+    assert opening_end["observed_value"]["accuracy_filter_block"] == "opening_block"
+    assert after_open["passed"] is True
+    assert opening_start["threshold"]["entry_cutoff_time"] == "14:45"
     assert at_cutoff["passed"] is False
+    assert closing_start["passed"] is False
+    assert closing_start["observed_value"]["accuracy_filter_block"] == "closing_block"
+    assert closing_end["passed"] is False
+    assert closing_end["observed_value"]["accuracy_filter_block"] == "closing_block"
+    assert after_close["passed"] is False
+    assert after_close["observed_value"]["accuracy_filter_block"] is None
 
 
 def test_selected_option_legs_evaluate_candle_quote_risk_and_capital_gates():

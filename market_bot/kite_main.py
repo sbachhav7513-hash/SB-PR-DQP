@@ -3860,16 +3860,21 @@ class KiteTradingBot:
             else None
         )
         late_block = self._late_window_blocked(local_time)
+        accuracy_filter_block = AccuracyFilters.trading_hour_block_reason(
+            local_time.hour, local_time.minute
+        )
         results = {
             "entry_window": self._gate_evaluation(
                 regular_session
                 and not cutoff_block
-                and not late_block,
+                and not late_block
+                and accuracy_filter_block is None,
                 {
                     "time": local_time.isoformat(),
                     "regular_session": regular_session,
                     "cutoff_block": cutoff_block,
                     "late_window_block": late_block,
+                    "accuracy_filter_block": accuracy_filter_block,
                 },
                 {
                     "market_close_time": market_close.strftime("%H:%M"),
@@ -3880,6 +3885,8 @@ class KiteTradingBot:
                     "late_window_end": config.get("late_window_end", "13:00"),
                     "entry_cutoff_minutes_before_close": cutoff_minutes,
                     "entry_cutoff_time": cutoff_time,
+                    "accuracy_filter_opening_block": "09:15-09:30 IST inclusive",
+                    "accuracy_filter_closing_block": "15:00-15:30 IST inclusive",
                 },
             )
         }
@@ -6083,6 +6090,12 @@ class KiteTradingBot:
             "ema_slow_value": pending["ema_slow_value"],
             **fields,
         }
+        if event == "filter_failed_after_confirmation":
+            filter_name = fields.get("filter_name") or fields.get(
+                "cancellation_sub_reason"
+            )
+            if filter_name and filter_name != "filter":
+                payload["filter_name"] = filter_name
         if event == "confirmed_trade":
             trade = getattr(self, "trade_journal", None)
             trade_record = (
@@ -6444,9 +6457,9 @@ class KiteTradingBot:
         if now.time() >= datetime.strptime("14:45", "%H:%M").time():
             return "cutoff"
         if market_session_state([], now=now) != "REGULAR_SESSION":
-            return "filter"
+            return "market_session"
         if self._late_window_blocked(now):
-            return "filter"
+            return "late_window"
 
         if self._contract_id(symbol) != pending["contract_id"] or not pending[
             "contract_id"
@@ -6500,7 +6513,7 @@ class KiteTradingBot:
 
         signal_bars = pending["signal_bars"]
         if len(signal_bars) < 2:
-            return "filter"
+            return "confirmation_bars"
         current_bar = pending["signal_bar"]
         previous_bar = signal_bars[-2]
         allowed, reason = self.accuracy_filters.validate_entry_with_reason(
@@ -6518,7 +6531,7 @@ class KiteTradingBot:
             min_volatility_pct=self._minimum_volatility_pct(symbol),
         )
         if not allowed:
-            return "filter"
+            return reason
         momentum_candle = (
             option_candle.to_dict()
             if self._paper_change_enabled("option_candle_momentum")
@@ -6590,7 +6603,7 @@ class KiteTradingBot:
                 record_signal=False,
             )
         if not momentum_passed and not persistence_passed:
-            return "filter"
+            return "option_candle_momentum"
         allowed, _ = self._option_quality_gate(
             symbol,
             pending["signal"],
@@ -6616,7 +6629,7 @@ class KiteTradingBot:
             )
 
         if not self._live_entry_allowed(symbol):
-            return "filter"
+            return "live_entry_policy"
         can_open, reason = self._can_open_trade_for_signal(
             symbol, "BUY", pending["score"]
         )
@@ -6626,7 +6639,8 @@ class KiteTradingBot:
                 return "loss_cap"
             if "already traded" in lowered or "position" in lowered:
                 return "position_limit"
-            return "filter"
+            filter_name = reason.strip().lower().replace(" ", "_")
+            return f"trade_eligibility:{filter_name}"
         return None
 
     def _process_confirmed_entries(
@@ -6889,8 +6903,14 @@ class KiteTradingBot:
                     sub_reason = "loss_cap"
                 elif "position" in lowered or "trade_blocked" in lowered:
                     sub_reason = "position_limit"
+                elif outcome.startswith("OPTION_FILTER_"):
+                    sub_reason = outcome.removeprefix("OPTION_FILTER_").lower()
+                elif outcome.startswith("accuracy_filter_rejected:"):
+                    sub_reason = outcome.split(":", 1)[1]
+                elif outcome == "live_entry_paused":
+                    sub_reason = "live_entry_policy"
                 else:
-                    sub_reason = "filter"
+                    sub_reason = outcome.strip().lower().replace(" ", "_")
                 self._cancel_confirmed_entry(
                     key,
                     pending,
@@ -7064,25 +7084,17 @@ class KiteTradingBot:
             if range_outcome == "PAPER_RANGE_BREAKOUT_TRADE_OPENED":
                 self.accuracy_filters.record_entry(symbol, time.time())
                 return
-        if len(bars) < 30:
-            logger.debug(f"[{symbol}] Not enough bars yet ({len(bars)}/30)")
-            self._record_decision(
-                symbol,
-                bar,
-                bars,
-                None,
-                "HOLD",
-                "not_enough_bars",
-            )
-            return
-
         signal_bars = bars
         support_underlying_bars: list[Bar] = []
         if self._options_enabled() and "_" in symbol:
             underlying = symbol.rsplit("_", 1)[0].upper()
             underlying_token = self.config["instrument_tokens"].get(underlying)
             underlying_bars = (
-                self.bar_builder.get_bars(underlying_token, limit=50)
+                self.bar_builder.get_bars(
+                    underlying_token,
+                    limit=50,
+                    include_prior_sessions=True,
+                )
                 if underlying_token is not None
                 else []
             )
@@ -7095,7 +7107,7 @@ class KiteTradingBot:
                 self._record_decision(
                     symbol,
                     bar,
-                    bars,
+                    underlying_bars,
                     None,
                     "HOLD",
                     "underlying_signal_unavailable",
@@ -7106,6 +7118,20 @@ class KiteTradingBot:
                 support_underlying_bars = self.bar_builder.get_bars(
                     underlying_token, limit=100
                 )
+        else:
+            if len(signal_bars) < 30:
+                logger.debug(
+                    f"[{symbol}] Not enough bars yet ({len(signal_bars)}/30)"
+                )
+                self._record_decision(
+                    symbol,
+                    bar,
+                    signal_bars,
+                    None,
+                    "HOLD",
+                    "not_enough_bars",
+                )
+                return
 
         # Convert bars to history format for engine
         history = [b.to_dict() for b in signal_bars]

@@ -223,7 +223,7 @@ class AccuracyFilters:
         """
         Avoid problematic trading hours:
         - 9:15-9:30 AM: Opening volatility spike
-        - 3:15-3:30 PM: Closing rush, forced exits
+        - 3:00-3:30 PM: Closing rush, forced exits
         
         Args:
             hour: Current hour (0-23)
@@ -232,25 +232,24 @@ class AccuracyFilters:
         Returns:
             True if trading at this hour is advisable
         """
-        current_min = hour * 60 + minute
-        
-        # Opening hour (9:15-9:30 AM IST)
-        opening_start = 9 * 60 + 15  # 555 minutes
-        opening_end = 9 * 60 + 30    # 570 minutes
-        
-        if opening_start <= current_min <= opening_end:
+        block = AccuracyFilters.trading_hour_block_reason(hour, minute)
+        if block == "opening_block":
             logger.debug("Opening hour filter (9:15-9:30): Skipping")
             return False
-        
-        # Closing hour (3:00-3:30 PM IST)
-        closing_start = 15 * 60 + 0  # 900 minutes
-        closing_end = 15 * 60 + 30    # 930 minutes
-
-        if closing_start <= current_min <= closing_end:
+        if block == "closing_block":
             logger.debug("Closing hour filter (3:00-3:30): Skipping")
             return False
 
-        return True
+        return block is None
+
+    @staticmethod
+    def trading_hour_block_reason(hour: int, minute: int) -> Optional[str]:
+        current_min = hour * 60 + minute
+        if 9 * 60 + 15 <= current_min <= 9 * 60 + 30:
+            return "opening_block"
+        if 15 * 60 <= current_min <= 15 * 60 + 30:
+            return "closing_block"
+        return None
     
     # ========== COMPOSITE FILTER ==========
     def validate_entry(
