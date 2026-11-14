@@ -270,6 +270,44 @@ def test_support_reversal_diagnostic_exception_is_fail_open(monkeypatch):
     assert diagnostics["levels"] == []
 
 
+def test_support_reversal_levels_diagnostics_can_be_skipped(monkeypatch):
+    history = [
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.1, "low": 99.90, "close": 99.95},
+        {"open": 99.9, "high": 100.0, "low": 99.80, "close": 99.90},
+        {"open": 99.9, "high": 100.1, "low": 99.90, "close": 100.0},
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.1},
+        {"open": 100.1, "high": 100.1, "low": 99.85, "close": 99.95},
+        {"open": 99.95, "high": 100.1, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.05, "low": 99.90, "close": 100.0},
+        {"open": 99.95, "high": 100.0, "low": 99.70, "close": 99.85},
+        {"open": 99.9, "high": 100.25, "low": 99.8, "close": 100.15},
+    ]
+
+    def unexpected_diagnostic_calculation(*_args, **_kwargs):
+        raise AssertionError("level diagnostics should be skipped")
+
+    monkeypatch.setattr(
+        "market_bot.engine._support_reversal_level_diagnostics",
+        unexpected_diagnostic_calculation,
+    )
+    diagnostics = {}
+
+    result = detect_support_resistance_reversal(
+        history,
+        diagnostics=diagnostics,
+        include_level_diagnostics=False,
+    )
+
+    assert result is not None
+    assert result.signal == "BUY"
+    assert result.touches == 2
+    assert diagnostics["evaluated"] is True
+    assert diagnostics["pivot_touches"] == 2
+    assert diagnostics["thresholds"]["minimum_touches"] == 2
+    assert diagnostics["levels"] == []
+
+
 def test_support_reversal_level_diagnostics_are_nearest_three_with_thresholds():
     levels = _support_reversal_level_diagnostics(
         [

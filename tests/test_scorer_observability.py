@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 import market_bot.kite_main as kite_main
 from market_bot.bar_builder import Bar
@@ -680,8 +681,9 @@ def test_independent_gate_evaluation_does_not_short_circuit_on_score_failure():
         assert sell[name]["state"] == "not_evaluated"
 
 
+@pytest.mark.parametrize("levels_enabled", [True, False])
 def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
-    monkeypatch,
+    monkeypatch, levels_enabled
 ):
     timestamp = datetime(2026, 11, 12, 9, 15, tzinfo=IST)
     bars = [
@@ -717,7 +719,10 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
         "reasons": [],
     }
 
-    def detect_without_candidate(_history, *, diagnostics=None):
+    def detect_without_candidate(
+        _history, *, diagnostics=None, include_level_diagnostics=True
+    ):
+        assert include_level_diagnostics is levels_enabled
         diagnostics.update(
             {
                 "evaluated": True,
@@ -731,7 +736,7 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
                         "passed_distance_limit": True,
                         "passed_touch_minimum": True,
                     }
-                ],
+                ] if include_level_diagnostics else [],
                 "thresholds": {
                     "minimum_touches": 2,
                     "maximum_entry_distance_pct": 0.4,
@@ -749,6 +754,7 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
         "instrument_tokens": {"NIFTY": 1},
         "scorer_input_logging_v1": False,
         "gate_state_logging_v1": True,
+        "support_reversal_levels_diagnostics_v1": levels_enabled,
         "min_entry_score": 70,
     }
     bot.bar_builder = SimpleNamespace(
@@ -774,7 +780,13 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
     support_observed = directions["BUY"]["gate_state_v2_full"][
         "support_reversal_detector"
     ]["observed_value"]
-    assert support_observed["levels"][0]["kind"] == "support"
+    assert support_observed["levels"] == (
+        [{"level": 99.8, "kind": "support", "touches": 2,
+          "distance_pct": 0.1, "passed_distance_limit": True,
+          "passed_touch_minimum": True}]
+        if levels_enabled
+        else []
+    )
     assert support_observed["thresholds"] == {
         "minimum_touches": 2,
         "maximum_entry_distance_pct": 0.4,
@@ -1090,12 +1102,17 @@ def test_gate_state_logging_is_paper_only_and_kill_switch_defaults_on():
     bot.live_orders_enabled = False
     bot.config = {}
     assert bot._gate_state_logging_enabled()
+    assert bot._support_reversal_levels_diagnostics_enabled()
 
     bot.config["gate_state_logging_v1"] = False
     assert not bot._gate_state_logging_enabled()
+
+    bot.config["support_reversal_levels_diagnostics_v1"] = False
+    assert not bot._support_reversal_levels_diagnostics_enabled()
 
     bot.config["gate_state_logging_v1"] = True
     bot.mode = "LIVE"
     bot.paper_trading_enabled = False
     bot.live_orders_enabled = True
     assert not bot._gate_state_logging_enabled()
+    assert not bot._support_reversal_levels_diagnostics_enabled()

@@ -151,6 +151,7 @@ PAPER_CHANGE_KEYS = (
     "trail_close_confirm_v2",
     "partial_profit_v2",
     "stop_quote_validation_v2",
+    "support_reversal_levels_diagnostics_v1",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -4708,6 +4709,9 @@ class KiteTradingBot:
                 support_candidate = detect_support_resistance_reversal(
                     pivot_history,
                     diagnostics=support_diagnostics if gate_logging else None,
+                    include_level_diagnostics=(
+                        self._support_reversal_levels_diagnostics_enabled()
+                    ),
                 )
                 if scorer_logging and support_enabled and support_candidate is not None:
                     inputs["pivot_levels"] = [
@@ -11783,6 +11787,11 @@ class KiteTradingBot:
                     "gate_state_logging_v1", True
                 )
             )
+        )
+
+    def _support_reversal_levels_diagnostics_enabled(self) -> bool:
+        return self._paper_change_enabled(
+            "support_reversal_levels_diagnostics_v1"
         )
 
     def _gate_state_for_decision(

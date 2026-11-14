@@ -323,6 +323,7 @@ def detect_support_resistance_reversal(
     confirmation_bars: int = 1,
     maximum_entry_distance_pct: float = 0.004,
     diagnostics: Optional[Dict] = None,
+    include_level_diagnostics: bool = True,
 ) -> Optional[SupportResistanceReversal]:
     """Detect a confirmed underlying reversal at a repeatedly tested price level."""
     if diagnostics is not None:
@@ -462,7 +463,7 @@ def detect_support_resistance_reversal(
         bar_time = bar_time.astimezone(IST)
     previous = prior_bars[-confirmation_bars:]
     distance_limit = maximum_entry_distance_pct
-    if diagnostics is not None:
+    if diagnostics is not None and include_level_diagnostics:
         try:
             nearest_levels = _support_reversal_level_diagnostics(
                 [

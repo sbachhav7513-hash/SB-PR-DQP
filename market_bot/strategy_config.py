@@ -49,6 +49,7 @@ NON_STRATEGY_CONFIG_KEYS = {
     "live_orders_confirmed",
     "capture_all_evaluated_contracts",
     "gate_state_logging_v1",
+    "support_reversal_levels_diagnostics_v1",
 }
 
 
