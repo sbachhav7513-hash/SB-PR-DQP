@@ -18,6 +18,7 @@ from market_bot.engine import (
     market_context_signal,
     market_session_state,
     score_market,
+    _support_reversal_level_diagnostics,
 )
 from market_bot.strategy import analyze_history
 
@@ -182,7 +183,31 @@ def test_support_reversal_requires_two_pivots_and_a_confirmed_reclaim():
     assert result.signal == "BUY"
     assert result.level == pytest.approx(99.825)
     assert result.touches == 2
-    assert diagnostics == {"evaluated": True, "pivot_touches": 2}
+    assert diagnostics["evaluated"] is True
+    assert diagnostics["pivot_touches"] == 2
+    assert diagnostics["thresholds"] == {
+        "lookback_bars": 10,
+        "pivot_window": 1,
+        "minimum_touches": 2,
+        "level_tolerance_pct": 0.2,
+        "touch_lookback_bars": 4,
+        "confirmation_bars": 1,
+        "maximum_entry_distance_pct": 0.4,
+    }
+    assert len(diagnostics["levels"]) <= 3
+    selected_level = next(
+        level for level in diagnostics["levels"] if level["level"] == result.level
+    )
+    assert selected_level == {
+        "level": result.level,
+        "kind": "support",
+        "touches": 2,
+        "distance_pct": pytest.approx(
+            abs(history[-1]["close"] - result.level) / result.level * 100
+        ),
+        "passed_distance_limit": True,
+        "passed_touch_minimum": True,
+    }
 
     inverse_history = [
         {
@@ -211,6 +236,67 @@ def test_support_reversal_requires_two_pivots_and_a_confirmed_reclaim():
     assert diagnostics["evaluated"] is True
 
 
+def test_support_reversal_diagnostic_exception_is_fail_open(monkeypatch):
+    history = [
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.1, "low": 99.90, "close": 99.95},
+        {"open": 99.9, "high": 100.0, "low": 99.80, "close": 99.90},
+        {"open": 99.9, "high": 100.1, "low": 99.90, "close": 100.0},
+        {"open": 100.0, "high": 100.2, "low": 99.95, "close": 100.1},
+        {"open": 100.1, "high": 100.1, "low": 99.85, "close": 99.95},
+        {"open": 99.95, "high": 100.1, "low": 99.95, "close": 100.0},
+        {"open": 100.0, "high": 100.05, "low": 99.90, "close": 100.0},
+        {"open": 99.95, "high": 100.0, "low": 99.70, "close": 99.85},
+        {"open": 99.9, "high": 100.25, "low": 99.8, "close": 100.15},
+    ]
+    expected = detect_support_resistance_reversal(history)
+
+    def fail_diagnostic_calculation(*_args, **_kwargs):
+        raise RuntimeError("injected diagnostic failure")
+
+    monkeypatch.setattr(
+        "market_bot.engine._support_reversal_level_diagnostics",
+        fail_diagnostic_calculation,
+    )
+    diagnostics = {}
+
+    actual = detect_support_resistance_reversal(history, diagnostics=diagnostics)
+
+    assert actual == expected
+    assert actual is not None
+    assert actual.signal == "BUY"
+    assert diagnostics["evaluated"] is True
+    assert diagnostics["pivot_touches"] == 2
+    assert diagnostics["levels"] == []
+
+
+def test_support_reversal_level_diagnostics_are_nearest_three_with_thresholds():
+    levels = _support_reversal_level_diagnostics(
+        [
+            (99.5, 1, "support"),
+            (99.8, 2, "support"),
+            (100.2, 2, "resistance"),
+            (100.3, 1, "resistance"),
+        ],
+        close=100.0,
+        distance_limit=0.004,
+        minimum_touches=2,
+    )
+
+    assert [level["level"] for level in levels] == [100.2, 99.8, 100.3]
+    assert [level["kind"] for level in levels] == [
+        "resistance",
+        "support",
+        "resistance",
+    ]
+    assert all(level["passed_distance_limit"] for level in levels)
+    assert [level["passed_touch_minimum"] for level in levels] == [
+        True,
+        True,
+        False,
+    ]
+
+
 def test_support_reversal_rejects_a_single_support_pivot():
     history = [
         {"open": 100, "high": 100.2, "low": 99.95, "close": 100},
@@ -229,7 +315,8 @@ def test_support_reversal_rejects_a_single_support_pivot():
     assert detect_support_resistance_reversal(
         history, diagnostics=diagnostics
     ) is None
-    assert diagnostics == {"evaluated": True, "pivot_touches": 1}
+    assert diagnostics["evaluated"] is True
+    assert diagnostics["pivot_touches"] == 1
 
 
 def test_lower_sideways_net_move_threshold_admits_modest_directional_move():

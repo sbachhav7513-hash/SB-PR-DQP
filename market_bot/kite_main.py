@@ -4707,7 +4707,7 @@ class KiteTradingBot:
                 )
                 support_candidate = detect_support_resistance_reversal(
                     pivot_history,
-                    diagnostics=support_diagnostics,
+                    diagnostics=support_diagnostics if gate_logging else None,
                 )
                 if scorer_logging and support_enabled and support_candidate is not None:
                     inputs["pivot_levels"] = [
@@ -4747,6 +4747,8 @@ class KiteTradingBot:
                         else None
                     ),
                     "touches": support_diagnostics.get("pivot_touches"),
+                    "levels": support_diagnostics.get("levels", []),
+                    "thresholds": support_diagnostics.get("thresholds", {}),
                 }
                 benchmark_context = self._benchmark_context_gate_measurements(
                     symbol

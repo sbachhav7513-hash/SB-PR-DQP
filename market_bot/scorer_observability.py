@@ -577,6 +577,8 @@ def build_gate_state(
                 "signal": support_evaluation.get("signal"),
                 "level": support_evaluation.get("level"),
                 "touches": support_evaluation.get("touches"),
+                "levels": support_evaluation.get("levels", []),
+                "thresholds": support_evaluation.get("thresholds", {}),
             },
             "support/reversal candidate detected",
         )

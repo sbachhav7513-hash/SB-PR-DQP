@@ -392,12 +392,14 @@ def test_daily_and_weekly_reviews_group_modeled_fees_net_pnl_and_r(tmp_path):
     assert weekly_report["human_command_affected_trade"] is True
 
 
-def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
+def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(
+    tmp_path, monkeypatch
+):
     timezone = ZoneInfo("Asia/Kolkata")
     now = datetime.now(timezone).replace(second=0, microsecond=0)
+    paper_root = tmp_path / "paper_trading_data"
     day_dir = (
-        tmp_path
-        / "paper"
+        paper_root
         / now.strftime("%Y-%m")
         / f"week_{now.isocalendar().week:02d}"
         / f"day_{now.day:02d}"
@@ -424,7 +426,27 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
             "state": "not_evaluated",
             "observed_value": None,
             "threshold": None,
-        }
+        },
+        "support_reversal_detector": {
+            "state": "fail",
+            "observed_value": {
+                "levels": [
+                    {
+                        "level": 99.8,
+                        "kind": "support",
+                        "touches": 2,
+                        "distance_pct": 0.1,
+                        "passed_distance_limit": True,
+                        "passed_touch_minimum": True,
+                    }
+                ],
+                "thresholds": {
+                    "minimum_touches": 2,
+                    "maximum_entry_distance_pct": 0.4,
+                },
+            },
+            "threshold": "support/reversal candidate detected",
+        },
     }
     new_directional_states = {
         "BUY": {
@@ -489,17 +511,22 @@ def test_mixed_decision_schemas_are_readable_by_parquet_and_reports(tmp_path):
 
     daily_path = write_daily_review(
         str(tmp_path),
-        paper_data_dir=str(tmp_path / "paper"),
+        paper_data_dir=str(paper_root),
         target_date=now.date(),
     )
     weekly_report = build_weekly_report(
         str(tmp_path),
         days=7,
-        paper_data_dir=str(tmp_path / "paper"),
+        paper_data_dir=str(paper_root),
     )
+    monkeypatch.chdir(tmp_path)
+    from analyze_weekly import iter_decisions
+
+    weekly_decisions = list(iter_decisions(days=7))
 
     assert "- Decisions: 2" in daily_path.read_text(encoding="utf-8")
     assert weekly_report["decisions_recorded"] == 2
+    assert [item["signal"] for item in weekly_decisions] == ["HOLD", "BUY"]
 
 
 def test_daily_review_marks_successful_human_command_from_command_archive(tmp_path):

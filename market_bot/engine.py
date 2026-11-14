@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .strategy import ema, rsi
 
+logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -27,6 +29,53 @@ class SupportResistanceReversal:
     touches: int
     bars_since_touch: int
     bar_time: Optional[datetime] = None
+
+
+def _update_support_reversal_diagnostics(
+    diagnostics: Dict, values: Dict
+) -> bool:
+    try:
+        diagnostics.update(values)
+    except Exception:
+        logger.exception("Could not record support-reversal diagnostics")
+        return False
+    return True
+
+
+def _support_reversal_level_diagnostics(
+    levels: List[tuple[float, int, str]],
+    close: float,
+    distance_limit: float,
+    minimum_touches: int,
+) -> List[Dict]:
+    candidates = []
+    for level, touches, kind in levels:
+        distance_pct = (
+            abs(close - level) / abs(level) * 100.0 if level != 0 else None
+        )
+        candidates.append(
+            {
+                "level": level,
+                "kind": kind,
+                "touches": touches,
+                "distance_pct": (
+                    round(distance_pct, 6) if distance_pct is not None else None
+                ),
+                "passed_distance_limit": (
+                    distance_pct is not None
+                    and distance_pct <= distance_limit * 100.0
+                ),
+                "passed_touch_minimum": touches >= minimum_touches,
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            item["distance_pct"]
+            if item["distance_pct"] is not None
+            else float("inf")
+        )
+    )
+    return candidates[:3]
 
 
 def _extract_timestamps(history: List[Dict]) -> List[datetime]:
@@ -277,7 +326,25 @@ def detect_support_resistance_reversal(
 ) -> Optional[SupportResistanceReversal]:
     """Detect a confirmed underlying reversal at a repeatedly tested price level."""
     if diagnostics is not None:
-        diagnostics.update({"evaluated": False, "pivot_touches": None})
+        thresholds = {
+            "lookback_bars": lookback_bars,
+            "pivot_window": pivot_window,
+            "minimum_touches": minimum_touches,
+            "level_tolerance_pct": level_tolerance_pct * 100.0,
+            "touch_lookback_bars": touch_lookback_bars,
+            "confirmation_bars": confirmation_bars,
+            "maximum_entry_distance_pct": maximum_entry_distance_pct * 100.0,
+        }
+        if not _update_support_reversal_diagnostics(
+            diagnostics,
+            {
+                "evaluated": False,
+                "pivot_touches": None,
+                "levels": [],
+                "thresholds": thresholds,
+            },
+        ):
+            diagnostics = None
     history = _current_session_history(history)
     if (
         lookback_bars < 2 * pivot_window + confirmation_bars + 3
@@ -310,7 +377,7 @@ def detect_support_resistance_reversal(
     ):
         return None
     if diagnostics is not None:
-        diagnostics["evaluated"] = True
+        _update_support_reversal_diagnostics(diagnostics, {"evaluated": True})
     prior_bars = bars[:-1]
     current = bars[-1]
     low_pivots: List[tuple[int, float]] = []
@@ -375,9 +442,14 @@ def detect_support_resistance_reversal(
     support_levels = tested_levels(low_pivots, "support")
     resistance_levels = tested_levels(high_pivots, "resistance")
     if diagnostics is not None:
-        diagnostics["pivot_touches"] = max(
-            (count for _, count in support_levels + resistance_levels),
-            default=0,
+        _update_support_reversal_diagnostics(
+            diagnostics,
+            {
+                "pivot_touches": max(
+                    (count for _, count in support_levels + resistance_levels),
+                    default=0,
+                )
+            },
         )
     value = history[-1].get("time")
     try:
@@ -390,6 +462,29 @@ def detect_support_resistance_reversal(
         bar_time = bar_time.astimezone(IST)
     previous = prior_bars[-confirmation_bars:]
     distance_limit = maximum_entry_distance_pct
+    if diagnostics is not None:
+        try:
+            nearest_levels = _support_reversal_level_diagnostics(
+                [
+                    (level, count, kind)
+                    for kind, levels in (
+                        ("support", support_levels),
+                        ("resistance", resistance_levels),
+                    )
+                    for level, count in levels
+                ],
+                close,
+                distance_limit,
+                minimum_touches,
+            )
+        except Exception:
+            logger.exception(
+                "Could not calculate support-reversal level diagnostics"
+            )
+        else:
+            _update_support_reversal_diagnostics(
+                diagnostics, {"levels": nearest_levels}
+            )
     support_candidates = []
     for level, count in support_levels:
         if count < minimum_touches:

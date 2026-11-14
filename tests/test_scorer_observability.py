@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -109,6 +110,74 @@ def test_scorer_logging_toggle_preserves_scores_and_signals_on_recorded_session(
         ) == (enabled.score, enabled.signal, enabled.reasons)
 
     assert enabled_results == disabled_results
+
+
+def test_archived_nov_12_13_scorer_replay_matches_baseline_row_for_row():
+    expected_hashes = {
+        "12": "11831503d8e884204f2fa22eb10b6b0eb52a6dae76fb95937642b8c997d8433f",
+        "13": "ad7e2724c7fc2c66b93ae46628ddb817fbfedc9191236447beea25d330c9cec0",
+    }
+    config = json.loads((ROOT / "kite_config.json").read_text(encoding="utf-8"))
+    expected_rows = {"12": 3609, "13": 3589}
+
+    for day, expected_hash in expected_hashes.items():
+        parts = (
+            ROOT
+            / "paper_trading_data"
+            / "2026-11"
+            / "week_46"
+            / f"day_{day}"
+            / "scorer_bars"
+        )
+        frame = pd.concat(
+            [
+                pd.read_parquet(path, engine="fastparquet")
+                for path in sorted(parts.glob("*.parquet"))
+            ],
+            ignore_index=True,
+        )
+        frame["_timestamp_order"] = pd.to_datetime(
+            frame["timestamp"], utc=True
+        )
+        frame = frame.sort_values(
+            ["_timestamp_order", "ticker"], kind="stable"
+        )
+        histories = {}
+        replay = []
+        for row in frame.to_dict(orient="records"):
+            history = histories.setdefault(row["ticker"], [])
+            last_bar_time = row.get("last_bar_time")
+            if not history or history[-1]["time"] != last_bar_time:
+                ohlc = json.loads(row.get("last_bar_ohlc") or "{}")
+                if ohlc:
+                    history.append(
+                        {"time": last_bar_time, "volume": 0, **ohlc}
+                    )
+            first_bar_time = row.get("first_bar_time")
+            history_window = [
+                bar
+                for bar in history
+                if not first_bar_time or bar["time"] >= first_bar_time
+            ][-100:]
+            result = score_observation(
+                row["ticker"], history_window, config
+            )
+            replay.append(
+                [
+                    row["timestamp"],
+                    row["ticker"],
+                    result["score"],
+                    result["signal"],
+                    result["score_components"],
+                    result["reasons"],
+                ]
+            )
+
+        assert len(replay) == expected_rows[day]
+        payload = json.dumps(
+            replay, separators=(",", ":"), sort_keys=True, ensure_ascii=True
+        )
+        assert hashlib.sha256(payload.encode()).hexdigest() == expected_hash
 
 
 def test_scorer_inputs_use_only_the_production_current_session_window():
@@ -649,7 +718,26 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
     }
 
     def detect_without_candidate(_history, *, diagnostics=None):
-        diagnostics.update({"evaluated": True, "pivot_touches": 1})
+        diagnostics.update(
+            {
+                "evaluated": True,
+                "pivot_touches": 1,
+                "levels": [
+                    {
+                        "level": 99.8,
+                        "kind": "support",
+                        "touches": 2,
+                        "distance_pct": 0.1,
+                        "passed_distance_limit": True,
+                        "passed_touch_minimum": True,
+                    }
+                ],
+                "thresholds": {
+                    "minimum_touches": 2,
+                    "maximum_entry_distance_pct": 0.4,
+                },
+            }
+        )
         return None
 
     bot = object.__new__(KiteTradingBot)
@@ -683,6 +771,14 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
     assert set(directions) == {"BUY", "SELL"}
     assert "gate_state_v2_full" in directions["BUY"]
     assert "gate_state_v2_full" not in directions["SELL"]
+    support_observed = directions["BUY"]["gate_state_v2_full"][
+        "support_reversal_detector"
+    ]["observed_value"]
+    assert support_observed["levels"][0]["kind"] == "support"
+    assert support_observed["thresholds"] == {
+        "minimum_touches": 2,
+        "maximum_entry_distance_pct": 0.4,
+    }
     for direction_state in directions.values():
         _, codes = direction_state["gate_state_v2"].split("|", 1)
         assert len(codes) == len(DIRECTIONAL_GATE_STATE_NAMES)
