@@ -28,6 +28,7 @@ CHANGE_KEYS = (
     "banknifty_caps_v2",
     "nifty_vol_floor_v2",
     "capital_based_risk_v2",
+    "run_up_veto_v2",
 )
 REMOVAL_ONLY_KEY = "premium_floor_v2"
 CAPITAL_BASED_RISK_KEY = "capital_based_risk_v2"

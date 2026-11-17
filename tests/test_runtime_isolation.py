@@ -124,6 +124,7 @@ def test_startup_logs_all_requested_runtime_flags(caplog):
         "trail_close_confirm_v2": False,
         "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": True,
+        "run_up_veto_v2": False,
     }
 
     with caplog.at_level("INFO", logger="market_bot.kite_main"):
@@ -132,6 +133,13 @@ def test_startup_logs_all_requested_runtime_flags(caplog):
     assert "mode=PAPER" in caplog.text
     for name, value in flags.items():
         assert f"{name}={value}" in caplog.text
+
+
+def test_run_up_veto_is_enabled_in_startup_log_by_default(caplog):
+    with caplog.at_level("INFO", logger="market_bot.kite_main"):
+        _log_runtime_flags({}, "PAPER")
+
+    assert "run_up_veto_v2=True" in caplog.text
 
 
 def test_scenario_tool_rejects_non_temporary_output(monkeypatch):

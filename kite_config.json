@@ -166,6 +166,7 @@
   "banknifty_caps_v2": true,
   "nifty_vol_floor_v2": true,
   "capital_based_risk_v2": true,
+  "run_up_veto_v2": true,
   "option_iv_min": 0.08,
   "option_iv_max": 1.2,
   "option_premium_stop_pct": 0.10,

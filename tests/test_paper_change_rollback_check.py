@@ -14,6 +14,7 @@ def test_rollback_disables_only_underperforming_paper_change_at_threshold(tmp_pa
                 "stale_quote_candle_fallback": True,
                 "option_candle_momentum": True,
                 "index_persistence_pass": True,
+                "run_up_veto_v2": True,
             }
         ),
         encoding="utf-8",
@@ -47,6 +48,7 @@ def test_rollback_disables_only_underperforming_paper_change_at_threshold(tmp_pa
                         "stale_quote_candle_fallback",
                         "option_candle_momentum",
                         "index_persistence_pass",
+                        "run_up_veto_v2",
                     ],
                 }
             )
@@ -61,6 +63,7 @@ def test_rollback_disables_only_underperforming_paper_change_at_threshold(tmp_pa
     assert result["option_candle_momentum"] is False
     assert result["stale_quote_candle_fallback"] is True
     assert result["index_persistence_pass"] is True
+    assert result["run_up_veto_v2"] is True
 
 
 def test_removal_only_change_reports_candle_estimate_without_rollback(tmp_path, capsys):

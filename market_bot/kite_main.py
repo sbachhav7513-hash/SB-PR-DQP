@@ -59,6 +59,11 @@ from .strategy_config import (
     strategy_config_hash,
 )
 from .paper_costs import calculate_trade_fees
+from .paper_run_up import (
+    OptionMoveMeasurement,
+    prior_60m_option_move,
+    RUN_UP_VETO_THRESHOLD_PCT,
+)
 from .strategy import ema, rsi
 from .scorer_observability import (
     DIRECTIONAL_GATE_STATE_NAMES,
@@ -115,6 +120,7 @@ def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
         "trail_close_confirm_v2": True,
         "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": False,
+        "run_up_veto_v2": True,
     }
     if mode == "PAPER":
         defaults["gate_state_logging_v1"] = True
@@ -152,6 +158,7 @@ PAPER_CHANGE_KEYS = (
     "partial_profit_v2",
     "stop_quote_validation_v2",
     "support_reversal_levels_diagnostics_v1",
+    "run_up_veto_v2",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -634,6 +641,27 @@ class KiteTradingBot:
         return [
             key for key in PAPER_CHANGE_KEYS if self._paper_change_enabled(key)
         ]
+
+    def _run_up_veto_measurement(
+        self, symbol: str, signal_time: Any
+    ) -> OptionMoveMeasurement:
+        token = (
+            (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                symbol
+            )
+        )
+        builder = getattr(self, "bar_builder", None)
+        if token is None or builder is None:
+            return prior_60m_option_move([], signal_time)
+        try:
+            bars = builder.get_bars(int(token), limit=121)
+        except Exception:
+            logger.exception(
+                "[%s] Could not read option bars for run_up_veto_v2",
+                symbol,
+            )
+            return prior_60m_option_move([], signal_time)
+        return prior_60m_option_move(bars, signal_time)
 
     @staticmethod
     def _underlying_symbol(symbol: str) -> str:
@@ -5191,12 +5219,17 @@ class KiteTradingBot:
         option_moves = {30: None, 60: None}
         option_history = []
         option_history_error_reason = None
+        signal_time = (
+            self._journal_datetime(signal_bars[-1].timestamp)
+            if signal_bars
+            else None
+        )
         if symbol.endswith(("_CE", "_PE")):
             token = (self.config.get("instrument_tokens", {}) or {}).get(symbol)
             builder = getattr(self, "bar_builder", None)
             if token is not None and builder is not None:
                 try:
-                    option_history = builder.get_bars(int(token), limit=61)
+                    option_history = builder.get_bars(int(token), limit=121)
                 except Exception as error:
                     self._record_feature_observation_error(
                         "feature_option_history", error, symbol
@@ -5222,12 +5255,14 @@ class KiteTradingBot:
                     option_moves[minutes] = (
                         option_closes[-1] / option_closes[-minutes - 1] - 1
                     ) * 100.0
+            if (
+                signal_time is not None
+                and self._paper_change_enabled("run_up_veto_v2")
+            ):
+                option_moves[60] = prior_60m_option_move(
+                    option_history, signal_time
+                ).value_pct
 
-        signal_time = (
-            self._journal_datetime(signal_bars[-1].timestamp)
-            if signal_bars
-            else None
-        )
         is_option = symbol.endswith(("_CE", "_PE"))
         underlying = self._underlying_symbol(symbol)
         tier = (
@@ -12400,6 +12435,95 @@ class KiteTradingBot:
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
+            run_up_measurement = None
+            if (
+                self._paper_change_enabled("run_up_veto_v2")
+                and self._options_enabled()
+                and symbol.endswith(("_CE", "_PE"))
+            ):
+                entry_metadata = confirmed_entry_metadata or entry_telemetry or {}
+                run_up_measurement = self._run_up_veto_measurement(
+                    symbol, entry_metadata.get("signal_time")
+                )
+                status = run_up_measurement.status
+                move_pct = run_up_measurement.value_pct
+                change_evaluations = getattr(
+                    self, "_signal_change_gate_evaluations", None
+                )
+                if not isinstance(change_evaluations, dict):
+                    change_evaluations = {}
+                    self._signal_change_gate_evaluations = change_evaluations
+                change_evaluations.setdefault(symbol, {})["run_up_veto_v2"] = {
+                    "passed": (
+                        move_pct is None
+                        or move_pct <= RUN_UP_VETO_THRESHOLD_PCT
+                        or math.isclose(
+                            move_pct,
+                            RUN_UP_VETO_THRESHOLD_PCT,
+                            rel_tol=0.0,
+                            abs_tol=1e-9,
+                        )
+                    ),
+                    "status": status,
+                    "prior_60m_option_move_pct": move_pct,
+                    "threshold_pct": RUN_UP_VETO_THRESHOLD_PCT,
+                }
+
+                feature_values = dict(
+                    entry_metadata.get("entry_feature_values") or {}
+                )
+                feature_values["prior_60m_option_move_pct"] = move_pct
+                entry_metadata["entry_feature_values"] = feature_values
+                null_reasons = dict(
+                    entry_metadata.get("entry_feature_null_reasons") or {}
+                )
+                if move_pct is None:
+                    null_reasons["prior_60m_option_move_pct"] = (
+                        "lookback_incomplete"
+                    )
+                else:
+                    null_reasons.pop("prior_60m_option_move_pct", None)
+                entry_metadata["entry_feature_null_reasons"] = null_reasons
+                entry_metadata["run_up_veto_v2_status"] = status
+
+                if move_pct is None:
+                    logger.info(
+                        "[%s] run_up_veto_v2 lookback_incomplete; allowing entry",
+                        symbol,
+                    )
+                elif move_pct > RUN_UP_VETO_THRESHOLD_PCT and not math.isclose(
+                    move_pct,
+                    RUN_UP_VETO_THRESHOLD_PCT,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                ):
+                    if "run_up_veto_v2" not in paper_change_attributions:
+                        paper_change_attributions.append("run_up_veto_v2")
+                    signal_attributions = getattr(
+                        self, "_signal_change_attributions", None
+                    )
+                    if not isinstance(signal_attributions, dict):
+                        signal_attributions = {}
+                        self._signal_change_attributions = signal_attributions
+                    values = signal_attributions.setdefault(symbol, [])
+                    if "run_up_veto_v2" not in values:
+                        values.append("run_up_veto_v2")
+                    logger.info(
+                        "[%s] Entry rejected: run_up_veto_v2 "
+                        "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
+                        symbol,
+                        move_pct,
+                        RUN_UP_VETO_THRESHOLD_PCT,
+                    )
+                    return "run_up_veto_v2"
+                else:
+                    logger.info(
+                        "[%s] run_up_veto_v2 passed "
+                        "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
+                        symbol,
+                        move_pct,
+                        RUN_UP_VETO_THRESHOLD_PCT,
+                    )
             if (
                 symbol in self.intraday_manager.session_trade_symbols
                 and strategy_variant != "paper_ema_stop_reentry"
@@ -12767,6 +12891,15 @@ class KiteTradingBot:
                     score=score,
                 )
             )
+            change_gate_evaluations = dict(change_gate_evaluations)
+            for key, evaluation in self._paper_change_gate_evaluations(
+                symbol,
+                premium=(
+                    premium if self._options_enabled() and "_" in symbol else None
+                ),
+                score=score,
+            ).items():
+                change_gate_evaluations.setdefault(key, evaluation)
             entry_evaluation = getattr(
                 self, "_pending_entry_evaluations", {}
             ).get(symbol, {})
@@ -13150,6 +13283,11 @@ class KiteTradingBot:
                 alert.update(entry_telemetry)
             if confirmed_entry_metadata is not None:
                 alert.update(confirmed_entry_metadata)
+            if run_up_measurement is not None:
+                alert["prior_60m_option_move_pct"] = (
+                    run_up_measurement.value_pct
+                )
+                alert["run_up_veto_v2_status"] = run_up_measurement.status
             entry_timestamp = datetime.now(IST)
             alert["entry_time"] = entry_timestamp.isoformat(timespec="seconds")
             signal_timestamp = self._journal_datetime(alert.get("signal_time"))

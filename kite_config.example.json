@@ -129,6 +129,7 @@
   "banknifty_caps_v2": true,
   "nifty_vol_floor_v2": true,
   "capital_based_risk_v2": true,
+  "run_up_veto_v2": true,
   "decision_log_path": "decision_log.jsonl",
   "paper_trading_dir": "paper_trading_data",
   "weekly_report_dir": ".",

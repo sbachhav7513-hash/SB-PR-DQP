@@ -89,6 +89,7 @@ def test_capture_configuration_does_not_change_strategy_hash():
         "banknifty_caps_v2",
         "nifty_vol_floor_v2",
         "capital_based_risk_v2",
+        "run_up_veto_v2",
     ],
 )
 def test_paper_recovery_flags_are_part_of_strategy_hash(flag):
