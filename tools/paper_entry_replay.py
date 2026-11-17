@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from market_bot.paper_costs import calculate_order_fees
 from market_bot.paper_run_up import prior_60m_option_move
+from market_bot.support_reversal_flags import level_stop_triggered
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -281,6 +282,11 @@ def simulate_fixed_exit(
     entry_price: float,
     quantity: float,
     charge_config: dict[str, Any] | None = None,
+    *,
+    underlying_bars: list[dict[str, Any]] | None = None,
+    support_level: float | None = None,
+    support_signal: str | None = None,
+    level_buffer_pct: float | None = None,
 ) -> ReplayArm:
     if entry_price <= 0 or quantity <= 0:
         return ReplayArm("invalid_entry")
@@ -346,6 +352,38 @@ def simulate_fixed_exit(
                 quantity,
                 charge_config,
             )
+        if (
+            underlying_bars is not None
+            and support_level is not None
+            and support_signal in {"BUY", "SELL"}
+            and level_buffer_pct is not None
+            and end > entry_time
+        ):
+            underlying = next(
+                (row for row in underlying_bars if row["time"] == start),
+                None,
+            )
+            if (
+                underlying is not None
+                and underlying.get("close") is not None
+                and level_stop_triggered(
+                    support_signal,
+                    float(underlying["close"]),
+                    support_level,
+                    level_buffer_pct,
+                )
+            ):
+                stop_quote = _quote_at_or_after(ordered_quotes, end)
+                if stop_quote is None:
+                    return ReplayArm("level_stop_bid_missing")
+                return _complete_arm(
+                    entry_price,
+                    stop_quote["bid"],
+                    stop_quote["time"],
+                    "level_stop",
+                    quantity,
+                    charge_config,
+                )
 
     last_quote = ordered_quotes[-1] if ordered_quotes else None
     if last_quote is not None:

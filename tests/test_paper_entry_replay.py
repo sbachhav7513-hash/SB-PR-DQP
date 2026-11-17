@@ -145,3 +145,46 @@ def test_fixed_exit_does_not_use_pre_entry_candle_extremes():
 
     assert result.status == "complete"
     assert result.exit_reason == "session_end"
+
+
+def test_fixed_exit_supports_underlying_level_stop_at_next_option_bid():
+    entry_time = datetime(2026, 11, 16, 10, 0, tzinfo=IST)
+    candles = [
+        {
+            "time": entry_time,
+            "low": 99.0,
+            "high": 101.0,
+            "bid": 100.0,
+            "gap": False,
+        }
+    ]
+    quotes = [
+        {
+            "time": entry_time + timedelta(minutes=1),
+            "bid": 98.5,
+            "ask": 99.0,
+        }
+    ]
+    underlying_bars = [
+        {
+            "time": entry_time,
+            "close": 99.89,
+        }
+    ]
+
+    result = simulate_fixed_exit(
+        candles,
+        quotes,
+        entry_time,
+        entry_price=100.0,
+        quantity=1,
+        underlying_bars=underlying_bars,
+        support_level=100.0,
+        support_signal="BUY",
+        level_buffer_pct=0.10,
+    )
+
+    assert result.status == "complete"
+    assert result.exit_reason == "level_stop"
+    assert result.exit_time == entry_time + timedelta(minutes=1)
+    assert result.exit_price == 98.5

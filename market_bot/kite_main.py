@@ -64,6 +64,11 @@ from .paper_run_up import (
     prior_60m_option_move,
     RUN_UP_VETO_THRESHOLD_PCT,
 )
+from .support_reversal_flags import (
+    first_reversal_confirmation,
+    level_distance_pct,
+    level_stop_triggered,
+)
 from .strategy import ema, rsi
 from .scorer_observability import (
     DIRECTIONAL_GATE_STATE_NAMES,
@@ -107,9 +112,14 @@ logger = logging.getLogger(__name__)
 WEEKLY_REPORT_TIME_BUDGET_SECONDS = 120.0
 WEEKLY_REPORT_MEMORY_BUDGET_BYTES = 600 * 1024 * 1024
 DEFAULT_OPTION_PREMIUM_STOP_PCT = 0.10
+PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
+    {"reversal_confirm_v2", "level_stop_v2"}
+)
 
 
-def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
+def _log_runtime_flags(
+    config: Dict[str, Any], mode: str, *, simulation_mode: bool = False
+) -> None:
     defaults = {
         "partial_profit_v2": True,
         "entry_feature_logging_v2": True,
@@ -121,12 +131,18 @@ def _log_runtime_flags(config: Dict[str, Any], mode: str) -> None:
         "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": False,
         "run_up_veto_v2": True,
+        "reversal_confirm_v2": False,
+        "level_stop_v2": False,
     }
     if mode == "PAPER":
         defaults["gate_state_logging_v1"] = True
     configured_flags = {
         key: bool(config.get(key, default)) for key, default in defaults.items()
     }
+    for key in PAPER_ONLY_EXPERIMENT_FLAGS:
+        configured_flags[key] = (
+            mode == "PAPER" and not simulation_mode and configured_flags[key]
+        )
     logger.info(
         "Runtime flags: mode=%s %s",
         mode,
@@ -159,6 +175,8 @@ PAPER_CHANGE_KEYS = (
     "stop_quote_validation_v2",
     "support_reversal_levels_diagnostics_v1",
     "run_up_veto_v2",
+    "reversal_confirm_v2",
+    "level_stop_v2",
 )
 ATTRIBUTABLE_CHANGE_KEYS = (
     "premium_floor_v2",
@@ -634,7 +652,15 @@ class KiteTradingBot:
         return (
             bool(getattr(self, "paper_trading_enabled", False))
             and not bool(getattr(self, "live_orders_enabled", False))
-            and bool(getattr(self, "config", {}).get(key, True))
+            and not (
+                key in PAPER_ONLY_EXPERIMENT_FLAGS
+                and bool(getattr(self, "simulation_mode", False))
+            )
+            and bool(
+                getattr(self, "config", {}).get(
+                    key, key not in PAPER_ONLY_EXPERIMENT_FLAGS
+                )
+            )
         )
 
     def _active_paper_change_flags(self) -> list[str]:
@@ -1764,6 +1790,186 @@ class KiteTradingBot:
             candidate.level,
         )
         self._support_reversal_last_candidate = last_candidates
+        getattr(self, "_support_reversal_confirmation_pending", {}).pop(
+            symbol, None
+        )
+
+    def _support_reversal_confirmation_candidate(
+        self,
+        symbol: str,
+        underlying_bars: list[Bar],
+        candidate: Optional[SupportResistanceReversal],
+        signal_time: datetime,
+        now: datetime,
+    ) -> Optional[SupportResistanceReversal]:
+        pending = getattr(self, "_support_reversal_confirmation_pending", None)
+        if pending is None:
+            pending = {}
+            self._support_reversal_confirmation_pending = pending
+        state = pending.get(symbol)
+        if state is not None and candidate is not None:
+            previous = state["candidate"]
+            same_setup = (
+                previous.signal == candidate.signal
+                and abs(previous.level - candidate.level) / previous.level <= 0.002
+            )
+            if not same_setup:
+                state = None
+        if state is None and candidate is not None:
+            state = {
+                "candidate": candidate,
+                "signal_time": signal_time,
+                "confirmation_time": None,
+            }
+            pending[symbol] = state
+        if state is None:
+            return None
+
+        candidate = state["candidate"]
+        confirmation_time = state.get("confirmation_time")
+        if confirmation_time is None:
+            confirmation_time = first_reversal_confirmation(
+                [bar.to_dict() for bar in underlying_bars],
+                state["signal_time"],
+                candidate.level,
+                candidate.signal,
+            )
+            if confirmation_time is not None:
+                state["confirmation_time"] = confirmation_time
+        if confirmation_time is None:
+            if (
+                now > state["signal_time"] + timedelta(minutes=15)
+                and not state.get("expired")
+            ):
+                logger.info(
+                    "[%s] PAPER reversal_confirm_v2 expired without a qualifying 5-minute candle",
+                    symbol,
+                )
+                state["expired"] = True
+            return None
+        if now < confirmation_time:
+            return None
+        if state.get("expired"):
+            return None
+        if now > confirmation_time + timedelta(minutes=1):
+            state["expired"] = True
+            logger.info(
+                "[%s] PAPER reversal_confirm_v2 missed the next-bar entry window",
+                symbol,
+            )
+            return None
+        return candidate
+
+    def _support_reversal_level_stop(self, symbol: str, position: dict) -> bool:
+        if (
+            not self._paper_change_enabled("level_stop_v2")
+            or position.get("support_reversal_level_v2") is None
+            or position.get("support_reversal_signal_v2") not in {"BUY", "SELL"}
+        ):
+            return False
+        token = (
+            (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                symbol.rsplit("_", 1)[0].upper()
+            )
+        )
+        builder = getattr(self, "bar_builder", None)
+        if token is None or builder is None:
+            if not position.get("support_reversal_data_warning_v2"):
+                logger.error(
+                    "[%s] Cannot evaluate level_stop_v2 without the underlying bar source",
+                    symbol,
+                )
+                position["support_reversal_data_warning_v2"] = True
+            return False
+        underlying_bars = builder.get_bars(token, limit=1)
+        if not underlying_bars:
+            if not position.get("support_reversal_data_warning_v2"):
+                logger.warning(
+                    "[%s] No completed underlying bar is available for level_stop_v2",
+                    symbol,
+                )
+                position["support_reversal_data_warning_v2"] = True
+            return False
+        bar = underlying_bars[-1]
+        bar_time = self._journal_datetime(bar.timestamp)
+        if bar_time is None:
+            logger.error("[%s] Invalid completed underlying bar time for level_stop_v2", symbol)
+            return False
+        if bar_time == position.get("support_reversal_last_bar_v2"):
+            return False
+        try:
+            level = float(position["support_reversal_level_v2"])
+            close = float(bar.close)
+            buffer_pct = float(
+                position.get(
+                    "support_reversal_buffer_pct_v2",
+                    self.config.get("level_stop_v2_buffer_pct", 0.1),
+                )
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.error("[%s] Invalid persisted level_stop_v2 values", symbol)
+            position["support_reversal_last_bar_v2"] = bar_time
+            return False
+        if not level_stop_triggered(
+            str(position["support_reversal_signal_v2"]),
+            close,
+            level,
+            buffer_pct,
+        ):
+            position["support_reversal_last_bar_v2"] = bar_time
+            return False
+
+        quote = (getattr(self, "option_quote_cache", {}) or {}).get(symbol, {})
+        metrics = self._option_quote_metrics(quote)
+        bid = metrics.get("bid")
+        if not metrics.get("fresh") or bid is None:
+            if position.get("support_reversal_stop_warning_bar_v2") != bar_time:
+                logger.warning(
+                    "[%s] level_stop_v2 triggered at underlying close %.2f but no valid option bid is available",
+                    symbol,
+                    close,
+                )
+                position["support_reversal_stop_warning_bar_v2"] = bar_time
+            return False
+        if self._close_position(symbol, float(bid), "SUPPORT_REVERSAL_LEVEL_STOP_V2"):
+            return True
+        logger.error("[%s] Could not execute level_stop_v2 at the option bid", symbol)
+        return False
+
+    def _attach_support_reversal_level_stop(
+        self, symbol: str, position: dict, alert: Optional[dict] = None
+    ) -> None:
+        metadata = getattr(self, "_support_reversal_entry_metadata", {}).get(symbol)
+        if (
+            metadata is None
+            or not self._paper_change_enabled("level_stop_v2")
+            or not self._options_enabled()
+            or alert is None
+            or alert.get("route") != "support_reversal"
+            or alert.get("strategy_variant")
+            != "paper_underlying_support_reversal"
+        ):
+            return
+        values = {
+            "support_reversal_level_v2": float(metadata["level"]),
+            "support_reversal_signal_v2": str(metadata["signal"]),
+            "support_reversal_buffer_pct_v2": float(metadata["buffer_pct"]),
+        }
+        position.update(values)
+        if alert is not None:
+            alert.update(values)
+        journal = getattr(self, "trade_journal", None)
+        if journal is not None and journal.get_open_trade(
+            symbol, str(position.get("direction", "BUY"))
+        ) is not None:
+            if not journal.update_open_trade(
+                symbol, values, str(position.get("direction", "BUY"))
+            ):
+                logger.error(
+                    "[%s] Could not persist PAPER level_stop_v2 entry metadata",
+                    symbol,
+                )
+        self._support_reversal_entry_metadata.pop(symbol, None)
 
     def _capital_based_open_risk(self, option_stop_pct: float) -> float:
         manager = self.intraday_manager
@@ -1904,7 +2110,9 @@ class KiteTradingBot:
             self.mode = "PAPER"
         if self.mode == "PAPER":
             self.config.setdefault("gate_state_logging_v1", True)
-        _log_runtime_flags(self.config, self.mode)
+        _log_runtime_flags(
+            self.config, self.mode, simulation_mode=self.simulation_mode
+        )
         self.config_hash = strategy_config_hash(self.config)
         self.git_identity = log_startup_identity(
             self.config_hash,
@@ -2832,6 +3040,15 @@ class KiteTradingBot:
             )
             restored_position.update(
                 {
+                    "support_reversal_level_v2": trade.get(
+                        "support_reversal_level_v2"
+                    ),
+                    "support_reversal_signal_v2": trade.get(
+                        "support_reversal_signal_v2"
+                    ),
+                    "support_reversal_buffer_pct_v2": trade.get(
+                        "support_reversal_buffer_pct_v2"
+                    ),
                     "entry_quantity": int(
                         trade.get("entry_quantity", trade.get("quantity", quantity))
                     ),
@@ -7273,6 +7490,19 @@ class KiteTradingBot:
             support_candidate = self._support_reversal_candidate(
                 symbol, support_underlying_bars
             )
+            if self._paper_change_enabled("reversal_confirm_v2"):
+                signal_bar_time = (
+                    self._journal_datetime(signal_bars[-1].timestamp)
+                    if signal_bars
+                    else None
+                )
+                support_candidate = self._support_reversal_confirmation_candidate(
+                    symbol,
+                    support_underlying_bars,
+                    support_candidate,
+                    signal_bar_time or now,
+                    now,
+                )
             support_evaluations = getattr(
                 self, "_support_reversal_eval_by_symbol", None
             )
@@ -7378,6 +7608,62 @@ class KiteTradingBot:
                         "[%s] Invalid support_reversal_min_score", symbol
                     )
                 elif support_score >= support_min_score:
+                    allow_support_entry = True
+                    if self._paper_change_enabled("level_stop_v2"):
+                        try:
+                            max_distance_pct = float(
+                                self.config.get(
+                                    "level_stop_v2_max_distance_pct", 0.3
+                                )
+                            )
+                            buffer_pct = float(
+                                self.config.get("level_stop_v2_buffer_pct", 0.1)
+                            )
+                            current_underlying_close = float(
+                                support_underlying_bars[-1].close
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            max_distance_pct = float("nan")
+                            buffer_pct = float("nan")
+                            current_underlying_close = float("nan")
+                        distance_pct = level_distance_pct(
+                            current_underlying_close, support_candidate.level
+                        )
+                        if (
+                            not math.isfinite(max_distance_pct)
+                            or max_distance_pct < 0
+                            or not math.isfinite(buffer_pct)
+                            or not 0 <= buffer_pct < 100
+                            or distance_pct is None
+                        ):
+                            logger.error(
+                                "[%s] Invalid level_stop_v2 buffer or distance settings",
+                                symbol,
+                            )
+                            allow_support_entry = False
+                        elif distance_pct > max_distance_pct:
+                            logger.info(
+                                "[%s] PAPER level_stop_v2 skipped entry: level distance %.3f%% exceeds %.3f%%",
+                                symbol,
+                                distance_pct,
+                                max_distance_pct,
+                            )
+                            allow_support_entry = False
+                        else:
+                            entry_metadata = getattr(
+                                self, "_support_reversal_entry_metadata", None
+                            )
+                            if entry_metadata is None:
+                                entry_metadata = {}
+                                self._support_reversal_entry_metadata = (
+                                    entry_metadata
+                                )
+                            entry_metadata[symbol] = {
+                                "level": support_candidate.level,
+                                "signal": support_candidate.signal,
+                                "buffer_pct": buffer_pct,
+                            }
+                    if allow_support_entry:
                         base_score = market_score.score
                         market_score.signal = support_candidate.signal
                         market_score.score = support_score
@@ -7399,8 +7685,8 @@ class KiteTradingBot:
                         market_score.reasons.append(
                             "Paper underlying support/reversal confirmed at "
                             f"{support_candidate.level:.2f} "
-                        f"({support_candidate.touches} clustered pivots)"
-                    )
+                            f"({support_candidate.touches} clustered pivots)"
+                        )
 
         ema_reentry_context = self._ema_reentry_candidate(symbol, history)
         if ema_reentry_context is not None:
@@ -7806,7 +8092,10 @@ class KiteTradingBot:
                 support_candidate is not None
                 and getattr(market_score, "strategy_variant", None)
                 == "paper_underlying_support_reversal"
-                and getattr(self, "entry_mode", "immediate") != "confirmed"
+                and (
+                    getattr(self, "entry_mode", "immediate") != "confirmed"
+                    or self._paper_change_enabled("reversal_confirm_v2")
+                )
             ):
                 self._mark_support_reversal_attempt(
                     symbol, support_candidate
@@ -7819,6 +8108,11 @@ class KiteTradingBot:
                 and self._options_enabled()
                 and symbol.endswith(("_CE", "_PE"))
                 and ema_reentry_context is None
+                and not (
+                    getattr(market_score, "strategy_variant", None)
+                    == "paper_underlying_support_reversal"
+                    and self._paper_change_enabled("reversal_confirm_v2")
+                )
             ):
                 outcome = self._queue_confirmed_entry(
                     symbol=symbol,
@@ -7876,8 +8170,27 @@ class KiteTradingBot:
                         market_score.score,
                         strategy_variant=market_score.strategy_variant,
                         minimum_signal_score=position_minimum_score,
-                        entry_fill_override=gate_context.get(
-                            "fallback_fill_price"
+                        **(
+                            {"force_ask_fill": True}
+                            if (
+                                market_score.strategy_variant
+                                == "paper_underlying_support_reversal"
+                                and self._paper_change_enabled(
+                                    "reversal_confirm_v2"
+                                )
+                            )
+                            else {}
+                        ),
+                        entry_fill_override=(
+                            None
+                            if (
+                                market_score.strategy_variant
+                                == "paper_underlying_support_reversal"
+                                and self._paper_change_enabled(
+                                    "reversal_confirm_v2"
+                                )
+                            )
+                            else gate_context.get("fallback_fill_price")
                         ),
                         paper_change_attributions=list(
                             self._signal_change_attributions.get(symbol, [])
@@ -9550,6 +9863,8 @@ class KiteTradingBot:
         position = self.intraday_manager.active_positions.get(symbol)
         if not position:
             return None
+        if self._support_reversal_level_stop(symbol, position):
+            return "SUPPORT_REVERSAL_LEVEL_STOP_V2"
 
         runner_state_before = None
         if self._is_option_dynamic_exit(position):
@@ -13264,6 +13579,11 @@ class KiteTradingBot:
             alert["entry_mode"] = (
                 "confirmed"
                 if confirmed_entry_metadata is not None
+                else "reversal_confirm_v2"
+                if (
+                    strategy_variant == "paper_underlying_support_reversal"
+                    and self._paper_change_enabled("reversal_confirm_v2")
+                )
                 else "ema_reentry"
                 if ema_reentry_context is not None
                 else "immediate"
@@ -13283,6 +13603,11 @@ class KiteTradingBot:
                 alert.update(entry_telemetry)
             if confirmed_entry_metadata is not None:
                 alert.update(confirmed_entry_metadata)
+            self._attach_support_reversal_level_stop(
+                symbol,
+                self.intraday_manager.active_positions[symbol],
+                alert,
+            )
             if run_up_measurement is not None:
                 alert["prior_60m_option_move_pct"] = (
                     run_up_measurement.value_pct

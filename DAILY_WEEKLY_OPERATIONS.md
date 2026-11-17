@@ -374,6 +374,13 @@ cooldown, option-quality and accuracy gates, and the configured
 `support_reversal_min_premium` override. It does not bypass quantity, stop,
 per-trade risk, daily-loss, or loss-circuit rules. Review counts and rejection
 reasons separately; do not infer performance from the October 23 candle replay.
+The experimental `reversal_confirm_v2` and `level_stop_v2` switches are
+independent and PAPER-only; both default to `false` and remain disabled unless
+the replay gate passes. Roll back either change by setting only its switch to
+`false`. `level_stop_v2_buffer_pct` and
+`level_stop_v2_max_distance_pct` are percentage values; LIVE and simulation/
+BACKTEST paths ignore both switches. The startup `Runtime flags` line reports
+their effective values.
 
 On the October 14 ICICIBANK 1360 PE minute candles, the first range break with candle-volume and one-lot risk proxies passing those gates was 10:01: close ₹26.20, prior-15 high ₹26.00, prior-15 low ₹24.15, stop ₹24.10, and 2R target ₹30.40. The target was touched by the 13:03 candle (high ₹30.50), modeling ₹2,940 gross for the 700-unit lot before costs. This is a single-contract minute-OHLC counterfactual, not proof of a fresh live quote, executable fill, net profit, or durable edge; earlier breakout candidates failed the configured one-lot risk check. Keep the pilot paper-only and evaluate a larger chronological sample before changing or promoting it. Configure the shared score, ADX, trend, context, volatility, and risk thresholds once in `kite_config.json`. Paper records from earlier shadow experiments remain in archived reports for historical comparison, but the bot no longer generates or promotes shadow candidates.
 
