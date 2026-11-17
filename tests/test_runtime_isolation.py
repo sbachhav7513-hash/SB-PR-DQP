@@ -125,6 +125,11 @@ def test_startup_logs_all_requested_runtime_flags(caplog):
         "stock_take_profit_v2": True,
         "option_quote_validated_stops_enabled": True,
         "run_up_veto_v2": False,
+        "tier_risk_counters_v1": False,
+        "symbol_side_stop_breaker_v1": False,
+        "same_side_cluster_limit_v1": False,
+        "stock_tier_enabled_v1": True,
+        "stock_open_risk_share": 0.75,
     }
 
     with caplog.at_level("INFO", logger="market_bot.kite_main"):

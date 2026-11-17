@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 MARKET_CLOSE = time(15, 30)
 RECOVERY_CHECKPOINTS_MINUTES = (5, 15, 30, 60)
+MAX_RECOVERY_CHECKPOINT_OFFSET_SECONDS = 60.0
 
 
 def _datetime(value: Any) -> datetime | None:
@@ -142,11 +143,14 @@ def _nearest_bid(
     if not valid:
         return None
     row = min(valid, key=lambda item: abs((item["time"] - target).total_seconds()))
+    offset = (row["time"] - target).total_seconds()
+    if abs(offset) > MAX_RECOVERY_CHECKPOINT_OFFSET_SECONDS:
+        return None
     return {
         "target_time": target.isoformat(),
         "sample_time": row["time"].isoformat(),
         "bid": _number(row.get("bid")),
-        "sample_offset_seconds": round((row["time"] - target).total_seconds(), 3),
+        "sample_offset_seconds": round(offset, 3),
         "quote_age_seconds": _number(row.get("quote_age_seconds")),
     }
 
@@ -232,7 +236,10 @@ def build_recovery_record(
     if observed_close != expected_close:
         missing.append(f"option capture through close {observed_close}/{expected_close} minutes")
 
-    checkpoints: dict[str, Any] = {}
+    checkpoints: dict[str, Any] = {
+        f"bid_after_{minutes}m": None
+        for minutes in RECOVERY_CHECKPOINTS_MINUTES
+    }
     if exit_time is not None:
         for minutes in RECOVERY_CHECKPOINTS_MINUTES:
             key = f"bid_after_{minutes}m"
@@ -243,7 +250,7 @@ def build_recovery_record(
                 session_close,
             )
             checkpoints[key] = sample
-            if sample is None and exit_time + timedelta(minutes=minutes) < session_close:
+            if sample is None:
                 missing.append(f"no valid bid near {minutes}m checkpoint")
 
     is_long = str(trade.get("action") or "BUY").upper() != "SELL"
@@ -275,6 +282,15 @@ def build_recovery_record(
 
     max_60m, min_60m = r_extremes(path_rows_60m)
     max_close, min_close = r_extremes(path_rows_close)
+    checkpoint_r = {}
+    for minutes in RECOVERY_CHECKPOINTS_MINUTES:
+        sample = checkpoints[f"bid_after_{minutes}m"]
+        bid = _number(sample.get("bid")) if isinstance(sample, dict) else None
+        checkpoint_r[f"r_after_{minutes}m"] = (
+            _r_value(bid, entry, risk, is_long)
+            if bid is not None and entry is not None and risk is not None
+            else None
+        )
     reclaim_time = None
     one_r_time = None
     if entry is not None and risk is not None:
@@ -352,6 +368,7 @@ def build_recovery_record(
             duration_seconds is not None and duration_seconds <= 300
         ),
         **checkpoints,
+        **checkpoint_r,
         "max_r_within_60m": max_60m,
         "min_r_within_60m": min_60m,
         "max_r_to_close": max_close,
@@ -401,6 +418,10 @@ RECOVERY_COLUMNS = (
     "bid_after_15m",
     "bid_after_30m",
     "bid_after_60m",
+    "r_after_5m",
+    "r_after_15m",
+    "r_after_30m",
+    "r_after_60m",
     "max_r_within_60m",
     "min_r_within_60m",
     "max_r_to_close",

@@ -432,6 +432,88 @@ def test_capital_sizing_reduces_for_daily_budget_and_enforces_four_percent_open_
     )
 
 
+def test_tier_controls_default_off_and_stock_switch_defaults_on():
+    bot = _quality_bot("NIFTY_CE", 150)
+    bot.intraday_manager = IntradayManager()
+
+    assert not bot._paper_change_enabled("tier_risk_counters_v1")
+    assert not bot._paper_change_enabled("symbol_side_stop_breaker_v1")
+    assert not bot._paper_change_enabled("same_side_cluster_limit_v1")
+    assert bot.config.get("stock_tier_enabled_v1", True) is True
+
+
+def test_stock_switch_only_blocks_stock_tier_entries():
+    bot = _quality_bot("TCS_CE", 100)
+    bot.config["stock_tier_enabled_v1"] = False
+    bot.intraday_manager = IntradayManager()
+
+    assert bot._can_open_trade_for_signal("TCS_CE", "BUY", 80) == (
+        False,
+        "stock_tier_disabled",
+    )
+    assert bot._can_open_trade_for_signal("NIFTY_CE", "BUY", 80) == (
+        True,
+        "OK",
+    )
+
+
+def test_stop_breaker_and_cluster_limit_block_with_distinct_reasons():
+    bot = _quality_bot("TCS_CE", 100)
+    manager = IntradayManager()
+    bot.intraday_manager = manager
+    bot.config["symbol_side_stop_breaker_v1"] = True
+    manager.record_trade_close(
+        "TCS_CE", "STOP_LOSS", -10, tier="STOCK", side="BUY"
+    )
+
+    assert bot._can_open_trade_for_signal("TCS_CE", "BUY", 80) == (
+        False,
+        "symbol_side_stop_breaker",
+    )
+    assert bot._can_open_trade_for_signal("TCS_CE", "SELL", 80) == (
+        True,
+        "OK",
+    )
+
+    bot.config["symbol_side_stop_breaker_v1"] = False
+    bot.config["same_side_cluster_limit_v1"] = True
+    now = datetime.now(IST)
+    manager.record_trade_open(
+        "INFY_CE", "BUY", opened_at=now - timedelta(minutes=10)
+    )
+    manager.record_trade_open(
+        "WIPRO_CE", "BUY", opened_at=now - timedelta(minutes=20)
+    )
+    assert bot._can_open_trade_for_signal("TCS_CE", "BUY", 80) == (
+        False,
+        "same_side_cluster_limit",
+    )
+
+
+def test_stock_open_risk_share_reserves_the_unallocated_global_cap():
+    bot = _quality_bot(
+        "TCS_CE",
+        100,
+        tier_risk_counters_v1=True,
+        stock_open_risk_share=0.25,
+        account_size=100_000,
+        max_open_risk_pct=4.0,
+    )
+    bot._options_enabled = lambda: False
+    bot.intraday_manager = IntradayManager(account_size=100_000)
+    bot._pending_entry_evaluations = {"TCS_CE": {"risk_amount": 1_001.0}}
+
+    assert not bot._validate_stock_tier_open_risk("TCS_CE", 1, 100, 90)
+    assert (
+        bot._pending_entry_evaluations["TCS_CE"]["rejection_reason"]
+        == "stock_tier_open_risk_share_exceeded"
+    )
+
+    bot.config["stock_open_risk_share"] = 1.0
+    bot._pending_entry_evaluations["TCS_CE"] = {"risk_amount": 1_001.0}
+    assert bot._validate_stock_tier_open_risk("TCS_CE", 1, 100, 90)
+
+
 def test_capital_based_risk_flag_is_paper_only_and_defaults_on():
     paper = _capital_sizing_bot("NIFTY_CE", 65)
     assert paper._paper_change_enabled("capital_based_risk_v2")

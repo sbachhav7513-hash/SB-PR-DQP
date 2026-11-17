@@ -119,8 +119,20 @@ logger = logging.getLogger(__name__)
 WEEKLY_REPORT_TIME_BUDGET_SECONDS = 120.0
 WEEKLY_REPORT_MEMORY_BUDGET_BYTES = 600 * 1024 * 1024
 DEFAULT_OPTION_PREMIUM_STOP_PCT = 0.10
+PAPER_FLAG_DEFAULTS = {
+    "tier_risk_counters_v1": False,
+    "symbol_side_stop_breaker_v1": False,
+    "same_side_cluster_limit_v1": False,
+    "stock_tier_enabled_v1": True,
+}
 PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
-    {"reversal_confirm_v2", "level_stop_v2"}
+    {
+        "reversal_confirm_v2",
+        "level_stop_v2",
+        "tier_risk_counters_v1",
+        "symbol_side_stop_breaker_v1",
+        "same_side_cluster_limit_v1",
+    }
 )
 
 
@@ -140,6 +152,7 @@ def _log_runtime_flags(
         "run_up_veto_v2": True,
         "reversal_confirm_v2": False,
         "level_stop_v2": False,
+        **PAPER_FLAG_DEFAULTS,
     }
     if mode == "PAPER":
         defaults["gate_state_logging_v1"] = True
@@ -147,6 +160,9 @@ def _log_runtime_flags(
     configured_flags = {
         key: bool(config.get(key, default)) for key, default in defaults.items()
     }
+    configured_flags["stock_open_risk_share"] = config.get(
+        "stock_open_risk_share", 1.0
+    )
     for key in PAPER_ONLY_EXPERIMENT_FLAGS:
         configured_flags[key] = (
             mode == "PAPER" and not simulation_mode and configured_flags[key]
@@ -211,7 +227,6 @@ OPTION_ENTRY_RISK_FIELDS = (
     "max_open_risk_amount",
     "open_risk_amount",
     "remaining_daily_risk_amount",
-    "max_risk_per_trade_ignored",
     "max_lots",
     "premium_cap",
     "lots_reduced_reason",
@@ -343,6 +358,13 @@ class KiteTradingBot:
             in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
             else "stock"
         )
+
+    @classmethod
+    def _tier_label(cls, symbol: str) -> str:
+        underlying = cls._underlying_symbol(str(symbol).upper())
+        if underlying in {"NIFTY", "BANKNIFTY"}:
+            return underlying
+        return "STOCK"
 
     def _stock_take_profit_tiers(self) -> set[str]:
         configured = self.config.get("stock_take_profit_tiers", ["stock"])
@@ -487,7 +509,11 @@ class KiteTradingBot:
                 "stop_risk_pct": stop_risk_pct,
             }
             return 0
-        risk_cap = self._entry_risk_cap()
+        risk_cap = (
+            self._entry_risk_cap()
+            if self.intraday_manager.enforce_per_trade_risk_cap
+            else None
+        )
         if risk_cap is None:
             return self.intraday_manager.calculate_position_size(
                 symbol, entry_price, stop_loss_price
@@ -674,7 +700,10 @@ class KiteTradingBot:
             )
             and bool(
                 getattr(self, "config", {}).get(
-                    key, key not in PAPER_ONLY_EXPERIMENT_FLAGS
+                    key,
+                    PAPER_FLAG_DEFAULTS.get(
+                        key, key not in PAPER_ONLY_EXPERIMENT_FLAGS
+                    ),
                 )
             )
         )
@@ -1187,11 +1216,9 @@ class KiteTradingBot:
                 2500.0
                 if self._paper_change_enabled("banknifty_caps_v2")
                 and underlying == "BANKNIFTY"
-                else float(config.get("max_risk_per_trade", 1000.0))
+                else None
             ),
-            "baseline_risk_cap_inr": float(
-                config.get("max_risk_per_trade", 1000.0)
-            ),
+            "baseline_risk_cap_inr": None,
             "lots": (
                 1
                 if underlying == "BANKNIFTY"
@@ -1228,7 +1255,6 @@ class KiteTradingBot:
                 )
             except (TypeError, ValueError, OverflowError):
                 lot_size, risk_inr = None, None
-            baseline_risk_cap = float(config.get("max_risk_per_trade", 1000.0))
             remaining_daily = None
             open_risk = None
             max_open_risk = None
@@ -1241,11 +1267,27 @@ class KiteTradingBot:
                         if capital_based_risk
                         else float(manager.open_position_risk())
                     )
+                    tier = self._tier_label(symbol)
+                    if self._paper_change_enabled("tier_risk_counters_v1"):
+                        tier_open_risk = (
+                            self._capital_based_open_risk(
+                                _configured_option_premium_stop_pct(self.config),
+                                tier=tier,
+                            )
+                            if self._paper_change_enabled("capital_based_risk_v2")
+                            else float(manager.open_position_risk(tier))
+                        )
+                        tier_realized_losses = float(
+                            manager.daily_realized_losses_by_tier.get(tier, 0.0)
+                        )
+                    else:
+                        tier_open_risk = open_risk
+                        tier_realized_losses = float(manager.daily_realized_losses)
                     remaining_daily = max(
                         0.0,
                         float(manager.daily_max_loss)
-                        - float(manager.daily_realized_losses)
-                        - open_risk,
+                        - tier_realized_losses
+                        - tier_open_risk,
                     )
                 except (AttributeError, TypeError, ValueError, OverflowError):
                     remaining_daily = None
@@ -1261,7 +1303,6 @@ class KiteTradingBot:
                 measured_premium is not None
                 and measured_premium <= float(config.get("option_max_premium", 800.0))
                 and risk_inr is not None
-                and risk_inr <= baseline_risk_cap
                 and (remaining_daily is None or risk_inr <= remaining_daily)
             )
             capital_cap_risk = (
@@ -1275,7 +1316,7 @@ class KiteTradingBot:
                 if capital_based_risk
                 else 2500.0
                 if self._paper_change_enabled("banknifty_caps_v2")
-                else baseline_risk_cap
+                else None
             )
             effective_risk_limit = current_risk_cap
             banknifty_evaluation.update(
@@ -1284,7 +1325,7 @@ class KiteTradingBot:
                     "risk_inr": risk_inr,
                     "risk_cap_inr": current_risk_cap,
                     "hard_risk_cap_inr": effective_risk_limit,
-                    "baseline_risk_cap_inr": baseline_risk_cap,
+                    "baseline_risk_cap_inr": None,
                     "remaining_daily_risk_inr": remaining_daily,
                     "open_risk_inr": open_risk,
                     "max_open_risk_pct": float(
@@ -1412,6 +1453,10 @@ class KiteTradingBot:
             self._underlying_symbol(symbol) == "BANKNIFTY"
             and self._paper_change_enabled("banknifty_caps_v2")
         )
+        tier_counters_enabled = self._paper_change_enabled(
+            "tier_risk_counters_v1"
+        )
+        tier = self._tier_label(symbol)
         if banknifty_caps_enabled:
             minimum_lots = 1
             maximum_lots = 1
@@ -1427,18 +1472,29 @@ class KiteTradingBot:
             raise ValueError(f"Option contract {symbol} has an invalid multiplier")
         unit_risk = max(premium, 0.01) * premium_stop_pct * multiplier
         per_lot_risk = round(unit_risk * lot_size, 10)
-        risk_cap = self._entry_risk_cap()
+        risk_cap = (
+            self._entry_risk_cap()
+            if self.intraday_manager.enforce_per_trade_risk_cap
+            else None
+        )
         if banknifty_caps_enabled:
             risk_cap = 2500.0
+        if tier_counters_enabled:
+            remaining_daily_risk = self.intraday_manager.available_daily_risk(
+                tier=tier, tiered=True
+            )
+        elif banknifty_caps_enabled:
             remaining_daily_risk = max(
                 0.0,
                 float(self.intraday_manager.daily_max_loss)
                 - float(self.intraday_manager.daily_realized_losses)
                 - float(self.intraday_manager.open_position_risk()),
             )
-            risk_budget = min(risk_cap, remaining_daily_risk)
         else:
             remaining_daily_risk = self.intraday_manager.available_daily_risk()
+        if banknifty_caps_enabled:
+            risk_budget = min(risk_cap, remaining_daily_risk)
+        else:
             risk_budget = min(
                 remaining_daily_risk,
                 self._option_trade_risk_limit(symbol, premium),
@@ -1531,14 +1587,13 @@ class KiteTradingBot:
                 math.floor(risk_budget / per_lot_risk + 1e-12),
             )
         if risk_sized_lots < minimum_lots:
-            if risk_cap is not None:
-                evaluation["accepted"] = False
-                evaluation["rejection_reason"] = (
-                    "aggregate_daily_risk_budget_exceeded"
-                    if banknifty_caps_enabled
-                    else "available_risk_budget_below_one_lot"
-                )
-                evaluations[symbol] = evaluation
+            evaluation["accepted"] = False
+            evaluation["rejection_reason"] = (
+                "aggregate_daily_risk_budget_exceeded"
+                if banknifty_caps_enabled
+                else "available_risk_budget_below_one_lot"
+            )
+            evaluations[symbol] = evaluation
             return 0
         quantity = min(risk_sized_lots, maximum_lots) * lot_size
         if banknifty_caps_enabled:
@@ -1586,8 +1641,7 @@ class KiteTradingBot:
                 "estimated_initial_risk_rupees": unit_risk * quantity,
             }
         )
-        if risk_cap is not None:
-            evaluations[symbol] = evaluation
+        evaluations[symbol] = evaluation
         return quantity
 
     def _calculate_capital_based_option_quantity(
@@ -1614,12 +1668,30 @@ class KiteTradingBot:
         option_stop_pct = float(
             _configured_option_premium_stop_pct(self.config)
         )
+        tier_counters_enabled = self._paper_change_enabled(
+            "tier_risk_counters_v1"
+        )
+        tier = self._tier_label(symbol)
         open_risk = self._capital_based_open_risk(option_stop_pct)
+        daily_open_risk = (
+            self._capital_based_open_risk(option_stop_pct, tier=tier)
+            if tier_counters_enabled
+            else open_risk
+        )
+        realized_losses = (
+            float(
+                self.intraday_manager.daily_realized_losses_by_tier.get(
+                    tier, 0.0
+                )
+            )
+            if tier_counters_enabled
+            else float(self.intraday_manager.daily_realized_losses)
+        )
         remaining_daily = max(
             0.0,
             float(self.intraday_manager.daily_max_loss)
-            - float(self.intraday_manager.daily_realized_losses)
-            - open_risk,
+            - realized_losses
+            - daily_open_risk,
         )
         per_lot_invested = float(premium) * lot_size
         per_lot_risk = per_lot_invested * option_stop_pct
@@ -1662,9 +1734,6 @@ class KiteTradingBot:
             "max_capital_per_trade_used_pct": max_capital_pct,
             "max_capital_per_trade_used_amount": max_capital,
             "max_lots": maximum_lots,
-            "max_risk_per_trade_ignored": self.config.get(
-                "max_risk_per_trade", 1000.0
-            ),
             "max_open_risk_pct": max_open_risk_pct,
             "max_open_risk_amount": max_open_risk,
             "open_risk_amount": open_risk,
@@ -1806,11 +1875,20 @@ class KiteTradingBot:
             symbol, quantity, entry_price, stop_loss
         )
         open_risk = float(manager.open_position_risk())
+        tier = self._tier_label(symbol)
+        if self._paper_change_enabled("tier_risk_counters_v1"):
+            tier_open_risk = float(manager.open_position_risk(tier))
+            tier_realized_losses = float(
+                manager.daily_realized_losses_by_tier.get(tier, 0.0)
+            )
+        else:
+            tier_open_risk = open_risk
+            tier_realized_losses = float(manager.daily_realized_losses)
         remaining_daily = max(
             0.0,
             float(manager.daily_max_loss)
-            - float(manager.daily_realized_losses)
-            - open_risk,
+            - tier_realized_losses
+            - tier_open_risk,
         )
         account_size = float(self.config.get("account_size", 100000.0))
         max_open_risk_pct = float(self.config.get("max_open_risk_pct", 4.0))
@@ -1856,6 +1934,79 @@ class KiteTradingBot:
             )
             return False
         evaluation.update({"accepted": True})
+        return True
+
+    def _validate_stock_tier_open_risk(
+        self, symbol: str, quantity: int, entry_price: float, stop_loss: float
+    ) -> bool:
+        if (
+            self._tier_label(symbol) != "STOCK"
+            or not self._paper_change_enabled("tier_risk_counters_v1")
+        ):
+            return True
+        share = float(self.config.get("stock_open_risk_share", 1.0))
+        account_size = float(self.config.get("account_size", 100000.0))
+        max_open_risk_pct = float(self.config.get("max_open_risk_pct", 4.0))
+        if (
+            not math.isfinite(share)
+            or not 0.0 <= share <= 1.0
+            or not math.isfinite(account_size)
+            or account_size <= 0
+            or not math.isfinite(max_open_risk_pct)
+            or max_open_risk_pct < 0
+        ):
+            raise ValueError(
+                "stock_open_risk_share must be between 0 and 1, account_size "
+                "must be positive, and max_open_risk_pct must be non-negative"
+            )
+        global_open_risk_cap = account_size * max_open_risk_pct / 100.0
+        stock_open_risk_cap = global_open_risk_cap * share
+        option_stop_pct = _configured_option_premium_stop_pct(self.config)
+        stock_open_risk = (
+            self._capital_based_open_risk(option_stop_pct, tier="STOCK")
+            if self._options_enabled()
+            else float(self.intraday_manager.open_position_risk("STOCK"))
+        )
+        evaluation = getattr(self, "_pending_entry_evaluations", {}).setdefault(
+            symbol, {}
+        )
+        proposed_risk = evaluation.get(
+            "risk_amount", evaluation.get("estimated_initial_risk_rupees")
+        )
+        if proposed_risk is None:
+            proposed_risk = self.intraday_manager.estimate_trade_risk(
+                symbol, quantity, entry_price, stop_loss
+            )
+        proposed_risk = float(proposed_risk)
+        if not math.isfinite(stock_open_risk) or stock_open_risk < 0:
+            raise ValueError("Current STOCK-tier open risk must be finite and non-negative")
+        if not math.isfinite(proposed_risk) or proposed_risk < 0:
+            raise ValueError("Proposed STOCK-tier open risk must be finite and non-negative")
+        evaluation.update(
+            {
+                "stock_open_risk_share": share,
+                "stock_open_risk_cap_rupees": stock_open_risk_cap,
+                "stock_open_risk_rupees": stock_open_risk,
+                "proposed_stock_open_risk_rupees": (
+                    stock_open_risk + proposed_risk
+                ),
+            }
+        )
+        if stock_open_risk + proposed_risk > stock_open_risk_cap + 1e-9:
+            evaluation.update(
+                {
+                    "accepted": False,
+                    "rejection_reason": "stock_tier_open_risk_share_exceeded",
+                }
+            )
+            logger.info(
+                "[%s] Entry rejected: stock_tier_open_risk_share_exceeded "
+                "(proposed INR %.2f > tier cap INR %.2f)",
+                symbol,
+                stock_open_risk + proposed_risk,
+                stock_open_risk_cap,
+            )
+            return False
         return True
 
     def _try_option_range_breakout(
@@ -2264,10 +2415,14 @@ class KiteTradingBot:
                 )
         self._support_reversal_entry_metadata.pop(symbol, None)
 
-    def _capital_based_open_risk(self, option_stop_pct: float) -> float:
+    def _capital_based_open_risk(
+        self, option_stop_pct: float, *, tier: Optional[str] = None
+    ) -> float:
         manager = self.intraday_manager
         total_risk = 0.0
         for symbol, position in manager.active_positions.items():
+            if tier is not None and self._tier_label(symbol) != tier:
+                continue
             saved_risk = position.get("capital_based_risk_amount")
             if saved_risk is not None:
                 risk = float(saved_risk)
@@ -2321,10 +2476,18 @@ class KiteTradingBot:
         )
 
     def _entry_risk_limit(self, symbol: str, premium: float) -> float:
-        risk_limit = float(self.intraday_manager.max_risk_per_trade)
+        risk_limit = (
+            float(self.intraday_manager.max_risk_per_trade)
+            if self.intraday_manager.enforce_per_trade_risk_cap
+            else float(self.intraday_manager.daily_max_loss)
+        )
         if self._options_enabled() and "_" in symbol:
             risk_limit = min(risk_limit, self._option_trade_risk_limit(symbol, premium))
-        trade_risk_cap = self._entry_risk_cap()
+        trade_risk_cap = (
+            self._entry_risk_cap()
+            if self.intraday_manager.enforce_per_trade_risk_cap
+            else None
+        )
         if trade_risk_cap is not None:
             risk_limit = min(risk_limit, trade_risk_cap)
         return risk_limit
@@ -2493,6 +2656,9 @@ class KiteTradingBot:
             daily_max_loss=self.config.get("daily_max_loss"),
             daily_max_loss_pct=daily_max_loss_pct,
             max_risk_per_trade=max_risk_per_trade,
+            enforce_per_trade_risk_cap=(
+                self.mode != "PAPER" or self.simulation_mode
+            ),
         )
 
         self.bar_builder = BarBuilder(
@@ -2832,7 +2998,9 @@ class KiteTradingBot:
         )
         position = self.intraday_manager.active_positions[symbol]
         position["lowest_option_premium"] = entry_price
-        self.intraday_manager.record_trade_open(symbol, "BUY")
+        self.intraday_manager.record_trade_open(
+            symbol, "BUY", tier=self._tier_label(symbol)
+        )
         alert = self.telegram_notifier.format_trade(
             ticker=symbol,
             action="BUY",
@@ -2844,6 +3012,8 @@ class KiteTradingBot:
             option_leg=side,
             trailing_enabled=bool(position.get("trailing_enabled")),
         )
+        alert["tier"] = self._tier_label(symbol)
+        alert["india_vix"] = self._india_vix_value()
         alert.update(
             {
                 "contract_id": symbol,
@@ -2882,6 +3052,53 @@ class KiteTradingBot:
     ) -> tuple[bool, str]:
         if getattr(self, "_telegram_entries_paused", False):
             return False, "telegram entries paused"
+        paper_entry = bool(
+            getattr(self, "paper_trading_enabled", False)
+            and not getattr(self, "live_orders_enabled", False)
+        )
+        tier = self._tier_label(symbol)
+        if paper_entry and tier == "STOCK" and not bool(
+            self.config.get("stock_tier_enabled_v1", True)
+        ):
+            logger.info("[%s] Entry blocked: stock_tier_disabled", symbol)
+            return False, "stock_tier_disabled"
+        if (
+            paper_entry
+            and self._paper_change_enabled("symbol_side_stop_breaker_v1")
+            and self.intraday_manager.entry_blocked_by_stop_breaker(
+                symbol, direction
+            )
+        ):
+            logger.info(
+                "[%s] Entry blocked: symbol_side_stop_breaker side=%s",
+                symbol,
+                direction,
+            )
+            return False, "symbol_side_stop_breaker"
+        if (
+            paper_entry
+            and self._paper_change_enabled("same_side_cluster_limit_v1")
+            and self.intraday_manager.same_side_entries_in_window(
+                direction, datetime.now(IST), 30 * 60, exclude_symbol=symbol
+            )
+            >= 2
+        ):
+            logger.info(
+                "[%s] Entry blocked: same_side_cluster_limit side=%s "
+                "window_minutes=30 max_entries=2",
+                symbol,
+                direction,
+            )
+            return False, "same_side_cluster_limit"
+        tier_counters_enabled = bool(
+            paper_entry
+            and self._paper_change_enabled("tier_risk_counters_v1")
+        )
+        tier_risk_kwargs = (
+            {"tier": tier, "tier_counters_enabled": True}
+            if tier_counters_enabled
+            else {}
+        )
         if ema_reentry_confirmed and self._ema_reentry_enabled():
             return self.intraday_manager.can_open_trade(
                 symbol,
@@ -2890,6 +3107,7 @@ class KiteTradingBot:
                 stop_reentry_cooldown_seconds=0,
                 signal_score=score,
                 minimum_stop_reentry_score=0,
+                **tier_risk_kwargs,
             )
         allow_stop_reentry = (
             self.config.get("stop_reentry_enabled", False)
@@ -2897,7 +3115,11 @@ class KiteTradingBot:
             and symbol.endswith(("_CE", "_PE"))
         )
         if not allow_stop_reentry:
-            return self.intraday_manager.can_open_trade(symbol, direction)
+            return self.intraday_manager.can_open_trade(
+                symbol,
+                direction,
+                **tier_risk_kwargs,
+            )
         return self.intraday_manager.can_open_trade(
             symbol,
             direction,
@@ -2905,6 +3127,7 @@ class KiteTradingBot:
             stop_reentry_cooldown_seconds=self.stop_reentry_cooldown_minutes * 60,
             signal_score=score,
             minimum_stop_reentry_score=self.stop_reentry_min_score,
+            **tier_risk_kwargs,
         )
 
     def _ema_reentry_enabled(self) -> bool:
@@ -3083,6 +3306,8 @@ class KiteTradingBot:
                 "event": "ema_stop_reentry",
                 "ema_reentry_event": event,
                 "ticker": symbol,
+                "tier": self._tier_label(symbol),
+                "india_vix": self._india_vix_value(),
                 "contract_id": self._contract_id(symbol),
                 "signal": (signal or {}).get("signal", "HOLD"),
                 "outcome": outcome or event.lower(),
@@ -3403,10 +3628,16 @@ class KiteTradingBot:
                 }
             )
 
-        if self.intraday_manager.daily_risk_exceeded():
+        tiered_daily_risk = self._paper_change_enabled(
+            "tier_risk_counters_v1"
+        )
+        if self.intraday_manager.daily_risk_exceeded(
+            tiered=tiered_daily_risk
+        ):
             raise RuntimeError(
-                "Restored paper positions and realized losses exceed the aggregate "
-                f"daily risk cap of {self.intraday_manager.daily_max_loss:.2f}"
+                "Restored paper positions and realized losses exceed the "
+                "applicable daily risk cap of "
+                f"{self.intraday_manager.daily_max_loss:.2f}"
             )
 
     def _close_stale_paper_position(
@@ -4964,23 +5195,18 @@ class KiteTradingBot:
                 * float(config.get("option_max_risk_per_lot_pct", 10.0))
                 / 100.0
             )
-            if self._paper_change_enabled("capital_based_risk_v2"):
-                open_risk = (
-                    float(manager.open_position_risk())
-                    if manager is not None else float("inf")
+            tier_counters_enabled = self._paper_change_enabled(
+                "tier_risk_counters_v1"
+            )
+            if manager is None:
+                risk_budget = float("inf")
+            elif tier_counters_enabled:
+                risk_budget = manager.available_daily_risk(
+                    tier=self._tier_label(symbol), tiered=True
                 )
-                daily_remaining = max(
-                    0.0,
-                    float(getattr(manager, "daily_max_loss", 0.0))
-                    - float(getattr(manager, "daily_realized_losses", 0.0))
-                    - open_risk,
-                )
-                risk_budget = min(per_lot_limit, daily_remaining)
             else:
-                risk_budget = min(
-                    float(getattr(manager, "max_risk_per_trade", float("inf"))),
-                    per_lot_limit,
-                )
+                risk_budget = manager.available_daily_risk()
+            risk_budget = min(per_lot_limit, risk_budget)
             if lot_size <= 0:
                 risk_budget = None
             results["risk_cap"] = self._gate_evaluation(
@@ -5241,6 +5467,8 @@ class KiteTradingBot:
                     "pivot_levels",
                 )
             }
+            inputs["tier"] = self._tier_label(symbol)
+            inputs["india_vix"] = self._india_vix_value()
             support_enabled = bool(
                 self.config.get("support_reversal_enabled", False)
             )
@@ -5503,6 +5731,8 @@ class KiteTradingBot:
         try:
             history = scorer_history(history)
             inputs = scorer_inputs(history, self.config)
+            inputs["tier"] = self._tier_label(symbol)
+            inputs["india_vix"] = self._india_vix_value()
             components = score_components(
                 list(getattr(market_score, "reasons", []))
             )
@@ -5526,6 +5756,14 @@ class KiteTradingBot:
             self._record_feature_observation_error(
                 "scorer_decision_context", error, symbol
             )
+
+    def _india_vix_value(self) -> Optional[float]:
+        prices = getattr(self, "latest_prices", {}) or {}
+        for symbol in ("INDIA VIX", "INDIAVIX"):
+            value = self._positive_quote_value(prices.get(symbol))
+            if value is not None:
+                return value
+        return None
 
     def _record_scorer_score_adjustment(
         self,
@@ -5785,15 +6023,9 @@ class KiteTradingBot:
                 ).value_pct
 
         is_option = symbol.endswith(("_CE", "_PE"))
-        underlying = self._underlying_symbol(symbol)
-        tier = (
-            "index"
-            if underlying in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
-            else "stock"
-            if is_option
-            else None
-        )
+        tier = self._tier_label(symbol)
         add("regime_label", classify_price_regime(closes))
+        add("india_vix", self._india_vix_value(), "india_vix_unavailable")
         add("regime_range_pct", range_pct, "insufficient_history")
         add("regime_20_bar_move_pct", move_20_pct, "insufficient_history")
         add("pivot_count", gate_measurements.get("support_resistance_touches"), "not_computed_by_route")
@@ -6227,6 +6459,53 @@ class KiteTradingBot:
     ) -> None:
         values = dict(alert.get("entry_feature_values") or {})
         null_reasons = dict(alert.get("entry_feature_null_reasons") or {})
+        pivot_level = alert.get(
+            "support_resistance_level",
+            alert.get("support_reversal_level_v2"),
+        )
+        pivot_count = alert.get("support_resistance_touches")
+        if pivot_level is None and alert.get("route") == "support_reversal":
+            metadata = getattr(
+                self, "_support_reversal_entry_metadata", {}
+            ).get(symbol)
+            if isinstance(metadata, dict):
+                pivot_level = metadata.get("level")
+                pivot_count = metadata.get("touches", pivot_count)
+        try:
+            pivot_level = float(pivot_level) if pivot_level is not None else None
+        except (TypeError, ValueError, OverflowError):
+            pivot_level = None
+        if (
+            pivot_level is not None
+            and math.isfinite(pivot_level)
+            and pivot_level > 0
+        ):
+            values["pivot_level"] = pivot_level
+            null_reasons.pop("pivot_level", None)
+            try:
+                pivot_count = (
+                    float(pivot_count) if pivot_count is not None else None
+                )
+            except (TypeError, ValueError, OverflowError):
+                pivot_count = None
+            values["pivot_count"] = pivot_count
+            if pivot_count is None:
+                null_reasons["pivot_count"] = "support_touches_unavailable"
+            else:
+                null_reasons.pop("pivot_count", None)
+            underlying_price = self._positive_quote_value(
+                alert.get("underlying_price_at_selection")
+            )
+            if underlying_price is not None:
+                values["distance_to_pivot_pct"] = (
+                    abs(underlying_price - pivot_level) / pivot_level * 100.0
+                )
+                null_reasons.pop("distance_to_pivot_pct", None)
+            else:
+                values["distance_to_pivot_pct"] = None
+                null_reasons["distance_to_pivot_pct"] = (
+                    "underlying_price_at_selection_unavailable"
+                )
         is_option = symbol.endswith(("_CE", "_PE"))
         manager = getattr(self, "intraday_manager", None)
         specs = (
@@ -6254,31 +6533,11 @@ class KiteTradingBot:
                     alert["risk_amount"] = abs(entry - stop) * quantity * multiplier
                 except (KeyError, TypeError, ValueError, OverflowError):
                     pass
-            if alert.get("risk_cap_rupees") is None:
-                entry_evaluation = getattr(
-                    self, "_pending_entry_evaluations", {}
-                ).get(symbol, {})
-                cap = entry_evaluation.get(
-                    "risk_cap_rupees",
-                    entry_evaluation.get(
-                        "risk_cap_inr",
-                        alert.get("paper_risk_cap_rupees"),
-                    ),
-                )
-                if cap is None and not self._paper_change_enabled(
-                    "capital_based_risk_v2"
-                ):
-                    cap = self.config.get("max_risk_per_trade")
-                if cap is not None:
-                    alert["risk_cap_rupees"] = cap
-            alert["tier"] = (
-                "index"
-                if self._underlying_symbol(symbol)
-                in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
-                else "stock"
-            )
-        else:
-            alert["tier"] = None
+        alert["tier"] = self._tier_label(symbol)
+        alert["india_vix"] = self._india_vix_value()
+        if self.paper_trading_enabled and not self.live_orders_enabled:
+            alert.pop("risk_cap_rupees", None)
+            alert.pop("paper_risk_cap_rupees", None)
         alert.setdefault("partial_status", "not-triggered")
         alert.setdefault("partial_exit_done", False)
         alert.setdefault("partial_ineligible_single_lot", False)
@@ -6331,10 +6590,7 @@ class KiteTradingBot:
                 "risk_amount",
                 "risk_amount_unavailable",
             ),
-            "risk_cap": (
-                "risk_cap_rupees",
-                "risk_cap_unavailable",
-            ),
+            "risk_cap": ("max_open_risk_amount", "max_open_risk_unavailable"),
             "active_paper_change_flags": (
                 "paper_change_flags_at_entry",
                 "flags_unavailable",
@@ -6562,6 +6818,8 @@ class KiteTradingBot:
             "signal_id": pending["signal_id"],
             "signal_uid": pending.get("signal_uid"),
             "ticker": pending["symbol"],
+            "tier": self._tier_label(pending["symbol"]),
+            "india_vix": self._india_vix_value(),
             "contract_id": pending["contract_id"],
             "strike": pending.get("strike"),
             "expiry": pending.get("expiry"),
@@ -7038,6 +7296,15 @@ class KiteTradingBot:
 
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         metrics = self._option_quote_metrics(quote, now=now)
+        if (
+            metrics["fresh"]
+            and metrics["bid"] is not None
+            and metrics["ask"] is not None
+            and metrics["ask"] >= metrics["bid"]
+            and metrics["ltp"] is not None
+            and not metrics["bid"] <= metrics["ltp"] <= metrics["ask"]
+        ):
+            return "quote_outside_spread"
         option_candle = self._latest_completed_option_candle(symbol)
         if not metrics["valid"] or metrics["ask"] is None:
             allowed, reason = self._option_quality_gate(
@@ -8738,6 +9005,22 @@ class KiteTradingBot:
             "valid": fresh and in_spread,
         }
 
+    @staticmethod
+    def _invalid_entry_quote_reason(metrics: dict) -> str:
+        bid = metrics.get("bid")
+        ask = metrics.get("ask")
+        ltp = metrics.get("ltp")
+        if (
+            metrics.get("fresh")
+            and bid is not None
+            and ask is not None
+            and ask >= bid
+            and ltp is not None
+            and not bid <= ltp <= ask
+        ):
+            return "quote_outside_spread"
+        return "stale_quote"
+
     def _option_exit_quote_metrics(
         self, quote: dict, now: Optional[datetime] = None
     ) -> dict:
@@ -10140,7 +10423,9 @@ class KiteTradingBot:
         position["quantity"] = remainder_quantity
         position["remaining_quantity"] = remainder_quantity
         position["exit_legs"] = exit_legs
-        manager.record_partial_realized_pnl(gross_pnl)
+        manager.record_partial_realized_pnl(
+            gross_pnl, symbol=symbol, tier=self._tier_label(symbol)
+        )
         partial_alert = {
             "message": (
                 f"Partial exit: {symbol} sold {partial_quantity} units "
@@ -10777,6 +11062,12 @@ class KiteTradingBot:
 
     def _activate_daily_loss_shutdown(self) -> bool:
         """Block the rest of the session and cancel pending non-protective orders."""
+        if (
+            getattr(self, "paper_trading_enabled", False)
+            and not getattr(self, "live_orders_enabled", False)
+            and self._paper_change_enabled("tier_risk_counters_v1")
+        ):
+            return False
         if not self.intraday_manager.daily_loss_limit_reached():
             return False
 
@@ -11280,9 +11571,25 @@ class KiteTradingBot:
                     reason,
                     float(pnl),
                     partial_pnl,
+                    tier=self._tier_label(symbol),
+                    side=(
+                        action
+                        or (trade or {}).get("action")
+                        or (position or {}).get("direction")
+                    ),
                 )
             else:
-                self.intraday_manager.record_trade_close(symbol, reason, float(pnl))
+                self.intraday_manager.record_trade_close(
+                    symbol,
+                    reason,
+                    float(pnl),
+                    tier=self._tier_label(symbol),
+                    side=(
+                        action
+                        or (trade or {}).get("action")
+                        or (position or {}).get("direction")
+                    ),
+                )
             self._activate_daily_loss_shutdown()
         if exit_info:
             is_ema_reentry = bool((trade or {}).get("is_ema_reentry"))
@@ -12296,14 +12603,15 @@ class KiteTradingBot:
             stop_time = manager.session_loss_stop_times.get(symbol)
             recent_loss_time = manager.recent_loss_symbols.get(symbol)
             open_risk = manager.open_position_risk()
-            remaining_budget = max(
-                0.0,
-                min(
-                    manager.max_risk_per_trade,
-                    manager.daily_max_loss
-                    - manager.daily_realized_losses
-                    - open_risk,
-                ),
+            tier_counters_enabled = self._paper_change_enabled(
+                "tier_risk_counters_v1"
+            )
+            remaining_budget = (
+                manager.available_daily_risk(
+                    tier=self._tier_label(symbol), tiered=True
+                )
+                if tier_counters_enabled
+                else manager.available_daily_risk()
             )
             manager_state = {
                 "session_trade_count": trade_count,
@@ -12707,6 +13015,22 @@ class KiteTradingBot:
             reasons = [outcome]
         entry_evaluations = getattr(self, "_pending_entry_evaluations", {})
         entry_evaluation = entry_evaluations.pop(symbol, None)
+        if (
+            isinstance(entry_evaluation, dict)
+            and getattr(self, "paper_trading_enabled", False)
+            and not getattr(self, "live_orders_enabled", False)
+            and not getattr(self, "simulation_mode", False)
+        ):
+            entry_evaluation = dict(entry_evaluation)
+            entry_evaluation.pop("max_risk_per_trade", None)
+            banknifty_cap_applies = (
+                self._underlying_symbol(symbol) == "BANKNIFTY"
+                and bool(
+                    getattr(self, "config", {}).get("banknifty_caps_v2", False)
+                )
+            )
+            if not banknifty_cap_applies:
+                entry_evaluation.pop("risk_cap_rupees", None)
         variant = (
             strategy_variant
             or getattr(market_score, "strategy_variant", None)
@@ -12802,6 +13126,8 @@ class KiteTradingBot:
                 "event": "bar_decision",
                 "bar": bar.to_dict(),
                 "ticker": symbol,
+                "tier": self._tier_label(symbol),
+                "india_vix": self._india_vix_value(),
                 "contract_id": (
                     str(contract_metadata.get("contract_id") or "")
                     if option_decision and signal in {"BUY", "SELL"}
@@ -13194,7 +13520,7 @@ class KiteTradingBot:
                     not entry_quote_metrics["valid"]
                     or entry_quote_metrics["ask"] is None
                 ):
-                    return "stale_quote"
+                    return self._invalid_entry_quote_reason(entry_quote_metrics)
                 if entry_fill_override is not None:
                     if (
                         not getattr(self, "paper_trading_enabled", False)
@@ -13283,6 +13609,10 @@ class KiteTradingBot:
                     stop_loss,
                 )
 
+            if quantity > 0 and not self._validate_stock_tier_open_risk(
+                symbol, quantity, price, stop_loss
+            ):
+                quantity = 0
             if quantity > 0 and not self._validate_banknifty_entry_risk(
                 symbol, quantity, price, stop_loss
             ):
@@ -13293,6 +13623,10 @@ class KiteTradingBot:
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
+                if evaluation.get("rejection_reason") == (
+                    "stock_tier_open_risk_share_exceeded"
+                ):
+                    return "risk_blocked:stock_tier_open_risk_share_exceeded"
                 if (
                     self._paper_change_enabled("capital_based_risk_v2")
                     and evaluation.get("rejection_reason")
@@ -13436,7 +13770,9 @@ class KiteTradingBot:
                 )
                 if entry_quote_metrics["valid"]:
                     position["last_valid_bid"] = entry_quote_metrics["bid"]
-            self.intraday_manager.record_trade_open(symbol, "BUY")
+            self.intraday_manager.record_trade_open(
+                symbol, "BUY", tier=self._tier_label(symbol)
+            )
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
             ):
@@ -13563,9 +13899,7 @@ class KiteTradingBot:
                             else 2500.0
                             if actual_risk is not None
                             and self._paper_change_enabled("banknifty_caps_v2")
-                            else float(
-                                self.config.get("max_risk_per_trade", 1000.0)
-                            )
+                            else None
                         ),
                         "hard_risk_cap_inr": (
                             capital_risk_cap
@@ -13573,9 +13907,7 @@ class KiteTradingBot:
                             and self._underlying_symbol(symbol) == "BANKNIFTY"
                             else 2500.0
                             if self._paper_change_enabled("banknifty_caps_v2")
-                            else float(
-                                self.config.get("max_risk_per_trade", 1000.0)
-                            )
+                            else None
                         ),
                         "lots": int(quantity)
                         // max(int(banknifty_gate.get("lot_size") or 1), 1),
@@ -13583,10 +13915,6 @@ class KiteTradingBot:
                         "remaining_daily_risk_inr": remaining_daily,
                         "would_pass_baseline": (
                             actual_risk is not None
-                            and actual_risk
-                            <= float(
-                                self.config.get("max_risk_per_trade", 1000.0)
-                            )
                             and (
                                 remaining_daily is None
                                 or actual_risk <= remaining_daily
@@ -14092,11 +14420,20 @@ class KiteTradingBot:
                     stop_loss,
                 )
 
+            if quantity > 0 and not self._validate_stock_tier_open_risk(
+                symbol, quantity, price, stop_loss
+            ):
+                quantity = 0
+
             if quantity == 0:
                 logger.warning(f"[{symbol}] Cannot calculate position size, skipping trade")
                 evaluation = getattr(self, "_pending_entry_evaluations", {}).get(
                     symbol, {}
                 )
+                if evaluation.get("rejection_reason") == (
+                    "stock_tier_open_risk_share_exceeded"
+                ):
+                    return "risk_blocked:stock_tier_open_risk_share_exceeded"
                 if (
                     self._paper_change_enabled("capital_based_risk_v2")
                     and evaluation.get("rejection_reason")
@@ -14214,7 +14551,9 @@ class KiteTradingBot:
                     self.intraday_manager.active_positions[symbol][
                         "capital_based_risk_amount"
                     ] = float(sizing_evaluation["risk_amount"])
-            self.intraday_manager.record_trade_open(symbol, "SELL")
+            self.intraday_manager.record_trade_open(
+                symbol, "SELL", tier=self._tier_label(symbol)
+            )
             if self.live_orders_enabled and not self._place_protective_stop(
                 symbol, self.intraday_manager.active_positions[symbol]
             ):

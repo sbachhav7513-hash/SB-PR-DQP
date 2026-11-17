@@ -154,6 +154,25 @@ def test_entry_validity_keeps_ltp_within_spread_rule():
     assert bot._option_exit_quote_metrics(quote)["exit_valid"] is True
 
 
+def test_entry_quote_outside_spread_has_distinct_reject_reason():
+    assert KiteTradingBot._invalid_entry_quote_reason(
+        {
+            "fresh": True,
+            "bid": 26.85,
+            "ask": 26.95,
+            "ltp": 26.70,
+        }
+    ) == "quote_outside_spread"
+    assert KiteTradingBot._invalid_entry_quote_reason(
+        {
+            "fresh": False,
+            "bid": 26.85,
+            "ask": 26.95,
+            "ltp": 26.70,
+        }
+    ) == "stale_quote"
+
+
 def test_disabling_v2_restores_existing_strict_exit_quote_validation():
     bot = _bot()
     bot.config["stop_quote_validation_v2"] = False

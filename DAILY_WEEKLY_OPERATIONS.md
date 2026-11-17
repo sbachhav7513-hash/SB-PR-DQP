@@ -366,6 +366,26 @@ are restored from the journal after restart. Paper exit records may include
 `paper_exit_quote_timestamp` to audit quote freshness; this is execution
 telemetry, not a separate strategy rule.
 
+PAPER decisions and trades are tagged `STOCK`, `NIFTY`, or `BANKNIFTY`.
+`tier_risk_counters_v1` defaults off; when enabled, daily-loss and consecutive-
+loss counters are isolated by tier, while the global `max_open_risk_pct` ceiling
+remains in force. `stock_open_risk_share` defaults to `1.0`; under that flag,
+lower values reserve the unused portion of the global open-risk ceiling for
+index positions. `symbol_side_stop_breaker_v1` and
+`same_side_cluster_limit_v1` also default off. Their proposed settings are a
+same-symbol/same-side session stop block and at most two same-side entries from
+other symbols in a rolling 30-minute window, respectively. Neither is enabled:
+the 30-Oct–11-Nov and 12–17-Nov closed-trade counterfactuals were mixed and did
+not meet the two-period acceptance rule. The observed-trade replay does not
+include unfilled or rejected signal opportunities.
+
+`stock_tier_enabled_v1` defaults on and can be set to `false` for a PAPER
+session without a code change. Evaluate the stock tier only after at least 20
+closed trades; pass requires mean after-fee net R above zero both with and
+without the best trade. If it fails, introduce stock-only filters one at a
+time and replay each before use. All tier-control flag values are printed in
+the startup `Runtime flags` line.
+
 The shared `support_reversal_enabled` setting controls the underlying-derived
 support/reversal variant in both modes. It uses complete one-minute bars
 aggregated into five-minute candles, clustered support/resistance pivots, a
@@ -438,17 +458,17 @@ disabled. The futures implementation remains available behind the existing
 mode gate for a deliberate future migration back to `intraday_futures`.
 Option paper positions must pass the configured premium stop-risk budget;
 paper mode does not force an oversized minimum lot. The minimum is one lot,
-but a one-lot position is still rejected whenever its planned stop-risk exceeds
-the remaining per-trade or daily risk budget.
-The active ₹100,000 paper account uses a 10% daily loss limit (₹10,000).
-Option sizing uses the shared `max_risk_per_trade` cap, the configured option
-premium-risk percentage, quantity bounds, and remaining daily risk. With the
-current 10% premium stop and premium-risk percentage, a 65-unit NIFTY option at
-₹100 premium has ₹650 planned stop risk, before the per-trade and daily limits
-are applied. This sizing applies to PAPER and LIVE. Broker fills, slippage,
-gaps, and costs can make realized losses exceed planned stop-risk; LIVE also
-has execution-time post-fill safeguards. The staged first target is 10%, so
-the nominal initial reward-to-risk is 1:1 before costs. After a restart,
+but a one-lot position is rejected when it exceeds the remaining applicable
+daily risk budget. The active ₹100,000 paper account uses a 10% daily loss
+limit (₹10,000). PAPER does not enforce the legacy `max_risk_per_trade` rupee
+setting; capital-based sizing and the global `max_open_risk_pct` ceiling
+(currently ₹4,000) remain the relevant open-risk controls. With the current
+10% premium stop, a 65-unit NIFTY option at ₹100 premium has ₹650 planned stop
+risk before daily and open-risk budgets are applied. LIVE sizing and safeguards
+are unchanged. Broker fills, slippage, gaps, and costs can make realized losses
+exceed planned stop-risk; LIVE also has execution-time post-fill safeguards.
+The staged first target is 10%, so the nominal initial reward-to-risk is 1:1
+before costs. After a restart,
 same-session open paper
 positions and realized losses are restored from the trade journal. Active
 paper positions persist a price mark at most once per minute. Prior-session
@@ -458,12 +478,10 @@ the record at its entry price as a zero-P&L estimate and labels the journal
 reason accordingly. Neither recovery value is guaranteed to be the exchange's
 official session-close price or actual realized performance.
 
-Risk limits are enforced identically in PAPER and LIVE: an option stop may
-not risk more than 10% of its deployed premium value, and the daily realized
-loss ceiling may not exceed 10% of account capital. A stricter rupee
-`max_risk_per_trade` or daily limit is allowed; configuration above either
-10% ceiling is rejected. Daily realized losses accumulate gross losing-trade
-P&L and are not offset by winners. At the daily limit, entries remain disabled
+The option stop-risk percentage may not exceed 10% of deployed premium value,
+and the daily realized-loss ceiling may not exceed 10% of account capital.
+Daily realized losses accumulate gross losing-trade P&L and are not offset by
+winners. At the daily limit, entries remain disabled
 through the current IST session; LIVE cancels pending non-protective orders
 and preserves protective stops attached to open positions. A failed
 cancellation is logged and sent as an urgent notification. Stop execution,

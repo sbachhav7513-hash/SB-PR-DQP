@@ -204,3 +204,34 @@ def test_level_stop_v2_metadata_is_attached_only_to_support_reversal_route():
     )
     assert position["support_reversal_level_v2"] == 25000.0
     assert position["support_reversal_signal_v2"] == "BUY"
+
+
+def test_support_reversal_pivots_are_copied_into_final_entry_features():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.paper_trading_enabled = False
+    bot.live_orders_enabled = False
+    bot.latest_prices = {}
+    bot._support_reversal_entry_metadata = {
+        "NIFTY_CE": {"level": 25000.0, "touches": 2}
+    }
+    alert = {
+        "route": "support_reversal",
+        "entry_feature_values": {},
+        "entry_feature_null_reasons": {
+            "pivot_level": "not_computed_by_route",
+            "pivot_count": "not_computed_by_route",
+        },
+        "support_resistance_level": None,
+        "support_resistance_touches": None,
+        "partial_status": "not-triggered",
+    }
+
+    bot._finalize_entry_feature_snapshot(
+        alert, "NIFTY_CE", datetime(2026, 11, 17, 10, 0, tzinfo=IST)
+    )
+
+    assert alert["entry_feature_values"]["pivot_level"] == 25000.0
+    assert alert["entry_feature_values"]["pivot_count"] == 2.0
+    assert "pivot_level" not in alert["entry_feature_null_reasons"]
+    assert "pivot_count" not in alert["entry_feature_null_reasons"]

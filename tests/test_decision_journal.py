@@ -11,7 +11,7 @@ from market_bot.trade_journal import (
 )
 
 
-def test_decision_journal_appends_json_without_changing_payload(tmp_path):
+def test_decision_journal_appends_json_with_canonical_tier(tmp_path):
     path = tmp_path / "decisions.jsonl"
     journal = DecisionJournal(str(path))
 
@@ -19,6 +19,7 @@ def test_decision_journal_appends_json_without_changing_payload(tmp_path):
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert record["ticker"] == "TEST"
+    assert record["tier"] == "STOCK"
     assert record["signal"] == "HOLD"
     assert record["history"] == [{"close": 100}]
     assert record["timestamp"]
@@ -39,6 +40,7 @@ def test_trade_journal_records_contract_id(tmp_path):
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert record["contract_id"] == "NFO:NIFTY26OCT25000CE"
+    assert record["tier"] == "NIFTY"
     assert record["timestamp"]
     assert record["entry_time"] == record["timestamp"]
 
@@ -109,6 +111,7 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
 
     record = json.loads((tmp_path / "trades.jsonl").read_text(encoding="utf-8"))
     assert record["entry_time"] == timestamp
+    assert record["tier"] == "NIFTY"
     assert record["git_sha"] == "startup-sha"
     assert record["git_dirty"] is False
     [parquet_record] = recorder._read_parquet(
@@ -123,7 +126,7 @@ def test_trade_journal_defaults_entry_time_and_persists_entry_telemetry(tmp_path
     ]
     assert parquet_record["signal_uid"] == "uid-trade-1"
     assert parquet_record["order_time"] == timestamp
-    assert parquet_record["tier"] == "index"
+    assert parquet_record["tier"] == "NIFTY"
     assert json.loads(parquet_record["entry_feature_values"])["regime_range_pct"] == 1.25
     assert json.loads(parquet_record["entry_feature_null_reasons"])[
         "prior_30m_option_move_pct"

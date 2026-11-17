@@ -67,9 +67,11 @@ def test_recovery_record_calculates_bids_r_reclaim_and_underlying_reversal(tmp_p
                 "quote_age_seconds": 0.4,
             }
         )
+    quote_path = day_dir / "NFO_NIFTY26N0924650CE.quotes.csv"
+    quote_fields = ["contract_id", "time", "bid", "ask", "quote_age_seconds"]
     _write_rows(
-        day_dir / "NFO_NIFTY26N0924650CE.quotes.csv",
-        ["contract_id", "time", "bid", "ask", "quote_age_seconds"],
+        quote_path,
+        quote_fields,
         quote_rows,
     )
     _write_rows(
@@ -104,9 +106,36 @@ def test_recovery_record_calculates_bids_r_reclaim_and_underlying_reversal(tmp_p
     assert record["bid_after_5m"]["bid"] == 105.0
     assert record["bid_after_5m"]["sample_offset_seconds"] == 10.0
     assert record["max_r_within_60m"] == 1.0
+    assert record["r_after_5m"] == 0.5
+    assert record["r_after_15m"] == 0.5
+    assert record["r_after_30m"] == 0.5
+    assert record["r_after_60m"] == 0.5
     assert record["reclaimed_entry"] is True
     assert record["reached_plus_1r"] is True
     assert record["underlying_reversed_within_60m"] is True
+
+    quote_rows.pop()
+    _write_rows(quote_path, quote_fields, quote_rows)
+    missing_checkpoint = build_recovery_record(
+        {
+            "trade_id": "trade-1",
+            "ticker": "NIFTY_CE",
+            "contract_id": contract_id,
+            "action": "BUY",
+            "entry": 100.0,
+            "entry_time": (exit_time - timedelta(minutes=1)).isoformat(),
+            "closed_at": exit_time.isoformat(),
+            "reason": "STOP_LOSS",
+            "initial_stop_loss": 90.0,
+            "initial_risk_per_unit": 10.0,
+            "underlying_price_at_entry": 1000.0,
+        },
+        tmp_path,
+        day,
+    )
+    assert missing_checkpoint is not None
+    assert missing_checkpoint["status"] == "incomplete"
+    assert any("60m checkpoint" in reason for reason in missing_checkpoint["missing_reasons"])
 
     underlying_path = (
         tmp_path

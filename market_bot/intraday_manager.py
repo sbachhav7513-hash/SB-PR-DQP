@@ -4,7 +4,7 @@ Handles position sizing, time-based exits, and leverage management
 """
 
 from datetime import datetime, time as time_type, timedelta, timezone
-from typing import Optional, Dict
+from typing import Any, Optional, Dict
 import logging
 import math
 from zoneinfo import ZoneInfo
@@ -64,6 +64,7 @@ class IntradayManager:
         daily_max_loss: Optional[float] = None,
         daily_max_loss_pct: float = 2.0,
         max_risk_per_trade: Optional[float] = None,
+        enforce_per_trade_risk_cap: bool = True,
     ):
         """
         Initialize the intraday manager.
@@ -104,6 +105,7 @@ class IntradayManager:
                 )
             self.daily_max_loss = daily_max_loss
         self.max_risk_per_trade = min(configured_trade_risk, self.daily_max_loss)
+        self.enforce_per_trade_risk_cap = enforce_per_trade_risk_cap
         self.trailing_enabled = trailing_enabled
         self.trailing_activation_ratio = trailing_activation_ratio
         self.trailing_distance_ratio = trailing_distance_ratio
@@ -124,8 +126,27 @@ class IntradayManager:
         self.session_trade_counts: Dict[str, int] = {}
         self.session_loss_stop_times: Dict[str, datetime] = {}
         self.session_reversal_symbols: set[str] = set()
+        self.daily_pnl_by_tier: Dict[str, float] = {}
+        self.daily_realized_losses_by_tier: Dict[str, float] = {}
+        self.consecutive_losses_by_tier: Dict[str, int] = {}
+        self.session_stop_breakers: set[tuple[str, str]] = set()
+        self.session_entry_history: list[dict] = []
         self._session_date = datetime.now(IST).date()
         self.trade_history: list[dict] = []
+
+    @staticmethod
+    def _tier_key(symbol: str, tier: Optional[str] = None) -> str:
+        normalized = str(tier or "").strip().upper()
+        if normalized in {"NIFTY", "BANKNIFTY", "STOCK"}:
+            return normalized
+        underlying = str(symbol).upper().split("_", 1)[0]
+        if underlying == "BANKNIFTY" or underlying.startswith("BANKNIFTY"):
+            return "BANKNIFTY"
+        if underlying in {"NIFTY", "FINNIFTY", "MIDCPNIFTY"} or underlying.startswith(
+            ("NIFTY", "FINNIFTY", "MIDCPNIFTY")
+        ):
+            return "NIFTY"
+        return "STOCK"
 
     def set_contract_specs(self, specs: Dict[str, dict]) -> None:
         self.contract_specs = dict(specs)
@@ -221,9 +242,12 @@ class IntradayManager:
         stop_reentry_cooldown_seconds: int = 900,
         signal_score: Optional[int] = None,
         minimum_stop_reentry_score: int = 75,
+        tier: Optional[str] = None,
+        tier_counters_enabled: bool = False,
     ) -> tuple[bool, str]:
         """Apply session, optional paper stop-retry, and risk policies."""
         self._refresh_session()
+        tier_key = self._tier_key(symbol, tier)
         if symbol in self.session_reversal_symbols:
             return False, f"{symbol} already reversed this session; no new trade allowed"
         if symbol in self.session_trade_symbols:
@@ -248,23 +272,45 @@ class IntradayManager:
                     f"{symbol} stop re-entry requires score "
                     f"{minimum_stop_reentry_score} or higher"
                 )
-        if self.daily_pnl <= -self.daily_max_loss:
-            return False, f"Daily loss cap reached ({self.daily_pnl:.0f} <= -{self.daily_max_loss:.0f})"
-        if self.daily_loss_limit_reached():
+        tier_daily_pnl = (
+            self.daily_pnl_by_tier.get(tier_key, 0.0)
+            if tier_counters_enabled
+            else self.daily_pnl
+        )
+        tier_realized_losses = (
+            self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+            if tier_counters_enabled
+            else self.daily_realized_losses
+        )
+        if tier_daily_pnl <= -self.daily_max_loss:
+            return False, (
+                f"Daily loss cap reached ({tier_daily_pnl:.0f} "
+                f"<= -{self.daily_max_loss:.0f})"
+            )
+        if self.daily_loss_limit_reached(
+            tier=tier_key, tiered=tier_counters_enabled
+        ):
             return False, (
                 "Daily loss cap reached "
-                f"({self.daily_realized_losses:.0f} >= {self.daily_max_loss:.0f})"
+                f"({tier_realized_losses:.0f} >= {self.daily_max_loss:.0f})"
             )
-        available_risk = self.available_daily_risk()
+        available_risk = self.available_daily_risk(
+            tier=tier_key, tiered=tier_counters_enabled
+        )
         if available_risk <= 1e-6:
             return False, (
                 "Aggregate daily risk budget exhausted "
                 f"(open risk plus realized losses reach the {self.daily_max_loss:.0f} cap)"
             )
-        if self.consecutive_losses >= self.max_consecutive_losses:
+        consecutive_losses = (
+            self.consecutive_losses_by_tier.get(tier_key, 0)
+            if tier_counters_enabled
+            else self.consecutive_losses
+        )
+        if consecutive_losses >= self.max_consecutive_losses:
             return False, (
                 f"Consecutive loss circuit breaker triggered "
-                f"({self.consecutive_losses}/{self.max_consecutive_losses})"
+                f"({consecutive_losses}/{self.max_consecutive_losses})"
             )
         perf = self.symbol_performance.get(symbol, {})
         trades = int(perf.get("trades", 0))
@@ -274,7 +320,7 @@ class IntradayManager:
                 f"Win-rate cap active for {symbol}: "
                 f"{win_rate:.1f}% over {trades} trades below {self.symbol_min_win_rate:.0f}%"
             )
-        if symbol in self.recent_loss_symbols and self.consecutive_losses >= 2:
+        if symbol in self.recent_loss_symbols and consecutive_losses >= 2:
             last_loss_at = self.recent_loss_symbols[symbol]
             elapsed = (datetime.now(IST) - last_loss_at).total_seconds()
             if elapsed < self.loss_cooldown_seconds:
@@ -293,7 +339,8 @@ class IntradayManager:
         )
         return abs(entry_price - stop_loss_price) * multiplier * quantity
 
-    def open_position_risk(self) -> float:
+    def open_position_risk(self, tier: Optional[str] = None) -> float:
+        tier_key = self._tier_key("", tier) if tier is not None else None
         return sum(
             self.estimate_trade_risk(
                 symbol,
@@ -302,34 +349,110 @@ class IntradayManager:
                 float(position["stop_loss"]),
             )
             for symbol, position in self.active_positions.items()
+            if tier_key is None
+            or self._tier_key(symbol, position.get("tier")) == tier_key
         )
 
-    def available_daily_risk(self) -> float:
+    def available_daily_risk(
+        self, *, tier: Optional[str] = None, tiered: bool = False
+    ) -> float:
         self._refresh_session()
+        tier_key = self._tier_key("", tier) if tiered else None
         remaining_daily_budget = (
             self.daily_max_loss
-            - self.daily_realized_losses
-            - self.open_position_risk()
+            - (
+                self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+                if tier_key is not None
+                else self.daily_realized_losses
+            )
+            - self.open_position_risk(tier_key)
         )
-        return max(0.0, min(self.max_risk_per_trade, remaining_daily_budget))
+        if self.enforce_per_trade_risk_cap:
+            remaining_daily_budget = min(
+                self.max_risk_per_trade, remaining_daily_budget
+            )
+        return max(0.0, remaining_daily_budget)
 
-    def daily_risk_exceeded(self) -> bool:
+    def daily_risk_exceeded(self, *, tiered: bool = False) -> bool:
         self._refresh_session()
+        if tiered:
+            tiers = set(self.daily_realized_losses_by_tier)
+            tiers.update(
+                self._tier_key(symbol, position.get("tier"))
+                for symbol, position in self.active_positions.items()
+            )
+            return any(
+                self.daily_realized_losses_by_tier.get(tier, 0.0)
+                + self.open_position_risk(tier)
+                > self.daily_max_loss + 1e-6
+                for tier in tiers
+            )
         return (
             self.daily_realized_losses + self.open_position_risk()
             > self.daily_max_loss + 1e-6
         )
 
-    def daily_loss_limit_reached(self) -> bool:
+    def daily_loss_limit_reached(
+        self, *, tier: Optional[str] = None, tiered: bool = False
+    ) -> bool:
         self._refresh_session()
-        return self.daily_realized_losses >= self.daily_max_loss
+        realized_losses = (
+            self.daily_realized_losses_by_tier.get(
+                self._tier_key("", tier), 0.0
+            )
+            if tiered
+            else self.daily_realized_losses
+        )
+        return realized_losses >= self.daily_max_loss
 
-    def record_trade_open(self, symbol: str, direction: str) -> None:
+    def record_trade_open(
+        self,
+        symbol: str,
+        direction: str,
+        *,
+        tier: Optional[str] = None,
+        opened_at: Optional[datetime] = None,
+    ) -> None:
         self._refresh_session()
         self.daily_trade_count += 1
         self.session_trade_symbols.add(symbol)
         self.session_trade_counts[symbol] = self.session_trade_counts.get(symbol, 0) + 1
+        entry_time = opened_at or datetime.now(IST)
+        if entry_time.tzinfo is None:
+            entry_time = entry_time.replace(tzinfo=IST)
+        else:
+            entry_time = entry_time.astimezone(IST)
+        self.session_entry_history.append(
+            {
+                "symbol": symbol,
+                "side": direction.upper(),
+                "tier": self._tier_key(symbol, tier),
+                "time": entry_time,
+            }
+        )
         logger.info("[%s] Recorded open trade for %s; daily_trade_count=%d", symbol, direction, self.daily_trade_count)
+
+    def entry_blocked_by_stop_breaker(self, symbol: str, side: str) -> bool:
+        self._refresh_session()
+        return (symbol, side.upper()) in self.session_stop_breakers
+
+    def same_side_entries_in_window(
+        self,
+        side: str,
+        now: datetime,
+        window_seconds: float,
+        *,
+        exclude_symbol: Optional[str] = None,
+    ) -> int:
+        self._refresh_session()
+        current = now.replace(tzinfo=IST) if now.tzinfo is None else now.astimezone(IST)
+        return sum(
+            1
+            for entry in self.session_entry_history
+            if entry["side"] == side.upper()
+            and entry["symbol"] != exclude_symbol
+            and 0 <= (current - entry["time"]).total_seconds() <= window_seconds
+        )
 
     def restore_session_trades(self, trades: list[dict]) -> None:
         """Restore today's symbol exposure and realized P&L from the journal."""
@@ -337,11 +460,18 @@ class IntradayManager:
         self.session_trade_symbols.clear()
         self.session_trade_counts.clear()
         self.session_loss_stop_times.clear()
+        self.daily_pnl_by_tier.clear()
+        self.daily_realized_losses_by_tier.clear()
+        self.consecutive_losses_by_tier.clear()
+        self.session_stop_breakers.clear()
+        self.session_entry_history.clear()
         closed_today = []
         open_partial_pnl = 0.0
         open_partial_losses = 0.0
+        open_partial_by_tier: Dict[str, tuple[float, float]] = {}
         for trade in trades:
             symbol = trade.get("ticker") or trade.get("symbol")
+            tier_key = self._tier_key(str(symbol or ""), trade.get("tier"))
             try:
                 timestamp = datetime.fromisoformat(
                     str(trade.get("timestamp", "")).replace("Z", "+00:00")
@@ -358,10 +488,23 @@ class IntradayManager:
                 and timestamp.date() == self._session_date
             ):
                 symbol = str(symbol)
+                action = str(trade.get("action") or "").upper()
                 self.session_trade_symbols.add(symbol)
                 self.session_trade_counts[symbol] = (
                     self.session_trade_counts.get(symbol, 0) + 1
                 )
+                entry_time = self._parse_session_time(
+                    trade.get("entry_time") or timestamp
+                )
+                if entry_time is not None and action in {"BUY", "SELL"}:
+                    self.session_entry_history.append(
+                        {
+                            "symbol": symbol,
+                            "side": action,
+                            "tier": tier_key,
+                            "time": entry_time,
+                        }
+                    )
             if trade.get("status") != "closed":
                 if timestamp is not None and timestamp.date() == self._session_date:
                     try:
@@ -378,6 +521,13 @@ class IntradayManager:
                         )
                     open_partial_pnl += partial_pnl
                     open_partial_losses += max(-partial_pnl, 0.0)
+                    prior_pnl, prior_losses = open_partial_by_tier.get(
+                        tier_key, (0.0, 0.0)
+                    )
+                    open_partial_by_tier[tier_key] = (
+                        prior_pnl + partial_pnl,
+                        prior_losses + max(-partial_pnl, 0.0),
+                    )
                 continue
             try:
                 closed_at = datetime.fromisoformat(
@@ -403,36 +553,102 @@ class IntradayManager:
                     )
                 symbol = trade.get("ticker") or trade.get("symbol")
                 reason = str(trade.get("reason", "")).upper()
+                side = str(trade.get("action") or "").upper()
                 if (
                     symbol
                     and pnl < 0
                     and reason in {"STOP_LOSS", "TRAILING_STOP"}
                 ):
                     self.session_loss_stop_times[str(symbol)] = closed_at
-                closed_today.append((closed_at, pnl))
+                if (
+                    symbol
+                    and side in {"BUY", "SELL"}
+                    and closed_at.date() == self._session_date
+                    and reason in {
+                    "STOP_LOSS",
+                    "TRAILING_STOP",
+                    }
+                ):
+                    self.session_stop_breakers.add((str(symbol), side))
+                closed_today.append((closed_at, pnl, tier_key))
 
         closed_today.sort(key=lambda item: item[0])
-        self.daily_pnl = sum(pnl for _, pnl in closed_today) + open_partial_pnl
+        self.daily_pnl = sum(pnl for _, pnl, _ in closed_today) + open_partial_pnl
         self.daily_realized_losses = sum(
-            max(-pnl, 0.0) for _, pnl in closed_today
+            max(-pnl, 0.0) for _, pnl, _ in closed_today
         ) + open_partial_losses
+        for _, pnl, tier_key in closed_today:
+            self.daily_pnl_by_tier[tier_key] = (
+                self.daily_pnl_by_tier.get(tier_key, 0.0) + pnl
+            )
+            self.daily_realized_losses_by_tier[tier_key] = (
+                self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+                + max(-pnl, 0.0)
+            )
+        for tier_key, (partial_pnl, partial_losses) in open_partial_by_tier.items():
+            self.daily_pnl_by_tier[tier_key] = (
+                self.daily_pnl_by_tier.get(tier_key, 0.0) + partial_pnl
+            )
+            self.daily_realized_losses_by_tier[tier_key] = (
+                self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+                + partial_losses
+            )
         self.consecutive_losses = 0
-        for _, pnl in reversed(closed_today):
+        for _, pnl, _ in reversed(closed_today):
             if pnl < 0:
                 self.consecutive_losses += 1
             else:
                 break
+        for _, pnl, tier_key in closed_today:
+            self.consecutive_losses_by_tier[tier_key] = (
+                self.consecutive_losses_by_tier.get(tier_key, 0) + 1
+                if pnl < 0
+                else 0
+            )
 
-    def record_trade_close(self, symbol: str, reason: str, pnl: float) -> None:
+    @staticmethod
+    def _parse_session_time(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(value or "").replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=IST)
+        return parsed.astimezone(IST)
+
+    def record_trade_close(
+        self,
+        symbol: str,
+        reason: str,
+        pnl: float,
+        *,
+        tier: Optional[str] = None,
+        side: Optional[str] = None,
+    ) -> None:
         self._refresh_session()
+        tier_key = self._tier_key(symbol, tier)
         pnl = float(pnl)
         if not math.isfinite(pnl):
             raise ValueError("Closed-trade P&L must be finite")
         self.daily_pnl += pnl
         self.daily_realized_losses += max(-pnl, 0.0)
+        self.daily_pnl_by_tier[tier_key] = (
+            self.daily_pnl_by_tier.get(tier_key, 0.0) + pnl
+        )
+        self.daily_realized_losses_by_tier[tier_key] = (
+            self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+            + max(-pnl, 0.0)
+        )
         self.trade_history.append({"symbol": symbol, "reason": reason, "pnl": pnl, "time": datetime.now(IST)})
         if pnl < 0 and reason in {"STOP_LOSS", "TRAILING_STOP"}:
             self.session_loss_stop_times[symbol] = datetime.now(IST)
+        if side and reason in {"STOP_LOSS", "TRAILING_STOP"}:
+            self.session_stop_breakers.add((symbol, side.upper()))
         if reason == "SIGNAL_REVERSAL":
             self.session_reversal_symbols.add(symbol)
         if pnl < 0 and abs(pnl) >= self.daily_max_loss * 0.5:
@@ -446,18 +662,33 @@ class IntradayManager:
 
         if pnl < 0:
             self.consecutive_losses += 1
+            self.consecutive_losses_by_tier[tier_key] = (
+                self.consecutive_losses_by_tier.get(tier_key, 0) + 1
+            )
             self.recent_loss_symbols[symbol] = datetime.now(IST)
         else:
             self.consecutive_losses = 0
+            self.consecutive_losses_by_tier[tier_key] = 0
             self.recent_loss_symbols.pop(symbol, None)
 
-    def record_partial_realized_pnl(self, pnl: float) -> None:
+    def record_partial_realized_pnl(
+        self, pnl: float, *, symbol: Optional[str] = None, tier: Optional[str] = None
+    ) -> None:
         self._refresh_session()
         pnl = float(pnl)
         if not math.isfinite(pnl):
             raise ValueError("Partial-exit P&L must be finite")
         self.daily_pnl += pnl
         self.daily_realized_losses += max(-pnl, 0.0)
+        if symbol is not None or tier is not None:
+            tier_key = self._tier_key(str(symbol or ""), tier)
+            self.daily_pnl_by_tier[tier_key] = (
+                self.daily_pnl_by_tier.get(tier_key, 0.0) + pnl
+            )
+            self.daily_realized_losses_by_tier[tier_key] = (
+                self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+                + max(-pnl, 0.0)
+            )
 
     def record_trade_close_after_partial(
         self,
@@ -465,8 +696,12 @@ class IntradayManager:
         reason: str,
         total_pnl: float,
         previously_realized_pnl: float,
+        *,
+        tier: Optional[str] = None,
+        side: Optional[str] = None,
     ) -> None:
         self._refresh_session()
+        tier_key = self._tier_key(symbol, tier)
         total_pnl = float(total_pnl)
         previously_realized_pnl = float(previously_realized_pnl)
         if not math.isfinite(total_pnl) or not math.isfinite(
@@ -480,6 +715,17 @@ class IntradayManager:
             + max(-total_pnl, 0.0)
             - max(-previously_realized_pnl, 0.0),
         )
+        self.daily_pnl_by_tier[tier_key] = (
+            self.daily_pnl_by_tier.get(tier_key, 0.0)
+            + total_pnl
+            - previously_realized_pnl
+        )
+        self.daily_realized_losses_by_tier[tier_key] = max(
+            0.0,
+            self.daily_realized_losses_by_tier.get(tier_key, 0.0)
+            + max(-total_pnl, 0.0)
+            - max(-previously_realized_pnl, 0.0),
+        )
         self.trade_history.append(
             {
                 "symbol": symbol,
@@ -490,6 +736,8 @@ class IntradayManager:
         )
         if total_pnl < 0 and reason in {"STOP_LOSS", "TRAILING_STOP"}:
             self.session_loss_stop_times[symbol] = datetime.now(IST)
+        if side and reason in {"STOP_LOSS", "TRAILING_STOP"}:
+            self.session_stop_breakers.add((symbol, side.upper()))
         if reason == "SIGNAL_REVERSAL":
             self.session_reversal_symbols.add(symbol)
         if total_pnl < 0 and abs(total_pnl) >= self.daily_max_loss * 0.5:
@@ -505,9 +753,13 @@ class IntradayManager:
 
         if total_pnl < 0:
             self.consecutive_losses += 1
+            self.consecutive_losses_by_tier[tier_key] = (
+                self.consecutive_losses_by_tier.get(tier_key, 0) + 1
+            )
             self.recent_loss_symbols[symbol] = datetime.now(IST)
         else:
             self.consecutive_losses = 0
+            self.consecutive_losses_by_tier[tier_key] = 0
             self.recent_loss_symbols.pop(symbol, None)
 
     def _refresh_session(self) -> None:
@@ -519,10 +771,15 @@ class IntradayManager:
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
         self.daily_realized_losses = 0.0
+        self.daily_pnl_by_tier.clear()
+        self.daily_realized_losses_by_tier.clear()
+        self.consecutive_losses_by_tier.clear()
         self.session_trade_symbols.clear()
         self.session_trade_counts.clear()
         self.session_loss_stop_times.clear()
         self.session_reversal_symbols.clear()
+        self.session_stop_breakers.clear()
+        self.session_entry_history.clear()
 
     def register_position(
         self,

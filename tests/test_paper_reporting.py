@@ -450,3 +450,77 @@ def test_decision_parquet_schema_migrates_when_new_session_fields_are_added(tmp_
     assert new_row["trend_shadow_signal"] == "SELL"
     assert new_row["trend_shadow_rejection_reason"] == "confirmation"
     assert new_row["strategy_variant"] == "trend_shadow_paper"
+
+
+def test_daily_review_tier_totals_reconcile_and_show_cumulative_stock_row(tmp_path):
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds")
+    trades = [
+        {
+            "timestamp": timestamp,
+            "closed_at": timestamp,
+            "ticker": "TCS_CE",
+            "tier": "STOCK",
+            "action": "BUY",
+            "status": "closed",
+            "gross_pnl_rupees": 100.0,
+            "fees_rupees": 10.0,
+            "net_pnl": 90.0,
+            "risk_amount": 100.0,
+        },
+        {
+            "timestamp": timestamp,
+            "closed_at": timestamp,
+            "ticker": "INFY_PE",
+            "tier": "STOCK",
+            "action": "BUY",
+            "status": "closed",
+            "gross_pnl_rupees": -20.0,
+            "fees_rupees": 5.0,
+            "net_pnl": -25.0,
+            "risk_amount": 50.0,
+        },
+        {
+            "timestamp": timestamp,
+            "closed_at": timestamp,
+            "ticker": "NIFTY_CE",
+            "tier": "NIFTY",
+            "action": "BUY",
+            "status": "closed",
+            "gross_pnl_rupees": 40.0,
+            "fees_rupees": 2.0,
+            "net_pnl": 38.0,
+            "risk_amount": 20.0,
+        },
+        {
+            "timestamp": timestamp,
+            "closed_at": timestamp,
+            "ticker": "BANKNIFTY_PE",
+            "tier": "BANKNIFTY",
+            "action": "BUY",
+            "status": "closed",
+            "gross_pnl_rupees": -10.0,
+            "fees_rupees": 1.0,
+            "net_pnl": -11.0,
+            "risk_amount": 10.0,
+        },
+    ]
+    (tmp_path / "trades.jsonl").write_text(
+        "\n".join(json.dumps(trade) for trade in trades) + "\n",
+        encoding="utf-8",
+    )
+
+    review = write_daily_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        target_date=datetime.fromisoformat(timestamp).date(),
+    )
+    content = review.read_text(encoding="utf-8")
+
+    expected_stock_row = (
+        "| STOCK | 2 | 80.00 | 15.00 (2/2) | 65.00 (2/2) | "
+        "1 | 0.200 | -0.500 |"
+    )
+    assert expected_stock_row in content
+    assert expected_stock_row.replace("| STOCK |", "| STOCK (cumulative) |") in content
+    assert "| NIFTY | 1 | 40.00 | 2.00 (1/1) | 38.00 (1/1) | 1 |" in content
+    assert "| BANKNIFTY | 1 | -10.00 | 1.00 (1/1) | -11.00 (1/1) | 0 |" in content

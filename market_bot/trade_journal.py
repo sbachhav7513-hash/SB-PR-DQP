@@ -98,6 +98,18 @@ def normalize_decision_outcome(value: Any) -> str:
     return "operational"
 
 
+def _journal_tier(symbol: Any, tier: Any = None) -> str:
+    normalized = str(tier or "").strip().upper()
+    if normalized in {"STOCK", "NIFTY", "BANKNIFTY"}:
+        return normalized
+    underlying = str(symbol or "").upper().split(":", 1)[-1].split("_", 1)[0]
+    if underlying.startswith("BANKNIFTY"):
+        return "BANKNIFTY"
+    if underlying.startswith(("NIFTY", "FINNIFTY", "MIDCPNIFTY")):
+        return "NIFTY"
+    return "STOCK"
+
+
 def normalize_entry_confirmation_detail(record: Dict[str, Any]) -> str:
     event = str(record.get("confirmation_event") or "")
     if event in {"signal_generated", "signal_ignored_pending"}:
@@ -237,6 +249,7 @@ class PaperTradingRecorder:
         "entry_mode",
         "route",
         "gross_pnl_rupees",
+        "india_vix",
         "fees",
         "fees_rupees",
         "fee_model_status",
@@ -309,7 +322,6 @@ class PaperTradingRecorder:
         "max_open_risk_amount",
         "open_risk_amount",
         "remaining_daily_risk_amount",
-        "max_risk_per_trade_ignored",
         "max_lots",
         "premium_cap",
         "lots_reduced_reason",
@@ -348,7 +360,7 @@ class PaperTradingRecorder:
     ]
     DECISION_COLUMNS = [
         "timestamp", "config_hash", "git_sha", "git_dirty",
-        "ticker", "contract_id", "strike", "expiry", "lot_size",
+        "ticker", "tier", "india_vix", "contract_id", "strike", "expiry", "lot_size",
         "underlying_price_at_selection", "signal", "outcome", "score", "reasons",
         "bars_available", "bar", "history", "outcome_detail", "rejection_reason",
         "market_session", "market_hours", "session_timezone",
@@ -395,7 +407,6 @@ class PaperTradingRecorder:
         "support_resistance_level", "support_resistance_touches",
         "ema_fast_value", "ema_slow_value",
         "invested_amount", "lots", "quantity", "risk_amount", "risk_cap_rupees",
-        "tier",
         "premium", "option_stop_pct",
         "proposed_invested_amount", "proposed_lots", "proposed_risk_amount",
         "max_capital_per_trade_pct", "max_capital_per_trade_amount",
@@ -404,7 +415,7 @@ class PaperTradingRecorder:
         "max_capital_per_trade_used_pct",
         "max_capital_per_trade_used_amount", "max_open_risk_pct",
         "max_open_risk_amount", "open_risk_amount",
-        "remaining_daily_risk_amount", "max_risk_per_trade_ignored",
+        "remaining_daily_risk_amount",
         "max_lots", "premium_cap", "lots_reduced_reason",
         "capital_based_risk_v2",
     ]
@@ -1947,6 +1958,7 @@ class DecisionJournal:
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        entry["tier"] = _journal_tier(entry.get("ticker"), entry.get("tier"))
         context_provider = getattr(self, "premarket_context_provider", None)
         if callable(context_provider):
             try:
@@ -2199,6 +2211,7 @@ class TradeJournal:
 
     def log_trade(self, payload: Dict[str, Any]) -> int:
         entry = dict(payload)
+        entry["tier"] = _journal_tier(entry.get("ticker"), entry.get("tier"))
         entry.setdefault("contract_id", "")
         self._stamp_trade_identity(entry)
         if not entry.get("timestamp"):

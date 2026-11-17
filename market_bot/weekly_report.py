@@ -142,6 +142,72 @@ def _trade_cost_values(trade: Dict[str, Any]) -> tuple[float, float | None, floa
     return gross, fees, net
 
 
+def _review_tier(trade: Dict[str, Any]) -> str:
+    ticker = str(trade.get("ticker") or trade.get("symbol") or "").upper()
+    underlying = ticker.split("_", 1)[0]
+    tier = str(trade.get("tier") or "").upper()
+    if tier in {"NIFTY", "BANKNIFTY"}:
+        return tier
+    if tier == "INDEX":
+        return underlying if underlying in {"NIFTY", "BANKNIFTY"} else "NIFTY"
+    if underlying in {"NIFTY", "BANKNIFTY"}:
+        return underlying
+    return "STOCK"
+
+
+def _net_r_multiple(trade: Dict[str, Any]) -> float | None:
+    _, _, net = _trade_cost_values(trade)
+    if net is None:
+        return None
+    risk = next(
+        (
+            value
+            for key in (
+                "planned_risk_rupees",
+                "paper_entry_risk_rupees",
+                "risk_amount",
+            )
+            if (value := _optional_finite_number(trade.get(key))) is not None
+            and value > 0
+        ),
+        None,
+    )
+    return net / risk if risk is not None else None
+
+
+def _tier_review_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    costs = [_trade_cost_values(trade) for trade in trades]
+    net_rows = [(index, values[2]) for index, values in enumerate(costs) if values[2] is not None]
+    best_index = max(net_rows, key=lambda item: item[1])[0] if net_rows else None
+    net_r = [
+        value
+        for index, trade in enumerate(trades)
+        if (value := _net_r_multiple(trade)) is not None
+    ]
+    net_r_without_best = [
+        value
+        for index, trade in enumerate(trades)
+        if index != best_index and (value := _net_r_multiple(trade)) is not None
+    ]
+    net_values = [value for _, value in net_rows]
+    fees = [values[1] for values in costs if values[1] is not None]
+    return {
+        "trades": len(trades),
+        "gross": sum(values[0] for values in costs),
+        "fees": sum(fees) if fees else None,
+        "fee_coverage": len(fees),
+        "net": sum(net_values) if net_values else None,
+        "net_coverage": len(net_values),
+        "wins": sum(value > 0 for value in net_values),
+        "mean_net_r": sum(net_r) / len(net_r) if net_r else None,
+        "mean_net_r_without_best": (
+            sum(net_r_without_best) / len(net_r_without_best)
+            if net_r_without_best
+            else None
+        ),
+    }
+
+
 def _option_leg(trade: Dict[str, Any]) -> str:
     leg = str(trade.get("option_leg") or "").upper()
     if leg in {"CE", "PE"}:
@@ -1845,6 +1911,65 @@ def write_daily_review(
     win_rate = wins / len(trades) * 100 if trades else 0.0
     cost_totals = _cost_totals(trades)
     cost_performance = _cost_performance(trades)
+    review_tiers = ("STOCK", "NIFTY", "BANKNIFTY")
+    trades_by_tier = {
+        tier: [trade for trade in trades if _review_tier(trade) == tier]
+        for tier in review_tiers
+    }
+    cumulative_records = _load_report_records(
+        Path(data_dir),
+        Path(paper_data_dir),
+        "trades.jsonl",
+        "trades.parquet",
+        3650,
+        [
+            "timestamp", "entry_time", "closed_at", "status", "ticker", "tier",
+            "gross_pnl_rupees", "pnl_rupees", "pnl", "fees", "fees_rupees",
+            "after_cost_pnl", "net_pnl", "planned_risk_rupees",
+            "paper_entry_risk_rupees", "risk_amount",
+        ],
+    )
+    cumulative_stock_trades = []
+    for trade in cumulative_records:
+        if trade.get("status") != "closed" or _review_tier(trade) != "STOCK":
+            continue
+        trade_time = _parse_datetime(
+            trade.get("closed_at") or trade.get("entry_time") or trade.get("timestamp")
+        )
+        if trade_time is not None and trade_time.date() <= target_date:
+            cumulative_stock_trades.append(trade)
+    tier_metrics = {
+        tier: _tier_review_metrics(rows)
+        for tier, rows in trades_by_tier.items()
+    }
+    cumulative_stock_metrics = _tier_review_metrics(cumulative_stock_trades)
+
+    def tier_review_row(label: str, values: Dict[str, Any]) -> str:
+        fees = (
+            f"{values['fees']:.2f} ({values['fee_coverage']}/{values['trades']})"
+            if values["fees"] is not None
+            else "N/A"
+        )
+        net = (
+            f"{values['net']:.2f} ({values['net_coverage']}/{values['trades']})"
+            if values["net"] is not None
+            else "N/A"
+        )
+        mean_r = (
+            f"{values['mean_net_r']:.3f}"
+            if values["mean_net_r"] is not None
+            else "N/A"
+        )
+        without_best = (
+            f"{values['mean_net_r_without_best']:.3f}"
+            if values["mean_net_r_without_best"] is not None
+            else "N/A"
+        )
+        return (
+            f"| {label} | {values['trades']} | {values['gross']:.2f} | "
+            f"{fees} | {net} | {values['wins']} | {mean_r} | {without_best} |"
+        )
+
     human_command_affected = _human_command_affected(trades) or any(
         _command_affected_trade(command) for command in commands
     )
@@ -1896,6 +2021,13 @@ def write_daily_review(
         "- All fee figures are modeled from the configured paper charge model.",
         "",
         *_cost_performance_lines(cost_performance),
+        "",
+        "## Per-tier Results",
+        "",
+        "| Tier | Trades | Gross | Modeled fees | Net | Wins | Mean net R | Mean net R without best trade |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        *(tier_review_row(tier, tier_metrics[tier]) for tier in review_tiers),
+        tier_review_row("STOCK (cumulative)", cumulative_stock_metrics),
         "",
         "## One-Candle Entry Confirmation",
         f"- Signals generated: {entry_confirmation['signals_generated']}",
@@ -2046,6 +2178,7 @@ def write_daily_review(
         "regime_label",
         "regime_range_pct",
         "regime_20_bar_move_pct",
+        "india_vix",
         "pivot_count",
         "pivot_level",
         "distance_to_pivot_pct",

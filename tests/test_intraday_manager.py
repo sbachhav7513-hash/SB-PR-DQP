@@ -2567,7 +2567,7 @@ def test_both_entry_handlers_apply_common_paper_cutoff(_handler):
     bot._entry_cutoff_reason.assert_called_once_with()
 
 
-def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
+def test_paper_option_sizing_does_not_enforce_legacy_rupee_cap():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "max_risk_per_trade": 1000.0,
@@ -2582,6 +2582,7 @@ def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
         account_size=100_000,
         max_risk_per_trade=10_000.0,
         daily_max_loss=10_000.0,
+        enforce_per_trade_risk_cap=False,
     )
     bot.intraday_manager.set_contract_specs(
         {"TCS_PE": {"lot_size": 225, "multiplier": 1}}
@@ -2590,16 +2591,16 @@ def test_paper_risk_cap_sizes_from_actual_option_stop_distance():
 
     quantity = bot._calculate_option_quantity("TCS_PE", 112.0, stop_pct)
 
-    assert quantity == 0
+    assert quantity == 225
     evaluation = bot._pending_entry_evaluations["TCS_PE"]
     assert evaluation["option_risk_per_lot_rupees"] == pytest.approx(
         112.0 * stop_pct * 225
     )
     assert evaluation["option_risk_per_lot_rupees"] > 1000.0
-    assert evaluation["rejection_reason"] == "one_lot_exceeds_trade_risk_cap"
+    assert evaluation["accepted"] is True
 
 
-def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
+def test_paper_option_sizing_still_respects_daily_budget_without_legacy_cap():
     bot = object.__new__(KiteTradingBot)
     bot.config = {
         "max_risk_per_trade": 1000.0,
@@ -2614,6 +2615,7 @@ def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
         account_size=100_000,
         max_risk_per_trade=10_000.0,
         daily_max_loss=10_000.0,
+        enforce_per_trade_risk_cap=False,
     )
     bot.intraday_manager.set_contract_specs(
         {"NIFTY_CE": {"lot_size": 65, "multiplier": 1}}
@@ -2627,7 +2629,7 @@ def test_paper_risk_cap_allows_one_lot_when_stop_risk_is_within_budget():
     ] == pytest.approx(799.5)
 
 
-def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
+def test_paper_futures_sizing_uses_daily_budget_not_legacy_rupee_cap():
     bot = object.__new__(KiteTradingBot)
     bot.config = {"max_risk_per_trade": 1000.0}
     bot.paper_trading_enabled = True
@@ -2636,6 +2638,7 @@ def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
         account_size=100_000,
         max_risk_per_trade=10_000.0,
         daily_max_loss=10_000.0,
+        enforce_per_trade_risk_cap=False,
     )
     bot.intraday_manager.set_contract_specs(
         {"TCS": {"lot_size": 225, "multiplier": 1}}
@@ -2643,14 +2646,14 @@ def test_paper_per_trade_risk_cap_also_applies_to_futures_sizing():
 
     quantity = bot._calculate_position_size("TCS", 112.0, 100.95)
 
-    assert quantity == 0
-    assert bot._pending_entry_evaluations["TCS"][
-        "rejection_reason"
-    ] == "one_lot_exceeds_trade_risk_cap"
+    assert quantity == 900
 
 
-def test_decision_record_includes_pending_entry_risk_evaluation():
+def test_paper_decision_record_omits_legacy_per_trade_rupee_cap():
     bot = object.__new__(KiteTradingBot)
+    bot.config = {}
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
     bot.decision_journal = Mock()
     bot._pending_entry_evaluations = {
         "TCS_CE": {
@@ -2670,11 +2673,12 @@ def test_decision_record_includes_pending_entry_risk_evaluation():
 
     bot._record_decision(
         "TCS_CE", bar, [bar], None, "BUY",
-        "risk_cap_blocked:one_lot_exceeds_1000_rupees"
+        "position_size_zero"
     )
 
     payload = bot.decision_journal.log_decision.call_args.args[0]
-    assert payload["entry_evaluation"]["risk_cap_rupees"] == 1000.0
+    assert "risk_cap_rupees" not in payload["entry_evaluation"]
+    assert payload["entry_evaluation"]["option_risk_per_lot_rupees"] == 2486.25
     assert "TCS_CE" not in bot._pending_entry_evaluations
 
 
@@ -4058,3 +4062,61 @@ def test_best_setup_windows_are_withheld_below_screening_sample(tmp_path):
     windows = summarize_best_setup_windows(str(tmp_path), days=7)
 
     assert windows == []
+
+
+def test_tier_counters_isolate_stock_losses_from_index_entries():
+    manager = IntradayManager(
+        account_size=100_000,
+        daily_max_loss=1_000,
+        max_risk_per_trade=1_000,
+    )
+    manager.max_consecutive_losses = 1
+    manager.record_trade_close(
+        "TCS_CE", "STOP_LOSS", -1_000, tier="STOCK", side="BUY"
+    )
+
+    assert manager.daily_loss_limit_reached(tier="STOCK", tiered=True)
+    assert not manager.daily_loss_limit_reached(tier="NIFTY", tiered=True)
+    assert manager.can_open_trade(
+        "NIFTY_CE", "BUY", tier="NIFTY", tier_counters_enabled=True
+    ) == (True, "OK")
+    assert manager.can_open_trade(
+        "INFY_CE", "BUY", tier="STOCK", tier_counters_enabled=True
+    )[0] is False
+
+
+def test_stop_breaker_tracks_symbol_and_side_until_session_rollover():
+    manager = IntradayManager()
+    manager.record_trade_close(
+        "TCS_CE", "STOP_LOSS", -10, tier="STOCK", side="BUY"
+    )
+
+    assert manager.entry_blocked_by_stop_breaker("TCS_CE", "BUY")
+    assert not manager.entry_blocked_by_stop_breaker("TCS_CE", "SELL")
+
+    manager._session_date -= timedelta(days=1)
+    assert not manager.entry_blocked_by_stop_breaker("TCS_CE", "BUY")
+
+
+def test_same_side_cluster_window_counts_only_other_symbols():
+    manager = IntradayManager()
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    manager.record_trade_open(
+        "INFY_CE", "BUY", opened_at=now - timedelta(minutes=10)
+    )
+    manager.record_trade_open(
+        "WIPRO_CE", "BUY", opened_at=now - timedelta(minutes=20)
+    )
+    manager.record_trade_open(
+        "TCS_CE", "BUY", opened_at=now - timedelta(minutes=5)
+    )
+
+    assert manager.same_side_entries_in_window(
+        "BUY", now, 30 * 60, exclude_symbol="TCS_CE"
+    ) == 2
+    assert manager.same_side_entries_in_window(
+        "SELL", now, 30 * 60, exclude_symbol="TCS_CE"
+    ) == 0
+    assert manager.same_side_entries_in_window(
+        "BUY", now + timedelta(minutes=31), 30 * 60, exclude_symbol="TCS_CE"
+    ) == 0
