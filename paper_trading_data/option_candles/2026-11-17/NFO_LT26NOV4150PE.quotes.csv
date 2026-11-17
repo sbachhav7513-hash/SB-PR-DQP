@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-17T15:30:13+05:30,NFO:LT26NOV4150PE,LT,PE,4150.0,2026-11-23,37.0,36.25,36.8,2026-11-17T15:30:13+05:30,0.870715,225584766f7ee7c2df38f066eaf8b23051255342a2e1537bd6bde1e3b658c0b6,c39aa4ed9513a10c50c40b6c32bd09b40ba85459,True
