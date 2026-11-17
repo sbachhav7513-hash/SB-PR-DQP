@@ -3,6 +3,8 @@
   "kite_access_token": null,
   "trading_mode": "intraday_options",
   "mode": "PAPER",
+  "premarket_context_v1": true,
+  "india_vix_token": null,
   "paper_charge_model": {
     "brokerage_mode": "flat",
     "brokerage_flat_inr": 20.0,

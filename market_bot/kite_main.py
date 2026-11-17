@@ -59,6 +59,13 @@ from .strategy_config import (
     strategy_config_hash,
 )
 from .paper_costs import calculate_trade_fees
+from .premarket_context import (
+    IST as PREMARKET_IST,
+    MARKET_OPEN,
+    PremarketContextStore,
+    build_context_snapshot,
+    format_summary as format_premarket_context_summary,
+)
 from .paper_run_up import (
     OptionMoveMeasurement,
     prior_60m_option_move,
@@ -136,6 +143,7 @@ def _log_runtime_flags(
     }
     if mode == "PAPER":
         defaults["gate_state_logging_v1"] = True
+        defaults["premarket_context_v1"] = True
     configured_flags = {
         key: bool(config.get(key, default)) for key, default in defaults.items()
     }
@@ -216,6 +224,14 @@ def _configured_option_premium_stop_pct(config: dict) -> float:
     return float(
         config.get("option_premium_stop_pct", DEFAULT_OPTION_PREMIUM_STOP_PCT)
     )
+
+
+def _safe_positive_float(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) and result > 0 else None
 
 
 def _aligned_option_volume_history(
@@ -662,6 +678,283 @@ class KiteTradingBot:
                 )
             )
         )
+
+    def _premarket_context_for_row(self, ticker: Any) -> Optional[dict]:
+        if (
+            not self._paper_change_enabled("premarket_context_v1")
+            or bool(getattr(self, "simulation_mode", False))
+        ):
+            return None
+        store = getattr(self, "premarket_context_store", None)
+        if store is None:
+            return {
+                "version": "premarket_context_v1",
+                "status": "not_initialized",
+                "underlying": str(ticker or "").upper().split("_", 1)[0],
+            }
+        return store.context_for(ticker)
+
+    def _premarket_context_symbols(self) -> list[str]:
+        requested = {
+            str(symbol).strip().upper()
+            for key in ("options_underlyings", "futures_underlyings")
+            for symbol in self.config.get(key, [])
+            if str(symbol).strip()
+        }
+        stream = getattr(self, "kite_stream", None)
+        contract_symbols = getattr(stream, "contract_symbols", {}) or {}
+        requested.update(
+            str(symbol).strip().upper().split("_", 1)[0]
+            for symbol in contract_symbols
+            if str(symbol).strip()
+        )
+        requested.update({"NIFTY", "BANKNIFTY"})
+        return sorted(requested)
+
+    def _premarket_context_instruments(
+        self, symbols: list[str]
+    ) -> tuple[dict[str, int], Optional[int], Any]:
+        stream = getattr(self, "kite_stream", None)
+        client = getattr(stream, "kite", None)
+        token_map = getattr(self, "config", {}).get("instrument_tokens", {}) or {}
+        contract_symbols = getattr(stream, "contract_symbols", {}) or {}
+        master_tokens: dict[str, int] = {}
+        if client is not None and hasattr(client, "instruments"):
+            try:
+                for instrument in client.instruments("NSE"):
+                    raw_token = instrument.get("instrument_token")
+                    try:
+                        token = int(raw_token)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if token <= 0:
+                        continue
+                    labels = {
+                        str(instrument.get(key) or "").strip().upper()
+                        for key in ("tradingsymbol", "name")
+                    }
+                    for label in labels:
+                        if label:
+                            master_tokens[label] = token
+                    if "NIFTY 50" in labels:
+                        master_tokens["NIFTY"] = token
+                    if labels.intersection({"NIFTY BANK", "BANK NIFTY"}):
+                        master_tokens["BANKNIFTY"] = token
+                    if labels.intersection({"INDIA VIX", "INDIAVIX"}):
+                        master_tokens["INDIA VIX"] = token
+            except Exception:
+                logger.exception(
+                    "Could not read the NSE instrument master for premarket context"
+                )
+
+        resolved: dict[str, int] = {}
+        for symbol in symbols:
+            token = master_tokens.get(symbol)
+            if token is None and symbol not in contract_symbols:
+                try:
+                    token = int(token_map.get(symbol))
+                except (TypeError, ValueError, OverflowError):
+                    token = None
+            if token is not None and token > 0:
+                resolved[symbol] = token
+
+        vix_token = None
+        for candidate in (
+            self.config.get("india_vix_token"),
+            token_map.get("INDIA VIX"),
+            token_map.get("INDIAVIX"),
+            master_tokens.get("INDIA VIX"),
+            master_tokens.get("INDIAVIX"),
+        ):
+            try:
+                parsed = int(candidate)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if parsed > 0:
+                vix_token = parsed
+                break
+        return resolved, vix_token, client
+
+    def _capture_premarket_context(self, stage: str, now: datetime) -> dict:
+        symbols = self._premarket_context_symbols()
+        tokens, vix_token, client = self._premarket_context_instruments(symbols)
+        daily_history: dict[str, list[dict]] = {}
+        intraday_history: dict[str, list[dict]] = {}
+        prices: dict[str, Any] = {}
+        session_opens: dict[str, Any] = {}
+        errors: dict[str, str] = {}
+        lookback_start = datetime.combine(
+            now.date() - timedelta(days=35), time_type.min, tzinfo=PREMARKET_IST
+        )
+        for symbol in symbols:
+            token = tokens.get(symbol)
+            if token is None or client is None or not hasattr(client, "historical_data"):
+                errors[symbol] = "historical data token or client unavailable"
+                daily_history[symbol] = []
+                continue
+            try:
+                daily_history[symbol] = client.historical_data(
+                    token, lookback_start, now, "day"
+                )
+            except Exception as error:
+                logger.exception(
+                    "Could not fetch premarket daily history for %s", symbol
+                )
+                daily_history[symbol] = []
+                errors[symbol] = f"{type(error).__name__}: {error}"
+
+            if stage not in {"0920", "1030"}:
+                continue
+            intraday_start = (
+                datetime.combine(
+                    now.date() - timedelta(days=35),
+                    MARKET_OPEN,
+                    tzinfo=PREMARKET_IST,
+                )
+                if stage == "1030"
+                else datetime.combine(
+                    now.date(), MARKET_OPEN, tzinfo=PREMARKET_IST
+                )
+            )
+            try:
+                rows = client.historical_data(
+                    token, intraday_start, now, "5minute"
+                )
+                intraday_history[symbol] = rows
+                today_rows = []
+                for row in rows:
+                    row_time = row.get("date", row.get("time"))
+                    if isinstance(row_time, datetime):
+                        local_time = (
+                            row_time.astimezone(PREMARKET_IST)
+                            if row_time.tzinfo
+                            else row_time.replace(tzinfo=PREMARKET_IST)
+                        )
+                    else:
+                        try:
+                            local_time = datetime.fromisoformat(
+                                str(row_time).replace("Z", "+00:00")
+                            )
+                            local_time = (
+                                local_time.astimezone(PREMARKET_IST)
+                                if local_time.tzinfo
+                                else local_time.replace(tzinfo=PREMARKET_IST)
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                    if local_time.date() == now.date() and local_time.time() >= time_type(9, 15):
+                        today_rows.append((local_time, row))
+                if today_rows:
+                    today_rows.sort(key=lambda item: item[0])
+                    session_opens[symbol] = today_rows[0][1].get("open")
+                    prices[symbol] = today_rows[-1][1].get("close")
+            except Exception as error:
+                logger.exception(
+                    "Could not fetch premarket intraday history for %s", symbol
+                )
+                errors[f"{symbol}_intraday"] = f"{type(error).__name__}: {error}"
+
+        stream = getattr(self, "kite_stream", None)
+        futures_symbols = set(getattr(stream, "contract_symbols", {}) or {})
+        for symbol in symbols:
+            if symbol not in futures_symbols:
+                live_price = _safe_positive_float(
+                    (getattr(self, "latest_prices", {}) or {}).get(symbol)
+                )
+                if live_price is not None:
+                    prices[symbol] = live_price
+
+        vix_history: list[dict] = []
+        if vix_token is not None and client is not None:
+            try:
+                vix_history = client.historical_data(
+                    vix_token, lookback_start, now, "day"
+                )
+            except Exception as error:
+                logger.exception("Could not fetch India VIX history")
+                errors["INDIA VIX"] = f"{type(error).__name__}: {error}"
+        elif vix_token is None:
+            errors["INDIA VIX"] = "India VIX instrument token unavailable"
+
+        snapshot = build_context_snapshot(
+            captured_at=now,
+            stage=stage,
+            symbols=symbols,
+            daily_history=daily_history,
+            prices=prices,
+            session_opens=session_opens,
+            intraday_history=intraday_history if stage == "1030" else None,
+            vix_history=vix_history,
+            data_errors=errors,
+        )
+        if errors.get("INDIA VIX"):
+            snapshot["india_vix"]["data_error"] = errors["INDIA VIX"]
+        try:
+            destination = self.premarket_context_store.write_snapshot(snapshot)
+            logger.info(
+                "Premarket context snapshot written: stage=%s path=%s",
+                stage,
+                destination,
+            )
+        except Exception:
+            logger.exception(
+                "Could not persist premarket context snapshot for stage %s", stage
+            )
+        if stage == "0845":
+            notifier = getattr(self, "telegram_notifier", None)
+            if notifier is not None:
+                try:
+                    if not notifier.send_message(
+                        format_premarket_context_summary(snapshot)
+                    ):
+                        logger.warning(
+                            "Premarket context Telegram summary was not queued"
+                        )
+                except Exception:
+                    logger.exception(
+                        "Could not queue premarket context Telegram summary"
+                    )
+        return snapshot
+
+    def _run_premarket_context_if_due(self, now: datetime) -> None:
+        if (
+            not self._paper_change_enabled("premarket_context_v1")
+            or bool(getattr(self, "simulation_mode", False))
+        ):
+            return
+        local_now = now.astimezone(PREMARKET_IST) if now.tzinfo else now.replace(tzinfo=PREMARKET_IST)
+        scheduled = (
+            ("0845", time_type(8, 45)),
+            ("0920", time_type(9, 20)),
+            ("1030", time_type(10, 30)),
+        )
+        attempted = self._premarket_context_attempts.get(local_now.date())
+        if attempted is None:
+            store = getattr(self, "premarket_context_store", None)
+            try:
+                attempted = (
+                    store.completed_stages(local_now.date())
+                    if store is not None
+                    else set()
+                )
+            except Exception:
+                logger.exception("Could not load today's premarket context stages")
+                attempted = set()
+            attempts = getattr(self, "_premarket_context_attempts", None)
+            if attempts is None:
+                attempts = {}
+                self._premarket_context_attempts = attempts
+            attempts[local_now.date()] = attempted
+        for stage, scheduled_time in scheduled:
+            if local_now.time() < scheduled_time or stage in attempted:
+                continue
+            attempted.add(stage)
+            try:
+                self._capture_premarket_context(stage, local_now)
+            except Exception:
+                logger.exception(
+                    "Premarket context stage %s failed open", stage
+                )
 
     def _active_paper_change_flags(self) -> list[str]:
         return [
@@ -2100,6 +2393,7 @@ class KiteTradingBot:
         self.config.setdefault("entry_feature_logging_v2", True)
         self.config.setdefault("scorer_input_logging_v1", True)
         self.config.setdefault("stop_quote_validation_v2", True)
+        self.config.setdefault("premarket_context_v1", True)
         self.config.setdefault("stock_take_profit_v2", True)
         self.config.setdefault("stock_take_profit_r", 0.8)
         self.config.setdefault("stock_take_profit_tiers", ["stock"])
@@ -2146,6 +2440,10 @@ class KiteTradingBot:
             self.paper_trading_dir = self.config.get(
                 "paper_trading_dir", "paper_trading_data"
             )
+        self.premarket_context_store = PremarketContextStore(
+            Path(self.paper_trading_dir) / "premarket"
+        )
+        self._premarket_context_attempts: Dict[date, set[str]] = {}
 
         daily_max_loss_pct = self.config.get("daily_max_loss_pct", 2.0)
         options_mode = self.config.get("trading_mode") in {
@@ -2310,6 +2608,12 @@ class KiteTradingBot:
             config_hash=self.config_hash,
             git_sha=self.git_identity.sha,
             git_dirty=self.git_identity.dirty,
+        )
+        self.trade_journal.premarket_context_provider = (
+            self._premarket_context_for_row
+        )
+        self.decision_journal.premarket_context_provider = (
+            self._premarket_context_for_row
         )
         self.stop_reentry_journal = StopReentryJournal(
             self.paper_trading_dir,
@@ -14489,8 +14793,12 @@ class KiteTradingBot:
                 )
                 last_heartbeat = time.monotonic()
                 last_close_check = datetime.now(IST)
+                self._run_premarket_context_if_due(datetime.now(PREMARKET_IST))
 
                 while True:
+                    self._run_premarket_context_if_due(
+                        datetime.now(PREMARKET_IST)
+                    )
                     now_monotonic = time.monotonic()
                     self._process_telegram_commands(read_only_only=True)
                     if now_monotonic - self._last_telemetry_at >= 60.0:

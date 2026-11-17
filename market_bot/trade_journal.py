@@ -245,6 +245,7 @@ class PaperTradingRecorder:
         "signal_id",
         "signal_time",
         "signal_close",
+        "premarket_context_v1",
         "atr_pct",
         "effective_volatility_threshold_pct",
         "momentum_candle",
@@ -353,6 +354,7 @@ class PaperTradingRecorder:
         "market_session", "market_hours", "session_timezone",
         "trend_shadow_signal", "trend_shadow_rejection_reason", "strategy_variant",
         "entry_evaluation",
+        "premarket_context_v1",
         "event", "ema_reentry_event", "original_trade_id", "stop_time",
         "reentry_signal_time", "reentry_reason", "reentry_vwap",
         "reentry_entry_price", "reentry_exit_price", "reentry_pnl",
@@ -1665,6 +1667,7 @@ class RejectedSignalJournal:
             "rejected_at_ist": rejected_at.isoformat(),
             "forward_reference_time_ist": reference_time.isoformat(),
             "ticker": entry.get("ticker"),
+            "premarket_context_v1": entry.get("premarket_context_v1"),
             "contract_id": entry.get("contract_id", ""),
             "config_hash": entry.get("config_hash"),
             "signal": str(entry.get("signal", "")).upper(),
@@ -1944,6 +1947,19 @@ class DecisionJournal:
 
     def log_decision(self, payload: Dict[str, Any]) -> None:
         entry = dict(payload)
+        context_provider = getattr(self, "premarket_context_provider", None)
+        if callable(context_provider):
+            try:
+                context = context_provider(
+                    entry.get("ticker")
+                )
+                if context is not None:
+                    entry["premarket_context_v1"] = context
+            except Exception:
+                logger.exception(
+                    "Could not attach premarket context to decision for %s",
+                    entry.get("ticker"),
+                )
         entry.setdefault("contract_id", "")
         if self.config_hash is not None:
             entry["config_hash"] = self.config_hash
@@ -2167,6 +2183,19 @@ class TradeJournal:
             trade.setdefault("config_hash", self.config_hash)
         trade["git_sha"] = self.git_sha
         trade["git_dirty"] = self.git_dirty
+        context_provider = getattr(self, "premarket_context_provider", None)
+        if callable(context_provider):
+            try:
+                context = context_provider(
+                    trade.get("ticker", trade.get("symbol"))
+                )
+                if context is not None:
+                    trade["premarket_context_v1"] = context
+            except Exception:
+                logger.exception(
+                    "Could not attach premarket context to trade for %s",
+                    trade.get("ticker", trade.get("symbol")),
+                )
 
     def log_trade(self, payload: Dict[str, Any]) -> int:
         entry = dict(payload)

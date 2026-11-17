@@ -170,6 +170,14 @@ existing `live_orders_confirmed` safety gate must also be enabled in
 `kite_config.json` before LIVE orders can start. `trading_mode` remains the
 separate market-scope setting for futures/options/both.
 
+In PAPER mode, `premarket_context_v1` is enabled by default and can be disabled
+with `"premarket_context_v1": false`. It writes daily context snapshots under
+`paper_trading_data/premarket/` at 08:45 and 09:20 IST, records the 09:15–10:30
+range comparison at 10:30, and attaches the latest context to trade and
+rejection telemetry. It is log-only; it does not affect signal or order
+decisions. India VIX data is included when an `india_vix_token` or an
+`INDIA VIX` entry in `instrument_tokens` is configured or available from Kite.
+
 #### Telegram command control (Phase 1)
 
 Set the bot token and an explicit comma-separated allowlist in the process

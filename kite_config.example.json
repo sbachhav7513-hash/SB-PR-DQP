@@ -3,6 +3,8 @@
   "kite_access_token": null,
   "trading_mode": "intraday_options",
   "mode": "PAPER",
+  "premarket_context_v1": true,
+  "india_vix_token": null,
   "capture_all_evaluated_contracts": true,
   "entry_mode": "immediate",
   "strategy_config_version": "v2",
