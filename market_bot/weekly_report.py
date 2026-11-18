@@ -1438,6 +1438,12 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
         "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
         "order_premium", "order_bid", "order_ask", "order_ltp",
         "cancellation_reason", "cancellation_sub_reason",
+        "tier", "ticker", "signal_uid",
+        "nifty_range_gate_status", "nifty_range_gate_reason",
+        "nifty_range_gate_min_pct", "nifty_range_so_far_pct",
+        "nifty_range_gate_blocked", "nifty_range_gate_symbol",
+        "nifty_range_gate_side", "nifty_range_gate_tier",
+        "entry_signal_time", "entry_blocked_by",
     ]
 
 
@@ -1975,6 +1981,44 @@ def write_daily_review(
         if result != "reached":
             counts[result] += 1
 
+    nifty_gate_by_signal = {}
+    for decision in decisions:
+        status = str(decision.get("nifty_range_gate_status") or "")
+        if status not in {"blocked", "data_missing", "passed", "configuration_invalid"}:
+            continue
+        signal_key = str(
+            decision.get("signal_id")
+            or decision.get("signal_uid")
+            or (
+                f"{decision.get('ticker')}|{decision.get('signal')}|"
+                f"{decision.get('entry_signal_time') or decision.get('timestamp')}"
+            )
+        )
+        previous = nifty_gate_by_signal.get(signal_key)
+        if previous is None or (
+            decision.get("outcome") == "trade_opened"
+            or decision.get("confirmation_event") == "confirmed_trade"
+        ):
+            nifty_gate_by_signal[signal_key] = decision
+    nifty_gate_blocked_by_tier: Dict[str, int] = defaultdict(int)
+    nifty_gate_data_missing = 0
+    nifty_gate_entries = {}
+    for signal_key, decision in nifty_gate_by_signal.items():
+        status = str(decision.get("nifty_range_gate_status") or "")
+        if status == "blocked":
+            nifty_gate_blocked_by_tier[_review_tier(decision)] += 1
+        elif status == "data_missing":
+            nifty_gate_data_missing += 1
+        if (
+            status == "passed"
+            and (
+                decision.get("outcome") == "trade_opened"
+                or decision.get("outcome_detail") == "trade_opened"
+                or decision.get("confirmation_event") == "confirmed_trade"
+            )
+        ):
+            nifty_gate_entries[signal_key] = decision
+
     day_dir = (
         Path(paper_data_dir)
         / target_date.strftime("%Y-%m")
@@ -2185,6 +2229,36 @@ def write_daily_review(
             for tier in ("STOCK", "NIFTY", "BANKNIFTY")
         ),
         f"- five_min_autodisabled: {len(five_min_autodisabled_signals)}",
+        "",
+        "## NIFTY Range Gate",
+        *(
+            f"- Blocked by tier ({tier}): "
+            f"{nifty_gate_blocked_by_tier.get(tier, 0)}"
+            for tier in ("STOCK", "NIFTY", "BANKNIFTY")
+        ),
+        f"- Data missing: {nifty_gate_data_missing}",
+        "",
+        "| Entry time | Symbol | Side | Tier | NIFTY range-so-far (%) |",
+        "| --- | --- | --- | --- | ---: |",
+        *(
+            [
+                "| {time} | {symbol} | {side} | {tier} | {range:.4f} |".format(
+                    time=str(
+                        decision.get("entry_signal_time")
+                        or decision.get("signal_time")
+                        or decision.get("timestamp")
+                        or "N/A"
+                    ).replace("|", "/"),
+                    symbol=str(decision.get("ticker") or "UNKNOWN").replace("|", "/"),
+                    side=str(decision.get("signal") or "N/A").replace("|", "/"),
+                    tier=_review_tier(decision),
+                    range=float(decision["nifty_range_so_far_pct"]),
+                )
+                for decision in nifty_gate_entries.values()
+                if decision.get("nifty_range_so_far_pct") not in (None, "")
+            ]
+            or ["| No gate-enabled entries recorded | - | - | - | - |"]
+        ),
         "",
         "## EMA Stop-Loss Re-entry",
         f"- Eligible stop-loss trades: {ema_reentry['eligible_stop_losses']}",

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import threading
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -455,6 +456,129 @@ def test_stock_switch_only_blocks_stock_tier_entries():
         True,
         "OK",
     )
+
+    simulation_bot = _quality_bot("TCS_CE", 100)
+    simulation_bot.config["stock_tier_enabled_v1"] = False
+    simulation_bot.simulation_mode = True
+    simulation_bot.intraday_manager = IntradayManager()
+    assert simulation_bot._can_open_trade_for_signal("TCS_CE", "BUY", 80) == (
+        True,
+        "OK",
+    )
+
+
+def _nifty_range_gate_bot():
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "mode": "PAPER",
+        "bar_interval_seconds": 60,
+        "instrument_tokens": {"NIFTY": 256265},
+        "nifty_range_gate_v1": True,
+        "min_range_pct": 0.7,
+        "stock_tier_enabled_v1": True,
+    }
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.simulation_mode = False
+    bot._nifty_range_lock = threading.Lock()
+    bot._nifty_range_cache_date = None
+    bot._nifty_range_closed_bars = {}
+    bot._nifty_range_current_bar = None
+    bot._nifty_range_gate_context_by_symbol = {}
+    return bot
+
+
+def _nifty_tick(timestamp, price):
+    return SimpleNamespace(
+        instrument_token=256265,
+        timestamp=timestamp,
+        last_price=price,
+    )
+
+
+def test_nifty_range_gate_accepts_exact_threshold_and_rejects_below():
+    bot = _nifty_range_gate_bot()
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), 100.0)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, 30, tzinfo=IST), 100.7)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 16, tzinfo=IST), 100.0)
+    )
+
+    measurement = bot._nifty_range_gate_measurement(
+        datetime(2026, 11, 18, 9, 16, tzinfo=IST)
+    )
+    assert measurement["nifty_range_gate_status"] == "passed"
+    assert round(measurement["nifty_range_so_far_pct"], 8) == 0.7
+
+    bot.config["min_range_pct"] = 0.701
+    measurement = bot._nifty_range_gate_measurement(
+        datetime(2026, 11, 18, 9, 16, tzinfo=IST)
+    )
+    assert measurement["nifty_range_gate_status"] == "blocked"
+    assert measurement["nifty_range_gate_reason"] == "regime_gate_blocked"
+
+
+def test_nifty_range_gate_default_off_does_not_collect_or_block():
+    bot = _nifty_range_gate_bot()
+    bot.config.pop("nifty_range_gate_v1")
+    signal_time = datetime(2026, 11, 18, 9, 16, tzinfo=IST)
+
+    bot._capture_nifty_range_tick(_nifty_tick(signal_time, 100.0))
+
+    assert bot._nifty_range_gate_measurement(signal_time) is None
+    assert bot._nifty_range_current_bar is None
+
+
+def test_nifty_range_gate_blocks_missing_minute_bars():
+    bot = _nifty_range_gate_bot()
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), 100.0)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 17, tzinfo=IST), 101.0)
+    )
+
+    measurement = bot._nifty_range_gate_measurement(
+        datetime(2026, 11, 18, 9, 17, tzinfo=IST)
+    )
+    assert measurement["nifty_range_gate_status"] == "data_missing"
+    assert measurement["nifty_range_gate_reason"] == "regime_gate_data_missing"
+
+
+def test_nifty_range_gate_blocks_ema_reentry_and_logs_gate_context(caplog):
+    caplog.set_level("INFO")
+    bot = _nifty_range_gate_bot()
+    bot._nifty_range_closed_bars = {
+        datetime(2026, 11, 18, 9, 15, tzinfo=IST): {
+            "open": 100.0,
+            "high": 100.4,
+            "low": 100.0,
+        }
+    }
+    bot._nifty_range_cache_date = datetime(2026, 11, 18, 9, 15, tzinfo=IST).date()
+
+    allowed, reason = bot._can_open_trade_for_signal(
+        "NIFTY_CE",
+        "BUY",
+        80,
+        ema_reentry_confirmed=True,
+        signal_time=datetime(2026, 11, 18, 9, 16, tzinfo=IST),
+    )
+
+    assert not allowed
+    assert reason == "regime_gate_blocked"
+    assert bot._nifty_range_gate_context_by_symbol["NIFTY_CE"][
+        "nifty_range_gate_side"
+    ] == "BUY"
+    assert bot._nifty_range_gate_context_by_symbol["NIFTY_CE"][
+        "nifty_range_gate_tier"
+    ] == "NIFTY"
+    assert "side=BUY tier=NIFTY" in caplog.text
+    assert "range_so_far_pct=0.4" in caplog.text
 
 
 def test_stop_breaker_and_cluster_limit_block_with_distinct_reasons():

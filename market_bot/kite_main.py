@@ -125,6 +125,7 @@ PAPER_FLAG_DEFAULTS = {
     "symbol_side_stop_breaker_v1": False,
     "same_side_cluster_limit_v1": False,
     "stock_tier_enabled_v1": True,
+    "nifty_range_gate_v1": False,
     "run_up_lookback_backfill_v2": False,
     "entry_5m_continuation_v1": False,
 }
@@ -135,6 +136,7 @@ PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
         "tier_risk_counters_v1",
         "symbol_side_stop_breaker_v1",
         "same_side_cluster_limit_v1",
+        "nifty_range_gate_v1",
         "run_up_lookback_backfill_v2",
         "entry_5m_continuation_v1",
     }
@@ -262,6 +264,7 @@ PAPER_CHANGE_KEYS = (
     "stop_quote_validation_v2",
     "support_reversal_levels_diagnostics_v1",
     "run_up_veto_v2",
+    "nifty_range_gate_v1",
     "reversal_confirm_v2",
     "level_stop_v2",
 )
@@ -2498,6 +2501,7 @@ class KiteTradingBot:
             minimum_signal_score=0,
             paper_range_stop=stop_price,
             paper_range_target_r=target_r,
+            signal_time=bars[-1].timestamp,
         )
         logger.info(
             "[%s] Paper range breakout: high=%.2f low=%.2f entry=%.2f "
@@ -2878,6 +2882,11 @@ class KiteTradingBot:
         self._feature_observation_error_lock = threading.Lock()
         self._scorer_context_by_symbol = {}
         self._scorer_bar_observations_seen = set()
+        self._nifty_range_lock = threading.Lock()
+        self._nifty_range_cache_date = None
+        self._nifty_range_closed_bars = {}
+        self._nifty_range_current_bar = None
+        self._nifty_range_gate_context_by_symbol = {}
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
         self._runtime_started_at = datetime.now(IST)
@@ -2906,6 +2915,8 @@ class KiteTradingBot:
         self.config.setdefault("stock_take_profit_v2", True)
         self.config.setdefault("stock_take_profit_r", 0.8)
         self.config.setdefault("stock_take_profit_tiers", ["stock"])
+        self.config.setdefault("min_range_pct", 0.7)
+        self.config.setdefault("nifty_range_gate_v1", False)
         self.mode = resolve_execution_mode(self.config, os.getenv("MODE"))
         if self.simulation_mode and self.mode == "LIVE":
             raise ValueError("BOT_SIM_MODE=true cannot be used when mode is LIVE")
@@ -3389,6 +3400,189 @@ class KiteTradingBot:
         self.kite_stream.publish(symbol)
         return trade_id, symbol
 
+    def _capture_nifty_range_tick(self, tick) -> None:
+        if not self._paper_change_enabled("nifty_range_gate_v1"):
+            return
+        token = (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+            "NIFTY"
+        )
+        if token is None or getattr(tick, "instrument_token", None) != int(token):
+            return
+        try:
+            interval_seconds = int(
+                getattr(self, "config", {}).get("bar_interval_seconds", 60)
+            )
+        except (TypeError, ValueError, OverflowError):
+            logger.error("Invalid bar_interval_seconds for NIFTY range gate")
+            return
+        if interval_seconds != 60:
+            return
+        timestamp = self._journal_datetime(getattr(tick, "timestamp", None))
+        try:
+            price = float(getattr(tick, "last_price", None))
+        except (TypeError, ValueError, OverflowError):
+            price = float("nan")
+        if (
+            timestamp is None
+            or not math.isfinite(price)
+            or price <= 0
+        ):
+            logger.warning("Ignoring invalid NIFTY range-gate tick")
+            return
+
+        minute = timestamp.replace(second=0, microsecond=0)
+        lock = getattr(self, "_nifty_range_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._nifty_range_lock = lock
+        with lock:
+            if not hasattr(self, "_nifty_range_closed_bars"):
+                self._nifty_range_closed_bars = {}
+            if getattr(self, "_nifty_range_cache_date", None) != timestamp.date():
+                self._nifty_range_cache_date = timestamp.date()
+                self._nifty_range_closed_bars = {}
+                self._nifty_range_current_bar = None
+            current = getattr(self, "_nifty_range_current_bar", None)
+            if current is None or minute > current["time"]:
+                if current is not None:
+                    self._nifty_range_closed_bars[current["time"]] = current
+                self._nifty_range_current_bar = {
+                    "time": minute,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                }
+                return
+            if minute < current["time"]:
+                return
+            current["high"] = max(current["high"], price)
+            current["low"] = min(current["low"], price)
+            current["close"] = price
+
+    def _nifty_range_gate_measurement(
+        self, signal_time: Optional[datetime] = None
+    ) -> Optional[dict]:
+        if not self._paper_change_enabled("nifty_range_gate_v1"):
+            return None
+        configured_minimum = self.config.get("min_range_pct", 0.7)
+        try:
+            minimum = float(configured_minimum)
+        except (TypeError, ValueError, OverflowError):
+            minimum = float("nan")
+        if not math.isfinite(minimum) or minimum < 0:
+            logger.error(
+                "Invalid NIFTY range-gate min_range_pct=%r",
+                configured_minimum,
+            )
+            return {
+                "nifty_range_gate_status": "configuration_invalid",
+                "nifty_range_gate_reason": "regime_gate_config_invalid",
+                "nifty_range_gate_min_pct": None,
+                "nifty_range_so_far_pct": None,
+                "nifty_range_gate_blocked": True,
+            }
+
+        parsed_time = (
+            datetime.now(IST)
+            if signal_time is None
+            else self._journal_datetime(signal_time)
+        )
+        try:
+            interval_seconds = int(
+                self.config.get("bar_interval_seconds", 60)
+            )
+        except (TypeError, ValueError, OverflowError):
+            interval_seconds = None
+        if (
+            parsed_time is None
+            or interval_seconds != 60
+        ):
+            reason = "regime_gate_data_missing"
+            return {
+                "nifty_range_gate_status": "data_missing",
+                "nifty_range_gate_reason": reason,
+                "nifty_range_gate_min_pct": minimum,
+                "nifty_range_so_far_pct": None,
+                "nifty_range_gate_blocked": True,
+                "entry_signal_time": (
+                    parsed_time.isoformat() if parsed_time is not None else None
+                ),
+            }
+
+        signal_minute = parsed_time.replace(second=0, microsecond=0)
+        session_open_time = signal_minute.replace(
+            hour=9, minute=15, second=0, microsecond=0
+        )
+        if signal_minute <= session_open_time:
+            expected_times = []
+        else:
+            expected_count = int(
+                (signal_minute - session_open_time).total_seconds() // 60
+            )
+            expected_times = [
+                session_open_time + timedelta(minutes=index)
+                for index in range(expected_count)
+            ]
+
+        lock = getattr(self, "_nifty_range_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._nifty_range_lock = lock
+        with lock:
+            bars = (
+                dict(getattr(self, "_nifty_range_closed_bars", {}))
+                if getattr(self, "_nifty_range_cache_date", None) == parsed_time.date()
+                else {}
+            )
+        if not expected_times or any(
+            timestamp not in bars for timestamp in expected_times
+        ):
+            reason = "regime_gate_data_missing"
+            return {
+                "nifty_range_gate_status": "data_missing",
+                "nifty_range_gate_reason": reason,
+                "nifty_range_gate_min_pct": minimum,
+                "nifty_range_so_far_pct": None,
+                "nifty_range_gate_blocked": True,
+                "entry_signal_time": parsed_time.isoformat(),
+            }
+
+        session_bars = [bars[timestamp] for timestamp in expected_times]
+        try:
+            session_open = float(session_bars[0]["open"])
+            high = max(float(item["high"]) for item in session_bars)
+            low = min(float(item["low"]) for item in session_bars)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            session_open = high = low = float("nan")
+        if (
+            not all(math.isfinite(value) for value in (session_open, high, low))
+            or session_open <= 0
+            or high < low
+        ):
+            reason = "regime_gate_data_missing"
+            return {
+                "nifty_range_gate_status": "data_missing",
+                "nifty_range_gate_reason": reason,
+                "nifty_range_gate_min_pct": minimum,
+                "nifty_range_so_far_pct": None,
+                "nifty_range_gate_blocked": True,
+                "entry_signal_time": parsed_time.isoformat(),
+            }
+
+        range_pct = (high - low) / session_open * 100.0
+        passed = range_pct >= minimum
+        return {
+            "nifty_range_gate_status": "passed" if passed else "blocked",
+            "nifty_range_gate_reason": (
+                None if passed else "regime_gate_blocked"
+            ),
+            "nifty_range_gate_min_pct": minimum,
+            "nifty_range_so_far_pct": range_pct,
+            "nifty_range_gate_blocked": not passed,
+            "entry_signal_time": parsed_time.isoformat(),
+        }
+
     def _can_open_trade_for_signal(
         self,
         symbol: str,
@@ -3396,6 +3590,7 @@ class KiteTradingBot:
         score: int,
         *,
         ema_reentry_confirmed: bool = False,
+        signal_time: Optional[datetime] = None,
     ) -> tuple[bool, str]:
         if getattr(self, "_telegram_entries_paused", False):
             return False, "telegram entries paused"
@@ -3404,9 +3599,53 @@ class KiteTradingBot:
             and not getattr(self, "live_orders_enabled", False)
         )
         tier = self._tier_label(symbol)
-        if paper_entry and tier == "STOCK" and not bool(
-            self.config.get("stock_tier_enabled_v1", True)
+        gate_context = (
+            self._nifty_range_gate_measurement(signal_time)
+            if paper_entry
+            else None
+        )
+        stock_tier_disabled = (
+            paper_entry
+            and not bool(getattr(self, "simulation_mode", False))
+            and tier == "STOCK"
+            and not bool(self.config.get("stock_tier_enabled_v1", True))
+        )
+        block_rules = []
+        if stock_tier_disabled:
+            block_rules.append("stock_tier_disabled")
+        if gate_context is not None:
+            gate_context = dict(gate_context)
+            gate_context.update(
+                {
+                    "nifty_range_gate_symbol": symbol,
+                    "nifty_range_gate_side": direction,
+                    "nifty_range_gate_tier": tier,
+                    "entry_blocked_by": list(block_rules),
+                }
+            )
+            if gate_context["nifty_range_gate_blocked"]:
+                block_rules.append(gate_context["nifty_range_gate_reason"])
+            gate_context["entry_blocked_by"] = list(block_rules)
+            self._nifty_range_gate_context_by_symbol = getattr(
+                self, "_nifty_range_gate_context_by_symbol", {}
+            )
+            self._nifty_range_gate_context_by_symbol[symbol] = gate_context
+        if (
+            gate_context is not None
+            and gate_context["nifty_range_gate_blocked"]
         ):
+            logger.info(
+                "[%s] Entry rejected: %s side=%s tier=%s signal_time=%s "
+                "range_so_far_pct=%s",
+                symbol,
+                gate_context["nifty_range_gate_reason"],
+                direction,
+                tier,
+                gate_context.get("entry_signal_time"),
+                gate_context.get("nifty_range_so_far_pct"),
+            )
+            return False, gate_context["nifty_range_gate_reason"]
+        if stock_tier_disabled:
             logger.info("[%s] Entry blocked: stock_tier_disabled", symbol)
             return False, "stock_tier_disabled"
         if (
@@ -7148,6 +7387,9 @@ class KiteTradingBot:
         gate_measurements = pending.get("gate_measurements")
         if not isinstance(gate_measurements, dict):
             gate_measurements = {}
+        nifty_gate_context = pending.get("nifty_range_gate_context")
+        if isinstance(nifty_gate_context, dict):
+            gate_measurements = {**gate_measurements, **nifty_gate_context}
         gate_passed_at = dict(pending.get("gate_passed_at") or {})
         confirmation_passed = (
             fields.get("confirmation_result") == "passed"
@@ -7191,6 +7433,11 @@ class KiteTradingBot:
                 "entry_feature_null_reasons", {}
             ),
             "gate_measurements": gate_measurements,
+            **(
+                nifty_gate_context
+                if isinstance(nifty_gate_context, dict)
+                else {}
+            ),
             "gate_passed_at": gate_passed_at,
             "scorer_first_bar_time": pending.get("scorer_first_bar_time"),
             "scorer_last_bar_time": pending.get("scorer_last_bar_time"),
@@ -7889,7 +8136,17 @@ class KiteTradingBot:
             "BUY",
             pending["score"],
             ema_reentry_confirmed=pending.get("ema_reentry_context") is not None,
+            signal_time=pending.get("signal_time"),
         )
+        gate_context = getattr(
+            self, "_nifty_range_gate_context_by_symbol", {}
+        ).pop(symbol, None)
+        if isinstance(gate_context, dict):
+            pending["nifty_range_gate_context"] = gate_context
+            pending["gate_measurements"] = {
+                **(pending.get("gate_measurements") or {}),
+                **gate_context,
+            }
         if not can_open:
             lowered = reason.lower()
             if "daily loss cap" in lowered or "risk budget" in lowered:
@@ -8434,6 +8691,7 @@ class KiteTradingBot:
                     paper_change_attributions=list(
                         pending.get("paper_change_attributions", [])
                     ),
+                    signal_time=pending.get("signal_time"),
                 )
             except Exception:
                 logger.exception(
@@ -8452,6 +8710,15 @@ class KiteTradingBot:
                     confirmation_quote=quote,
                 )
                 continue
+            gate_context = getattr(
+                self, "_nifty_range_gate_context_by_symbol", {}
+            ).pop(pending["symbol"], None)
+            if isinstance(gate_context, dict):
+                pending["nifty_range_gate_context"] = gate_context
+                pending["gate_measurements"] = {
+                    **(pending.get("gate_measurements") or {}),
+                    **gate_context,
+                }
             pending["run_up_veto_status"] = metadata.get(
                 "run_up_veto_status", "failed_open"
             )
@@ -9481,6 +9748,7 @@ class KiteTradingBot:
                             self._signal_change_attributions.get(symbol, [])
                         ),
                         entry_telemetry=entry_telemetry,
+                        signal_time=signal_bars[-1].timestamp,
                     )
                 else:
                     entry_telemetry = self._entry_signal_telemetry(
@@ -9527,6 +9795,7 @@ class KiteTradingBot:
                             self._signal_change_attributions.get(symbol, [])
                         ),
                         entry_telemetry=entry_telemetry,
+                        signal_time=signal_bars[-1].timestamp,
                     )
         elif trade_action == "SELL":
             entry_telemetry = self._entry_signal_telemetry(
@@ -9545,6 +9814,7 @@ class KiteTradingBot:
                 strategy_variant=market_score.strategy_variant,
                 minimum_signal_score=position_minimum_score,
                 entry_telemetry=entry_telemetry,
+                signal_time=signal_bars[-1].timestamp,
             )
         else:
             logger.debug(f"[{symbol}] HOLD - not enough confidence")
@@ -10734,6 +11004,7 @@ class KiteTradingBot:
             return
         self._last_loop_tick_at = tick.timestamp
         symbol = symbol_map[tick.instrument_token]
+        self._capture_nifty_range_tick(tick)
         if symbol.endswith(("_CE", "_PE")):
             tick_time = self._journal_datetime(tick.timestamp)
             if tick_time is not None:
@@ -13821,6 +14092,11 @@ class KiteTradingBot:
                 "Could not capture rejected-signal measurements for %s", symbol
             )
             gate_measurements = {"route": "scored"}
+        nifty_gate_context = getattr(
+            self, "_nifty_range_gate_context_by_symbol", {}
+        ).pop(symbol, None)
+        if isinstance(nifty_gate_context, dict):
+            gate_measurements.update(nifty_gate_context)
         scorer_context = getattr(
             self, "_scorer_context_by_symbol", {}
         ).get(symbol, {})
@@ -13939,6 +14215,11 @@ class KiteTradingBot:
                 "order_time": gate_passed_at.get("order"),
                 "strategy_variant": (
                     variant
+                ),
+                **(
+                    nifty_gate_context
+                    if isinstance(nifty_gate_context, dict)
+                    else {}
                 ),
                 "gate_measurements": gate_measurements,
                 "quote_source": gate_measurements.get("quote_source"),
@@ -14107,6 +14388,7 @@ class KiteTradingBot:
         entry_fill_override: Optional[float] = None,
         paper_change_attributions: Optional[list[str]] = None,
         entry_telemetry: Optional[dict] = None,
+        signal_time: Optional[datetime] = None,
     ) -> str:
         """Handle a BUY signal."""
         paper_change_attributions = list(paper_change_attributions or [])
@@ -14140,6 +14422,7 @@ class KiteTradingBot:
                 "BUY",
                 score,
                 ema_reentry_confirmed=ema_reentry_context is not None,
+                signal_time=signal_time,
             )
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
@@ -15139,6 +15422,7 @@ class KiteTradingBot:
         strategy_variant: Optional[str] = None,
         minimum_signal_score: Optional[int] = None,
         entry_telemetry: Optional[dict] = None,
+        signal_time: Optional[datetime] = None,
     ) -> str:
         """Handle a SELL signal."""
         sell_entry_quote_metrics = self._option_quote_metrics(
@@ -15166,7 +15450,9 @@ class KiteTradingBot:
                 return cutoff_reason
             if not self._live_entry_allowed(symbol):
                 return "live_entry_paused"
-            allowed, reason = self._can_open_trade_for_signal(symbol, "SELL", score)
+            allowed, reason = self._can_open_trade_for_signal(
+                symbol, "SELL", score, signal_time=signal_time
+            )
             if not allowed:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"

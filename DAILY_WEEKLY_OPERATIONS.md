@@ -410,6 +410,19 @@ without the best trade. If it fails, introduce stock-only filters one at a
 time and replay each before use. All tier-control flag values are printed in
 the startup `Runtime flags` line.
 
+`nifty_range_gate_v1` is PAPER-only and defaults off. When enabled, it blocks
+entries unless completed NIFTY one-minute bars from 09:15 through (but not
+including) the signal minute show a high-low range of at least `min_range_pct`
+percent of the 09:15 open. Missing or incomplete bars block entry as
+`regime_gate_data_missing`; do not bypass the block. The daily review reports
+blocked counts by tier, missing-data counts, and the measured range for each
+opened entry. Replay rejected signals from `rejected_signals.jsonl` before
+making any follow-up rule decision. Evaluate after the later of 15 PAPER
+sessions or 20 executed trades. Keep both changes only if mean net rupees per
+executed trade is above zero and above the mean net rupees of the replayed
+blocked signals; otherwise turn both switches off and add no further entry
+rules.
+
 The shared `support_reversal_enabled` setting controls the underlying-derived
 support/reversal variant in both modes. It uses complete one-minute bars
 aggregated into five-minute candles, clustered support/resistance pivots, a

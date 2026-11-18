@@ -984,6 +984,7 @@ def test_paper_range_breakout_waits_for_one_completed_follow_through_bar():
         minimum_signal_score=0,
         paper_range_stop=pytest.approx(26.5),
         paper_range_target_r=2.0,
+        signal_time=bars[-1].timestamp,
     )
 
 
@@ -3761,6 +3762,7 @@ def test_support_reversal_candidate_uses_existing_paper_entry_gates(
         "minimum_signal_score": 55,
         "entry_fill_override": None,
         "paper_change_attributions": [],
+        "signal_time": option_bars[-1].timestamp,
     }
     assert entry_telemetry["momentum_body_ratio_threshold"] == 0.2
 

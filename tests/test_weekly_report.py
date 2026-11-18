@@ -328,6 +328,71 @@ def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
     assert "- After-cost P&L: 2.00" in review
 
 
+def test_daily_review_reports_nifty_range_gate_counts_and_entry_ranges(tmp_path):
+    timezone = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone).replace(microsecond=0)
+    decisions = [
+        {
+            "timestamp": now.isoformat(),
+            "ticker": "TCS_CE",
+            "tier": "STOCK",
+            "signal": "BUY",
+            "signal_id": "blocked-stock",
+            "outcome": "risk_blocked",
+            "outcome_detail": "trade_blocked:regime_gate_blocked",
+            "entry_signal_time": now.isoformat(),
+            "nifty_range_gate_status": "blocked",
+            "nifty_range_gate_reason": "regime_gate_blocked",
+            "nifty_range_gate_min_pct": 0.7,
+            "nifty_range_so_far_pct": 0.42,
+        },
+        {
+            "timestamp": now.isoformat(),
+            "ticker": "NIFTY_PE",
+            "tier": "NIFTY",
+            "signal": "SELL",
+            "signal_id": "missing-index",
+            "outcome": "risk_blocked",
+            "outcome_detail": "trade_blocked:regime_gate_data_missing",
+            "entry_signal_time": now.isoformat(),
+            "nifty_range_gate_status": "data_missing",
+            "nifty_range_gate_reason": "regime_gate_data_missing",
+        },
+        {
+            "timestamp": now.isoformat(),
+            "ticker": "BANKNIFTY_CE",
+            "tier": "BANKNIFTY",
+            "signal": "BUY",
+            "signal_id": "opened-index",
+            "outcome": "trade_opened",
+            "outcome_detail": "trade_opened",
+            "entry_signal_time": now.isoformat(),
+            "nifty_range_gate_status": "passed",
+            "nifty_range_gate_min_pct": 0.7,
+            "nifty_range_so_far_pct": 0.73,
+        },
+    ]
+    (tmp_path / "decision_log.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in decisions) + "\n",
+        encoding="utf-8",
+    )
+
+    review_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=now.date(),
+    )
+    review = review_path.read_text(encoding="utf-8")
+
+    assert "- Blocked by tier (STOCK): 1" in review
+    assert "- Blocked by tier (NIFTY): 0" in review
+    assert "- Data missing: 1" in review
+    assert (
+        f"| {now.isoformat()} | BANKNIFTY_CE | BUY | BANKNIFTY | 0.7300 |"
+        in review
+    )
+
+
 def test_daily_and_weekly_reviews_group_modeled_fees_net_pnl_and_r(tmp_path):
     timezone = ZoneInfo("Asia/Kolkata")
     now = datetime.now(timezone).replace(microsecond=0)

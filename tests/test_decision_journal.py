@@ -473,6 +473,49 @@ def test_rejected_signal_journal_records_gate_measurements_in_ist(tmp_path):
     assert record["forward_15m_status"] == "pending"
 
 
+def test_regime_gate_rejection_persists_replay_context(tmp_path):
+    journal = DecisionJournal(str(tmp_path / "decisions.jsonl"), config_hash="cfg")
+    gate_measurements = {
+        "nifty_range_gate_status": "blocked",
+        "nifty_range_gate_reason": "regime_gate_blocked",
+        "nifty_range_gate_min_pct": 0.7,
+        "nifty_range_so_far_pct": 0.42,
+        "nifty_range_gate_tier": "STOCK",
+        "nifty_range_gate_side": "SELL",
+        "entry_blocked_by": ["stock_tier_disabled", "regime_gate_blocked"],
+    }
+
+    journal.log_decision(
+        {
+            "timestamp": "2026-11-18T09:16:00+05:30",
+            "entry_signal_time": "2026-11-18T09:16:00+05:30",
+            "ticker": "TCS_PE",
+            "tier": "STOCK",
+            "contract_id": "NFO:TCS26NOV3800PE",
+            "signal": "SELL",
+            "signal_id": "range-gate-rejection",
+            "outcome": "trade_blocked:regime_gate_blocked",
+            "gate_measurements": gate_measurements,
+        }
+    )
+
+    record = read_rejected_signals(
+        tmp_path / "rejected_signals.jsonl"
+    )[0]
+    assert record["ticker"] == "TCS_PE"
+    assert record["tier"] == "STOCK"
+    assert record["signal"] == "SELL"
+    assert record["signal_time_ist"] == "2026-11-18T09:16:00+05:30"
+    assert record["gate"] == "regime_gate_blocked"
+    assert record["nifty_range_gate_status"] == "blocked"
+    assert record["nifty_range_gate_min_pct"] == 0.7
+    assert record["nifty_range_so_far_pct"] == 0.42
+    assert record["entry_blocked_by"] == [
+        "stock_tier_disabled",
+        "regime_gate_blocked",
+    ]
+
+
 def test_rejected_signal_forward_outcomes_update_the_original_row(tmp_path):
     path = tmp_path / "rejected_signals.jsonl"
     journal = DecisionJournal(str(tmp_path / "decisions.jsonl"))

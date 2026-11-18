@@ -423,6 +423,11 @@ class PaperTradingRecorder:
         "daily_tick_gaps_over_30s", "paper_change_flags",
         "paper_change_attributions", "body_ratio", "body_ratio_threshold",
         "paper_change_gate_evaluations", "would_pass_baseline",
+        "nifty_range_gate_status", "nifty_range_gate_reason",
+        "nifty_range_gate_min_pct", "nifty_range_so_far_pct",
+        "nifty_range_gate_blocked", "nifty_range_gate_symbol",
+        "nifty_range_gate_side", "nifty_range_gate_tier",
+        "entry_signal_time", "entry_blocked_by",
         "body_ratio_source",
         "atr_pct", "effective_volatility_threshold_pct", "momentum_candle",
         "momentum_body_ratio", "momentum_body_ratio_threshold", "direction_rule",
@@ -1411,6 +1416,16 @@ class RejectedSignalJournal:
         if signal not in {"BUY", "SELL"}:
             return None
 
+        measurements = entry.get("gate_measurements")
+        measurements = measurements if isinstance(measurements, dict) else {}
+        range_gate_reason = measurements.get("nifty_range_gate_reason")
+        if range_gate_reason in {
+            "regime_gate_blocked",
+            "regime_gate_data_missing",
+            "regime_gate_config_invalid",
+        }:
+            return str(range_gate_reason)
+
         detail = str(entry.get("outcome_detail", entry.get("outcome", "")))
         outcome = str(entry.get("outcome", ""))
         confirmation_event = str(entry.get("confirmation_event", ""))
@@ -1653,7 +1668,7 @@ class RejectedSignalJournal:
             logger.error("Rejected signal has an invalid timestamp: %r", entry.get("timestamp"))
             return
         is_confirmation_event = entry.get("event") == "entry_confirmation"
-        signal_time_value = (
+        signal_time_value = entry.get("entry_signal_time") or (
             entry.get("signal_time")
             if is_confirmation_event
             else entry.get("timestamp")
@@ -1717,6 +1732,8 @@ class RejectedSignalJournal:
             "rejected_at_ist": rejected_at.isoformat(),
             "forward_reference_time_ist": reference_time.isoformat(),
             "ticker": entry.get("ticker"),
+            "tier": entry.get("tier")
+            or measurements.get("nifty_range_gate_tier"),
             "premarket_context_v1": entry.get("premarket_context_v1"),
             "contract_id": entry.get("contract_id", ""),
             "config_hash": entry.get("config_hash"),
@@ -1727,6 +1744,8 @@ class RejectedSignalJournal:
             "score": entry.get("score"),
             "gate": gate,
             "reason": (
+                measurements.get("nifty_range_gate_reason")
+                or
                 entry.get("cancellation_sub_reason")
                 or entry.get("cancellation_reason")
                 or entry.get("rejection_reason")
@@ -1742,6 +1761,16 @@ class RejectedSignalJournal:
                 or entry.get("outcome_detail")
             ),
             "outcome_detail": entry.get("outcome_detail"),
+            "nifty_range_gate_status": measurements.get(
+                "nifty_range_gate_status"
+            ),
+            "nifty_range_gate_min_pct": measurements.get(
+                "nifty_range_gate_min_pct"
+            ),
+            "nifty_range_so_far_pct": measurements.get(
+                "nifty_range_so_far_pct"
+            ),
+            "entry_blocked_by": measurements.get("entry_blocked_by", []),
             "body_ratio": measurements.get("body_ratio"),
             "body_ratio_threshold": measurements.get("body_ratio_threshold"),
             "body_ratio_source": measurements.get("body_ratio_source"),

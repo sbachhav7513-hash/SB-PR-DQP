@@ -57,6 +57,8 @@
   "symbol_side_stop_breaker_v1": false,
   "same_side_cluster_limit_v1": false,
   "stock_tier_enabled_v1": true,
+  "nifty_range_gate_v1": false,
+  "min_range_pct": 0.7,
   "run_up_lookback_backfill_v2": false,
   "entry_5m_continuation_v1": false,
   "entry_5m_max_ask_drift_pct": null,

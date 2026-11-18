@@ -151,6 +151,24 @@ def test_run_up_veto_is_enabled_in_startup_log_by_default(caplog):
     assert "entry_5m_continuation_v1=False" in caplog.text
 
 
+def test_nifty_range_gate_defaults_off_and_is_disabled_outside_paper():
+    paper_defaults = _log_runtime_flags({}, "PAPER")
+    paper_enabled = _log_runtime_flags(
+        {"nifty_range_gate_v1": True}, "PAPER"
+    )
+    simulation_enabled = _log_runtime_flags(
+        {"nifty_range_gate_v1": True}, "PAPER", simulation_mode=True
+    )
+    live_enabled = _log_runtime_flags(
+        {"nifty_range_gate_v1": True}, "LIVE"
+    )
+
+    assert paper_defaults["nifty_range_gate_v1"] is False
+    assert paper_enabled["nifty_range_gate_v1"] is True
+    assert simulation_enabled["nifty_range_gate_v1"] is False
+    assert live_enabled["nifty_range_gate_v1"] is False
+
+
 def test_scenario_tool_rejects_non_temporary_output(monkeypatch):
     import sim_scenarios
 
