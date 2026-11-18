@@ -480,6 +480,8 @@ def test_regime_gate_rejection_persists_replay_context(tmp_path):
         "nifty_range_gate_reason": "regime_gate_blocked",
         "nifty_range_gate_min_pct": 0.7,
         "nifty_range_so_far_pct": 0.42,
+        "nifty_range_gate_blocked": True,
+        "nifty_range_gate_symbol": "TCS_CE",
         "nifty_range_gate_tier": "STOCK",
         "nifty_range_gate_side": "SELL",
         "entry_blocked_by": ["stock_tier_disabled", "regime_gate_blocked"],
@@ -508,8 +510,13 @@ def test_regime_gate_rejection_persists_replay_context(tmp_path):
     assert record["signal_time_ist"] == "2026-11-18T09:16:00+05:30"
     assert record["gate"] == "regime_gate_blocked"
     assert record["nifty_range_gate_status"] == "blocked"
+    assert record["nifty_range_gate_reason"] == "regime_gate_blocked"
     assert record["nifty_range_gate_min_pct"] == 0.7
     assert record["nifty_range_so_far_pct"] == 0.42
+    assert record["nifty_range_gate_blocked"] is True
+    assert record["nifty_range_gate_symbol"] == "TCS_CE"
+    assert record["nifty_range_gate_side"] == "SELL"
+    assert record["nifty_range_gate_tier"] == "STOCK"
     assert record["entry_blocked_by"] == [
         "stock_tier_disabled",
         "regime_gate_blocked",

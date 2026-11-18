@@ -1764,11 +1764,26 @@ class RejectedSignalJournal:
             "nifty_range_gate_status": measurements.get(
                 "nifty_range_gate_status"
             ),
+            "nifty_range_gate_reason": measurements.get(
+                "nifty_range_gate_reason"
+            ),
             "nifty_range_gate_min_pct": measurements.get(
                 "nifty_range_gate_min_pct"
             ),
             "nifty_range_so_far_pct": measurements.get(
                 "nifty_range_so_far_pct"
+            ),
+            "nifty_range_gate_blocked": measurements.get(
+                "nifty_range_gate_blocked"
+            ),
+            "nifty_range_gate_symbol": measurements.get(
+                "nifty_range_gate_symbol"
+            ),
+            "nifty_range_gate_side": measurements.get(
+                "nifty_range_gate_side"
+            ),
+            "nifty_range_gate_tier": measurements.get(
+                "nifty_range_gate_tier"
             ),
             "entry_blocked_by": measurements.get("entry_blocked_by", []),
             "body_ratio": measurements.get("body_ratio"),

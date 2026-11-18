@@ -416,7 +416,9 @@ including) the signal minute show a high-low range of at least `min_range_pct`
 percent of the 09:15 open. Missing or incomplete bars block entry as
 `regime_gate_data_missing`; do not bypass the block. The daily review reports
 blocked counts by tier, missing-data counts, and the measured range for each
-opened entry. Replay rejected signals from `rejected_signals.jsonl` before
+opened entry. When enabled, startup logs also report the first completed NIFTY
+minute after 09:15 and the 09:30 range, completed-bar count, and gate state.
+Replay rejected signals from `rejected_signals.jsonl` before
 making any follow-up rule decision. Evaluate after the later of 15 PAPER
 sessions or 20 executed trades. Keep both changes only if mean net rupees per
 executed trade is above zero and above the mean net rupees of the replayed

@@ -2886,6 +2886,7 @@ class KiteTradingBot:
         self._nifty_range_cache_date = None
         self._nifty_range_closed_bars = {}
         self._nifty_range_current_bar = None
+        self._nifty_range_logged_milestones = set()
         self._nifty_range_gate_context_by_symbol = {}
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
@@ -3435,6 +3436,7 @@ class KiteTradingBot:
         if lock is None:
             lock = threading.Lock()
             self._nifty_range_lock = lock
+        checkpoints = []
         with lock:
             if not hasattr(self, "_nifty_range_closed_bars"):
                 self._nifty_range_closed_bars = {}
@@ -3442,10 +3444,14 @@ class KiteTradingBot:
                 self._nifty_range_cache_date = timestamp.date()
                 self._nifty_range_closed_bars = {}
                 self._nifty_range_current_bar = None
+                self._nifty_range_logged_milestones = set()
             current = getattr(self, "_nifty_range_current_bar", None)
             if current is None or minute > current["time"]:
+                closed_bar = None
                 if current is not None:
                     self._nifty_range_closed_bars[current["time"]] = current
+                    if current["time"].time() >= time_type(9, 15):
+                        closed_bar = current
                 self._nifty_range_current_bar = {
                     "time": minute,
                     "open": price,
@@ -3453,12 +3459,59 @@ class KiteTradingBot:
                     "low": price,
                     "close": price,
                 }
+                milestones = getattr(
+                    self, "_nifty_range_logged_milestones", set()
+                )
+                if closed_bar is not None and "first_completed" not in milestones:
+                    milestones.add("first_completed")
+                    self._nifty_range_logged_milestones = milestones
+                    checkpoints.append(("first_completed_minute", minute))
+                if (
+                    minute.time() == time_type(9, 30)
+                    and "09:30" not in milestones
+                ):
+                    milestones.add("09:30")
+                    self._nifty_range_logged_milestones = milestones
+                    checkpoints.append(("09:30", minute))
+            elif minute < current["time"]:
                 return
-            if minute < current["time"]:
-                return
-            current["high"] = max(current["high"], price)
-            current["low"] = min(current["low"], price)
-            current["close"] = price
+            else:
+                current["high"] = max(current["high"], price)
+                current["low"] = min(current["low"], price)
+                current["close"] = price
+        for checkpoint, checkpoint_time in checkpoints:
+            self._log_nifty_range_checkpoint(checkpoint_time, checkpoint)
+
+    def _log_nifty_range_checkpoint(
+        self, checkpoint_time: datetime, checkpoint: str
+    ) -> None:
+        measurement = self._nifty_range_gate_measurement(checkpoint_time) or {}
+        session_open_time = checkpoint_time.replace(
+            hour=9, minute=15, second=0, microsecond=0
+        )
+        with self._nifty_range_lock:
+            closed_bars = dict(self._nifty_range_closed_bars)
+        bar_count = sum(
+            1
+            for bar_time in closed_bars
+            if session_open_time <= bar_time < checkpoint_time
+        )
+        range_pct = measurement.get("nifty_range_so_far_pct")
+        range_text = (
+            f"{range_pct:.4f}"
+            if isinstance(range_pct, (int, float))
+            and math.isfinite(range_pct)
+            else "n/a"
+        )
+        logger.info(
+            "NIFTY range-gate startup checkpoint=%s time=%s "
+            "range_so_far_pct=%s bar_count=%d gate_state=%s",
+            checkpoint,
+            checkpoint_time.isoformat(),
+            range_text,
+            bar_count,
+            measurement.get("nifty_range_gate_status", "disabled"),
+        )
 
     def _nifty_range_gate_measurement(
         self, signal_time: Optional[datetime] = None

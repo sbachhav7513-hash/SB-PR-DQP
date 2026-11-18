@@ -3,6 +3,8 @@ import threading
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from market_bot.accuracy_filters import AccuracyFilters
 from market_bot.bar_builder import Bar
 from market_bot.engine import SupportResistanceReversal
@@ -496,30 +498,34 @@ def _nifty_tick(timestamp, price):
     )
 
 
-def test_nifty_range_gate_accepts_exact_threshold_and_rejects_below():
+@pytest.mark.parametrize(
+    ("range_points", "expected_status"),
+    [(69, "blocked"), (70, "passed"), (71, "passed")],
+)
+def test_nifty_range_gate_threshold_boundary(range_points, expected_status):
     bot = _nifty_range_gate_bot()
+    session_open = 10_000.0
     bot._capture_nifty_range_tick(
-        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), 100.0)
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), session_open)
     )
     bot._capture_nifty_range_tick(
-        _nifty_tick(datetime(2026, 11, 18, 9, 15, 30, tzinfo=IST), 100.7)
+        _nifty_tick(
+            datetime(2026, 11, 18, 9, 15, 30, tzinfo=IST),
+            session_open + range_points,
+        )
     )
     bot._capture_nifty_range_tick(
-        _nifty_tick(datetime(2026, 11, 18, 9, 16, tzinfo=IST), 100.0)
+        _nifty_tick(datetime(2026, 11, 18, 9, 16, tzinfo=IST), session_open)
     )
 
     measurement = bot._nifty_range_gate_measurement(
         datetime(2026, 11, 18, 9, 16, tzinfo=IST)
     )
-    assert measurement["nifty_range_gate_status"] == "passed"
-    assert round(measurement["nifty_range_so_far_pct"], 8) == 0.7
 
-    bot.config["min_range_pct"] = 0.701
-    measurement = bot._nifty_range_gate_measurement(
-        datetime(2026, 11, 18, 9, 16, tzinfo=IST)
+    assert measurement["nifty_range_gate_status"] == expected_status
+    assert measurement["nifty_range_so_far_pct"] == pytest.approx(
+        range_points / 100
     )
-    assert measurement["nifty_range_gate_status"] == "blocked"
-    assert measurement["nifty_range_gate_reason"] == "regime_gate_blocked"
 
 
 def test_nifty_range_gate_default_off_does_not_collect_or_block():
@@ -547,6 +553,54 @@ def test_nifty_range_gate_blocks_missing_minute_bars():
     )
     assert measurement["nifty_range_gate_status"] == "data_missing"
     assert measurement["nifty_range_gate_reason"] == "regime_gate_data_missing"
+
+
+def test_nifty_range_gate_blocks_when_bars_start_after_0915():
+    bot = _nifty_range_gate_bot()
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 16, tzinfo=IST), 100.0)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 17, tzinfo=IST), 100.7)
+    )
+
+    measurement = bot._nifty_range_gate_measurement(
+        datetime(2026, 11, 18, 9, 17, tzinfo=IST)
+    )
+
+    assert measurement["nifty_range_gate_status"] == "data_missing"
+    assert measurement["nifty_range_gate_reason"] == "regime_gate_data_missing"
+
+
+@pytest.mark.parametrize("route", ["primary", "ema_reentry", "stop_reentry"])
+def test_nifty_range_gate_blocks_paper_entry_routes(route):
+    bot = _nifty_range_gate_bot()
+    signal_time = datetime(2026, 11, 18, 9, 16, tzinfo=IST)
+    bot._nifty_range_cache_date = signal_time.date()
+    bot._nifty_range_closed_bars = {
+        signal_time.replace(hour=9, minute=15): {
+            "open": 100.0,
+            "high": 100.4,
+            "low": 100.0,
+        }
+    }
+    if route == "stop_reentry":
+        bot.config["stop_reentry_enabled"] = True
+        bot._options_enabled = lambda: True
+    if route == "ema_reentry":
+        bot.config["ema_reentry_enabled"] = True
+        bot.config["trading_mode"] = "intraday_options"
+
+    allowed, reason = bot._can_open_trade_for_signal(
+        "NIFTY_CE",
+        "BUY",
+        80,
+        ema_reentry_confirmed=route == "ema_reentry",
+        signal_time=signal_time,
+    )
+
+    assert not allowed
+    assert reason == "regime_gate_blocked"
 
 
 def test_nifty_range_gate_blocks_ema_reentry_and_logs_gate_context(caplog):
@@ -579,6 +633,86 @@ def test_nifty_range_gate_blocks_ema_reentry_and_logs_gate_context(caplog):
     ] == "NIFTY"
     assert "side=BUY tier=NIFTY" in caplog.text
     assert "range_so_far_pct=0.4" in caplog.text
+
+
+def test_nifty_range_gate_logs_first_completed_bar_and_0930_checkpoint(caplog):
+    caplog.set_level("INFO")
+    bot = _nifty_range_gate_bot()
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), 100.0)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, 30, tzinfo=IST), 100.7)
+    )
+    for minute in range(16, 31):
+        bot._capture_nifty_range_tick(
+            _nifty_tick(
+                datetime(2026, 11, 18, 9, minute, tzinfo=IST), 100.1
+            )
+        )
+
+    assert (
+        "checkpoint=first_completed_minute "
+        "time=2026-11-18T09:16:00+05:30 range_so_far_pct=0.7000 "
+        "bar_count=1 gate_state=passed"
+    ) in caplog.text
+    assert (
+        "checkpoint=09:30 time=2026-11-18T09:30:00+05:30 "
+        "range_so_far_pct=0.7000 bar_count=15 gate_state=passed"
+    ) in caplog.text
+
+
+def test_nifty_range_gate_logs_0930_checkpoint_when_bars_are_missing(caplog):
+    caplog.set_level("INFO")
+    bot = _nifty_range_gate_bot()
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 15, tzinfo=IST), 100.0)
+    )
+    bot._capture_nifty_range_tick(
+        _nifty_tick(datetime(2026, 11, 18, 9, 30, tzinfo=IST), 100.5)
+    )
+
+    assert (
+        "checkpoint=09:30 time=2026-11-18T09:30:00+05:30 "
+        "range_so_far_pct=n/a bar_count=1 gate_state=data_missing"
+    ) in caplog.text
+
+
+@pytest.mark.parametrize("route", ["primary", "ema_reentry", "stop_reentry"])
+def test_nifty_range_gate_is_off_for_live_routes_at_1100(monkeypatch, route):
+    from market_bot import kite_main
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            frozen = datetime(2026, 11, 18, 11, 0, tzinfo=IST)
+            return frozen if tz is None else frozen.astimezone(tz)
+
+    monkeypatch.setattr(kite_main, "datetime", FrozenDateTime)
+    bot = _nifty_range_gate_bot()
+    bot.config["mode"] = "LIVE"
+    bot.config["stop_reentry_enabled"] = True
+    bot.config["ema_reentry_enabled"] = True
+    bot.config["trading_mode"] = "intraday_options"
+    bot.paper_trading_enabled = False
+    bot.live_orders_enabled = True
+    bot.intraday_manager = IntradayManager()
+    bot.stop_reentry_cooldown_minutes = 15
+    bot.stop_reentry_min_score = 75
+    bot._options_enabled = lambda: True
+
+    allowed, reason = bot._can_open_trade_for_signal(
+        "NIFTY_CE",
+        "BUY",
+        80,
+        ema_reentry_confirmed=route == "ema_reentry",
+    )
+
+    assert FrozenDateTime.now(IST) == datetime(2026, 11, 18, 11, 0, tzinfo=IST)
+    assert bot._nifty_range_gate_measurement(FrozenDateTime.now(IST)) is None
+    assert allowed
+    assert reason == "OK"
+    assert bot._nifty_range_gate_context_by_symbol == {}
 
 
 def test_stop_breaker_and_cluster_limit_block_with_distinct_reasons():
