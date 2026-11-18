@@ -3,7 +3,7 @@
 ## Status
 
 - Branch: `feat/paper-mode-pending-items`
-- Base/HEAD commit: `4b8a3dcc4315298489def70044cf812ed5bea3f3`
+- Base commit: `4b8a3dcc4315298489def70044cf812ed5bea3f3`
 - No deployment or commit was made. Both new behavior flags remain OFF.
 - `tmp/` is pre-existing untracked replay data and was not changed.
 
