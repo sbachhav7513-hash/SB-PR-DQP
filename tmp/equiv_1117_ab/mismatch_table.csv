@@ -1,0 +1,2 @@
+timestamp,symbol,action,old_reason,new_reason,old_outcome_detail,new_outcome_detail,likely_cause
+2026-11-17T10:38:05+05:30,INFY_PE,SELL,stale_quote,quote_outside_spread,stale_quote,other_filter,market_bot/kite_main.py::_confirmed_entry_filter_failure and downstream filter outcome classification
