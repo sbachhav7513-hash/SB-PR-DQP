@@ -40,7 +40,7 @@ Outcome / follow-up / rollback:
   - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the PAPER-only deployment, verification, breaker, and rollback steps.
   - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this implementation and the measured strategy evidence.
 - Validation and result: Focused suite passed (78 tests); full `python -m pytest -q` passed (667 passed, 1 skipped); `git diff --check` passed. The fixed-rule 51-trade outcomes were 34 reached / 19 passed / 15 failed in 30-Oct–11-Nov, 17 / 6 / 11 in 12-Nov–16-Nov, and 51 / 25 / 26 overall; no expired or data-missing outcomes. All-51 baseline/variant mean net returns were -0.0444 / -0.1133 R and -₹99.0046 / -₹147.8707. Without-best baseline reconciles to -0.0918 R, n=50; see the linked replay report for rupee and period details.
-- Outcome / follow-up / rollback: Keep `entry_5m_continuation_v1` OFF; replay evidence does not establish a performance edge. Final flags-OFF OLD-vs-NEW parity will be run against the committed SHA. No merge, push, or deployment.
+- Outcome / follow-up / rollback: Keep `entry_5m_continuation_v1` OFF; replay evidence does not establish a performance edge. Post-commit flags-OFF parity between `78afb45` and implementation commit `5783e19` matched all 9,521 decision-row keys and semantic signal/outcome/reason fields, the single opened trade, and 4,230 rejected-signal classifications; only `signal_uid` and revision/config metadata differed. A final doc-only commit is rechecked separately. No merge, push, or deployment.
 
 ### 2026-11-11
 

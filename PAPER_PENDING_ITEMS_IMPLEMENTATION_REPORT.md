@@ -236,5 +236,14 @@ trade-level outputs are in
 - `entry_5m_continuation_v1` remains false. Deployment steps are documented in
   `DAILY_WEEKLY_OPERATIONS.md`; no merge, push, or deployment is authorized by
   this follow-up.
-- OLD-vs-NEW flags-OFF parity is to be rerun against the final committed SHA
-  and recorded as post-commit evidence.
+- Post-commit flags-OFF parity between base `78afb45` and implementation
+  commit `5783e19` used the archived 12-Nov inputs with
+  `entry_5m_continuation_v1`, `run_up_lookback_backfill_v2`, and the three
+  replayed risk/cluster flags disabled. All 9,521 decision rows (9,499
+  `bar_decision`, 22 `entry_confirmation`) had matching keys and matching
+  signal, outcome, reasons, and rejection/confirmation classifications. Both
+  runs produced the same single `BANKNIFTY_PE` trade and same 4,230 rejected
+  signals with matching business classifications. Only generated
+  `signal_uid` and revision/config metadata differed. This evidence was
+  collected after `5783e19`; the final documentation-only commit is rechecked
+  separately.
