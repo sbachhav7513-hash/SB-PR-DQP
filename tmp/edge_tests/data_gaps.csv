@@ -1,0 +1,8 @@
+gap,date,symbol,detail
+missing KITE underlying bar,2026-10-20,NIFTY,No underlyings CSV in kite_daily
+missing KITE underlying bar,2026-10-20,BANKNIFTY,No underlyings CSV in kite_daily
+missing KITE underlying bar,2026-11-10,NIFTY,No underlyings CSV in kite_daily
+missing KITE underlying bar,2026-11-10,BANKNIFTY,No underlyings CSV in kite_daily
+10-Nov archive,2026-11-10,ALL,No trade or decision archive directory found
+VIX,ALL,VIX,No VIX archive file found
+pivot fields,ALL,ALL,Archived pivot columns: none

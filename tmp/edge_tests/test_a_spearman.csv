@@ -1,0 +1,9 @@
+symbol,measure,n,spearman_rho
+NIFTY,day_range_pct,21,0.5208
+NIFTY,opening_gap_pct,18,-0.0712
+NIFTY,prior_range_pct,18,0.2405
+NIFTY,first_hour_range_pct,21,0.5455
+BANKNIFTY,day_range_pct,21,0.2325
+BANKNIFTY,opening_gap_pct,18,0.0423
+BANKNIFTY,prior_range_pct,18,0.2384
+BANKNIFTY,first_hour_range_pct,21,-0.0987

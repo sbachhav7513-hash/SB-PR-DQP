@@ -1,0 +1,9 @@
+symbol,measure,median,n_above_or_equal,mean_pnl_above_or_equal,n_below,mean_pnl_below
+NIFTY,day_range_pct,1.1633,11,526.08,10,-1516.84
+NIFTY,opening_gap_pct,0.0134,9,-390.84,9,0.3
+NIFTY,prior_range_pct,1.1386,9,518.53,9,-909.08
+NIFTY,first_hour_range_pct,0.721,11,560.54,10,-1554.74
+BANKNIFTY,day_range_pct,1.3532,11,80.74,10,-1026.97
+BANKNIFTY,opening_gap_pct,0.0054,9,3.07,9,-393.61
+BANKNIFTY,prior_range_pct,1.3224,9,-69.14,9,-321.4
+BANKNIFTY,first_hour_range_pct,0.816,11,-924.12,10,78.38
