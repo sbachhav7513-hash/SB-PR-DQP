@@ -25,6 +25,23 @@ Outcome / follow-up / rollback:
 
 ## Entries
 
+### 2026-11-18
+
+#### DLY-2026-11-18-01
+
+- Reason: Correct the 5-minute continuation gate for production one-minute bar timestamps, add its session circuit breaker and daily-review count, repair a scorer-test fixture, and rerun the paired replay with archived data.
+- Related prior entries checked: Reviewed the pending-items implementation report and its prior confirmation-aligned replay/parity claims; this entry is a dated correction, not a rewrite of those historical records.
+- Files:
+  - `market_bot/kite_main.py` (modified): Aggregate clock-aligned windows from minute-bucket timestamps, wait for the final completed bar, and trip/restore the three-consecutive-`data_missing` session breaker.
+  - `market_bot/weekly_report.py` (modified): Project breaker fields and count `five_min_autodisabled` in the daily review.
+  - `tests/test_bar_builder.py`, `tests/test_confirmed_entry.py`, `tests/test_paper_entry_replay.py`, `tests/test_paper_reporting.py`, and `tests/test_scorer_observability.py` (modified): Cover timestamp semantics, window boundaries/missing bars, strict CE/PE comparisons, breaker trip/reporting, and `available_daily_risk`.
+  - `tools/paper_entry_replay.py` (modified): Replay second-offset bars using the production clock-window rule and report the 51-trade and 17-Nov paired outcomes.
+  - `PAPER_RUN_UP_AND_5M_REPLAY_2026-10-30_to-2026-11-16.md` and `PAPER_PENDING_ITEMS_IMPLEMENTATION_REPORT.md` (modified): Publish corrected results and reconcile the earlier -0.0723 R without-best baseline.
+  - `DAILY_WEEKLY_OPERATIONS.md` (modified): Document the PAPER-only deployment, verification, breaker, and rollback steps.
+  - `DAILY_CHANGELOG.md` and `STRATEGY_CHANGELOG.md` (modified): Record this implementation and the measured strategy evidence.
+- Validation and result: Focused suite passed (78 tests); full `python -m pytest -q` passed (667 passed, 1 skipped); `git diff --check` passed. The fixed-rule 51-trade outcomes were 34 reached / 19 passed / 15 failed in 30-Oct–11-Nov, 17 / 6 / 11 in 12-Nov–16-Nov, and 51 / 25 / 26 overall; no expired or data-missing outcomes. All-51 baseline/variant mean net returns were -0.0444 / -0.1133 R and -₹99.0046 / -₹147.8707. Without-best baseline reconciles to -0.0918 R, n=50; see the linked replay report for rupee and period details.
+- Outcome / follow-up / rollback: Keep `entry_5m_continuation_v1` OFF; replay evidence does not establish a performance edge. Post-commit flags-OFF parity between `78afb45` and implementation commit `5783e19` matched all 9,521 decision-row keys and semantic signal/outcome/reason fields, the single opened trade, and 4,230 rejected-signal classifications; only `signal_uid` and revision/config metadata differed. A final doc-only commit is rechecked separately. No merge, push, or deployment.
+
 ### 2026-11-11
 
 #### DLY-2026-11-11-01

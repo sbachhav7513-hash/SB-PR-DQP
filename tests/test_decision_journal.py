@@ -6,9 +6,38 @@ from market_bot.trade_journal import (
     PaperTradingRecorder,
     RejectedSignalJournal,
     TradeJournal,
+    normalize_entry_confirmation_detail,
     read_rejected_signals,
     rejected_signal_updates_path,
 )
+
+
+def test_entry_confirmation_normalizes_quote_outside_spread_detail():
+    assert normalize_entry_confirmation_detail(
+        {
+            "confirmation_event": "filter_failed_after_confirmation",
+            "cancellation_reason": "filter_failed_after_confirmation",
+            "cancellation_sub_reason": "quote_outside_spread",
+        }
+    ) == "quote_outside_spread"
+
+
+def test_entry_confirmation_normalizes_five_minute_drop_reasons():
+    for reason in (
+        "five_min_no_continuation",
+        "five_min_expired",
+        "five_min_data_missing",
+    ):
+        assert normalize_entry_confirmation_detail(
+            {
+                "confirmation_event": (
+                    "filter_failed_after_confirmation"
+                    if reason == "five_min_no_continuation"
+                    else "expired_signal"
+                ),
+                "cancellation_reason": reason,
+            }
+        ) == reason
 
 
 def test_decision_journal_appends_json_with_canonical_tier(tmp_path):

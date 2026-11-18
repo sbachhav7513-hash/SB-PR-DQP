@@ -112,21 +112,40 @@ def _journal_tier(symbol: Any, tier: Any = None) -> str:
 
 def normalize_entry_confirmation_detail(record: Dict[str, Any]) -> str:
     event = str(record.get("confirmation_event") or "")
-    if event in {"signal_generated", "signal_ignored_pending"}:
+    if event in {
+        "signal_generated",
+        "signal_ignored_pending",
+        "confirmation_waiting_5m",
+        "confirmation_waiting_5m_ask",
+        "confirmation_waiting_run_up_backfill",
+    }:
         return "pending"
     if event == "confirmed_trade":
         return "trade_opened"
-    if event in {
-        "rejected_by_confirmation",
-        "confirmation_error",
-        "expired_signal",
-    }:
+    if event == "expired_signal":
+        cancellation_reason = str(record.get("cancellation_reason") or "")
+        if cancellation_reason in {
+            "five_min_expired",
+            "five_min_data_missing",
+        }:
+            return cancellation_reason
+        return "confirmation_failed"
+    if event in {"rejected_by_confirmation", "confirmation_error"}:
         return "confirmation_failed"
     if event == "filter_failed_after_confirmation":
         reason = " ".join(
             str(record.get(key) or "")
             for key in ("cancellation_reason", "cancellation_sub_reason")
         ).lower()
+        for specific_reason in (
+            "five_min_no_continuation",
+            "five_min_expired",
+            "five_min_data_missing",
+        ):
+            if specific_reason in reason:
+                return specific_reason
+        if "quote_outside_spread" in reason:
+            return "quote_outside_spread"
         if any(marker in reason for marker in ("stale_quote", "stale quote", "quote stale")):
             return "stale_quote"
         if any(
@@ -277,6 +296,20 @@ class PaperTradingRecorder:
         "confirmation_ltp",
         "confirmation_quote_age_seconds",
         "confirmation_delay_seconds",
+        "run_up_veto_v2_status",
+        "run_up_veto_status",
+        "run_up_fail_open_cause",
+        "five_min_confirmation_time",
+        "five_min_confirmation_close",
+        "five_min_candle_start",
+        "five_min_candle_end",
+        "five_min_candle_close",
+        "five_min_continuation_status",
+        "five_min_wait_seconds",
+        "five_min_ask_at_confirmation",
+        "five_min_ask_at_fill",
+        "five_min_ask_drift_pct",
+        "five_min_reason",
         "signal_premium",
         "signal_bid",
         "signal_ask",
@@ -402,6 +435,12 @@ class PaperTradingRecorder:
         "confirmation_bid", "confirmation_ask", "confirmation_ltp",
         "confirmation_quote_age_seconds", "order_premium", "order_bid",
         "order_ask", "order_ltp", "order_quote_age_seconds",
+        "run_up_veto_status", "run_up_fail_open_cause",
+        "five_min_confirmation_time", "five_min_confirmation_close",
+        "five_min_candle_start", "five_min_candle_end",
+        "five_min_candle_close", "five_min_continuation_status",
+        "five_min_wait_seconds", "five_min_ask_at_confirmation",
+        "five_min_ask_at_fill", "five_min_ask_drift_pct", "five_min_reason",
         "cancellation_reason", "cancellation_sub_reason",
         "filter_name",
         "support_resistance_level", "support_resistance_touches",

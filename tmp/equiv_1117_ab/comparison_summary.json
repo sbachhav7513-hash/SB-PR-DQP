@@ -1,0 +1,100 @@
+{
+  "revisions": {
+    "old": "3ba2d4a17809265f3374590d2f00c1890bef7288",
+    "new": "4b8a3dcc4315298489def70044cf812ed5bea3f3"
+  },
+  "inputs": {
+    "decision_parquet_total_rows": 10563,
+    "decision_parquet_bar_decisions": 10493,
+    "generated_decision_rows_old": 9539,
+    "generated_decision_rows_new": 9539,
+    "option_quote_rows": 23076,
+    "option_candles": 5984,
+    "underlying_candles": 3582,
+    "vps_17nov_jsonl_available": false
+  },
+  "flags_new": {
+    "tier_risk_counters_v1": false,
+    "symbol_side_stop_breaker_v1": false,
+    "same_side_cluster_limit_v1": false,
+    "stock_tier_enabled_v1": true
+  },
+  "action_reason_comparison": {
+    "result": "PASS",
+    "matched_rows": 9539,
+    "mismatch_rows": 0,
+    "actions_old": {
+      "HOLD": 8855,
+      "BUY": 159,
+      "SELL": 129,
+      "MARKET_CLOSE": 396
+    },
+    "actions_new": {
+      "HOLD": 8855,
+      "BUY": 159,
+      "SELL": 129,
+      "MARKET_CLOSE": 396
+    }
+  },
+  "rejected_signal_comparison": {
+    "result": "FAIL",
+    "rows_old": 3835,
+    "rows_new": 3835,
+    "mismatching_signal_keys": 1
+  },
+  "trade_comparison": {
+    "result": "PASS",
+    "trades_opened_old": 1,
+    "trades_opened_new": 1,
+    "old_entries": [
+      [
+        "2026-11-17T13:41:05+05:30",
+        "INFY_CE",
+        "NFO:INFY26NOV1140CE",
+        3,
+        14.1
+      ]
+    ],
+    "new_entries": [
+      [
+        "2026-11-17T13:41:05+05:30",
+        "INFY_CE",
+        "NFO:INFY26NOV1140CE",
+        3,
+        14.1
+      ]
+    ],
+    "original_five_reproduced_by_old": false
+  },
+  "entry_telemetry": {
+    "old": {
+      "pivot_count": null,
+      "support_reclaim_result": null,
+      "tier": "stock",
+      "india_vix": null,
+      "feature_risk_cap": 1000.0,
+      "top_level_risk_cap": "1000.0"
+    },
+    "new": {
+      "pivot_count": null,
+      "support_reclaim_result": null,
+      "tier": "STOCK",
+      "india_vix": null,
+      "feature_risk_cap": 4000.0,
+      "top_level_risk_cap": null
+    }
+  },
+  "decision_mismatches": [],
+  "rejection_mismatches": [
+    {
+      "timestamp": "2026-11-17T10:38:05+05:30",
+      "symbol": "INFY_PE",
+      "action": "SELL",
+      "old_reason": "stale_quote",
+      "new_reason": "quote_outside_spread",
+      "old_outcome_detail": "stale_quote",
+      "new_outcome_detail": "other_filter",
+      "likely_cause": "market_bot/kite_main.py::_confirmed_entry_filter_failure and downstream filter outcome classification"
+    }
+  ]
+}

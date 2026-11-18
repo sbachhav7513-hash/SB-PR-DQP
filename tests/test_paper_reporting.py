@@ -12,11 +12,24 @@ from market_bot.trade_journal import (
     read_decisions,
 )
 from market_bot.weekly_report import (
+    _tier_review_metrics,
     build_weekly_report,
     write_daily_review,
     write_daily_summary,
     write_weekly_review,
 )
+
+
+def test_tier_review_excludes_highest_net_r_for_without_best_mean():
+    metrics = _tier_review_metrics(
+        [
+            {"net_pnl": 100.0, "fees_rupees": 0.0, "risk_amount": 1000.0},
+            {"net_pnl": 50.0, "fees_rupees": 0.0, "risk_amount": 100.0},
+        ]
+    )
+
+    assert metrics["mean_net_r"] == 0.3
+    assert metrics["mean_net_r_without_best"] == 0.1
 
 
 def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
@@ -187,6 +200,98 @@ def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path)
     assert "Sideways regime: 1" in content
     assert "Directional candidates: 1" in content
     assert "confirmation: 1" in content
+
+
+def test_daily_review_includes_runtime_identity_flags_and_veto_counts(tmp_path):
+    timestamp = "2026-09-30T10:00:00+05:30"
+    trade = {
+        "timestamp": timestamp,
+        "closed_at": timestamp,
+        "ticker": "TCS_CE",
+        "tier": "STOCK",
+        "action": "BUY",
+        "status": "closed",
+        "gross_pnl_rupees": 10.0,
+        "fees_rupees": 1.0,
+        "net_pnl": 9.0,
+        "risk_amount": 100.0,
+        "risk_cap_rupees": "",
+        "entry_feature_values": {
+            "risk_amount": 100.0,
+            "risk_cap": 4000.0,
+        },
+    }
+    decisions = [
+        {
+            "timestamp": timestamp,
+            "event": "entry_confirmation",
+            "confirmation_event": "confirmation_waiting_5m",
+            "signal_id": "signal-1",
+            "ticker": "TCS_CE",
+            "tier": "STOCK",
+            "signal": "BUY",
+            "run_up_veto_status": "failed_open",
+            "run_up_fail_open_cause": "missing_minute",
+            "five_min_continuation_status": "reached",
+        },
+        {
+            "timestamp": timestamp,
+            "event": "entry_confirmation",
+            "confirmation_event": "expired_signal",
+            "signal_id": "signal-1",
+            "ticker": "TCS_CE",
+            "tier": "STOCK",
+            "five_min_continuation_status": "data_missing",
+            "five_min_autodisabled": True,
+            "cancellation_reason": "five_min_data_missing",
+        },
+        {
+            "timestamp": timestamp,
+            "event": "entry_confirmation",
+            "confirmation_event": "confirmed_trade",
+            "signal_id": "signal-2",
+            "ticker": "TCS_CE",
+            "signal": "BUY",
+            "run_up_veto_status": "passed",
+        },
+        {
+            "timestamp": timestamp,
+            "event": "entry_confirmation",
+            "confirmation_event": "rejected_by_confirmation",
+            "signal_id": "signal-3",
+            "ticker": "TCS_CE",
+            "signal": "BUY",
+            "run_up_veto_status": "vetoed",
+        },
+    ]
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps(trade) + "\n", encoding="utf-8"
+    )
+    (tmp_path / "decision_log.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in decisions) + "\n",
+        encoding="utf-8",
+    )
+
+    review = write_daily_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        target_date=date(2026, 9, 30),
+        config_hash="normalized-config-hash",
+        git_sha="commit-sha",
+        flag_values={"entry_5m_continuation_v1": False},
+    )
+    content = review.read_text(encoding="utf-8")
+
+    assert "Commit SHA: commit-sha" in content
+    assert "Normalized config hash: normalized-config-hash" in content
+    assert "entry_5m_continuation_v1=False" in content
+    assert "- passed: 1" in content
+    assert "- vetoed: 1" in content
+    assert "- failed_open: 1" in content
+    assert "missing_minute: 1" in content
+    assert "| STOCK | 1 | 0 | 0 | 0 | 1 |" in content
+    assert "- five_min_autodisabled: 1" in content
+    assert "risk/open-risk limit=100.0/4000.0" in content
 
 
 def test_daily_review_counts_breakeven_separately_from_losses(tmp_path):

@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from market_bot.bar_builder import Bar
+from market_bot.kite_main import (
+    _complete_five_minute_bar,
+    _next_five_minute_window,
+)
 from market_bot.paper_costs import calculate_order_fees
 from market_bot.paper_run_up import prior_60m_option_move
 from market_bot.support_reversal_flags import level_stop_triggered
@@ -65,7 +70,9 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(stream))
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(
+    path: Path, through: date = date(2026, 11, 16)
+) -> list[dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     with path.open("r", encoding="utf-8") as source:
         for line_number, line in enumerate(source, 1):
@@ -87,7 +94,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             and str(row.get("ticker", "")).endswith(("_CE", "_PE"))
             and date(2026, 10, 30)
             <= (parse_datetime(row.get("timestamp")) or datetime.min.replace(tzinfo=IST)).date()
-            <= date(2026, 11, 16)
+            <= through
         ),
         key=lambda row: (
             parse_datetime(row.get("timestamp")) or datetime.max.replace(tzinfo=IST),
@@ -253,6 +260,47 @@ def first_five_minute_confirmation(
         end_time,
         close,
         "continues" if continues else "not_continued",
+    )
+
+
+def runtime_five_minute_confirmation(
+    bars: list[dict[str, Any]],
+    confirmation_close_time: datetime,
+    confirmation_close: float,
+    leg: str,
+) -> tuple[datetime | None, float | None, str]:
+    """Apply the production clock-aligned window to completed one-minute bars."""
+    start, _ = _next_five_minute_window(confirmation_close_time)
+    minute_bars = [
+        Bar(
+            timestamp=bar["time"],
+            open=bar["open"],
+            high=bar["high"],
+            low=bar["low"],
+            close=bar["close"],
+            volume=int(bar.get("volume") or 0),
+        )
+        for bar in bars
+        if start <= bar["time"] < start + timedelta(minutes=5)
+    ]
+    aggregate = _complete_five_minute_bar(minute_bars, start)
+    if aggregate is None:
+        return None, None, "data_missing"
+    continues = (
+        aggregate.close > confirmation_close
+        if leg == "CE"
+        else aggregate.close < confirmation_close
+    )
+    last_minute = max(
+        bar.timestamp
+        for bar in minute_bars
+        if bar.timestamp.replace(second=0, microsecond=0)
+        == start + timedelta(minutes=4)
+    )
+    return (
+        last_minute + timedelta(minutes=1),
+        aggregate.close,
+        "passed" if continues else "failed",
     )
 
 
@@ -543,10 +591,18 @@ def build_report(
         underlying_bars = load_underlying_bars(
             paper_data_root, entered.date(), underlying
         )
+        confirmation_bar_time = parse_datetime(
+            trade.get("confirmation_candle_time")
+        )
+        confirmation_close_time = (
+            confirmation_bar_time + timedelta(minutes=1)
+            if confirmation_bar_time is not None
+            else signal_time + timedelta(minutes=2)
+        )
         confirmation_time, confirmation_5m_close, continuation_status = (
-            first_five_minute_confirmation(
+            runtime_five_minute_confirmation(
                 underlying_bars,
-                signal_time,
+                confirmation_close_time,
                 confirmation_close,
                 str(trade["ticker"]).rsplit("_", 1)[1],
             )
@@ -560,14 +616,15 @@ def build_report(
             charge_config,
         )
         delayed_arm: ReplayArm
-        if continuation_status == "not_continued":
+        if continuation_status == "failed":
             delayed_arm = ReplayArm("not_continued")
-        elif continuation_status != "continues" or confirmation_time is None:
+        elif continuation_status != "passed" or confirmation_time is None:
             delayed_arm = ReplayArm(continuation_status)
         else:
             delayed_quote = _quote_at_or_after(quotes, confirmation_time)
             if delayed_quote is None:
-                delayed_arm = ReplayArm("delayed_ask_missing")
+                delayed_arm = ReplayArm("expired")
+                continuation_status = "expired"
             else:
                 delayed_arm = simulate_fixed_exit(
                     candles,
@@ -682,11 +739,13 @@ def build_report(
             "## Paired simulator",
             "",
             "- Baseline entry: recorded PAPER ask fill and original quantity.",
-            "- Delayed entry: first complete run of five contiguous one-minute "
-            "underlying bars from the signal; requires the 5-minute close to "
-            "continue directionally beyond the recorded one-minute "
-            "confirmation close; entry at the first valid archived option ask "
-            "at or after that 5-minute close.",
+            "- Variant entry: the clock-aligned five-minute candle uses the "
+            "completed one-minute bars whose timestamps are in "
+            "`[HH:MM:00, HH:MM+5:00)`, accepting seconds offsets. All five "
+            "minute buckets must be present, including the last completed "
+            "minute. The candle close must strictly continue beyond the "
+            "recorded one-minute confirmation close; entry uses the first "
+            "valid archived option ask after the last minute has closed.",
             "- Both arms use a 10% premium stop and a 20% target recalculated "
             "from that arm's ask entry, with identical quantity. If stop and "
             "target touch in one candle, stop wins. Stops use archived bid "
@@ -699,8 +758,11 @@ def build_report(
             "- The best-trade exclusion removes the single highest baseline "
             "net-R trade from both arms to preserve the paired sample.",
             "",
-            "| Period | Arm | Mean net R | Paired n | Non-continuations | Missing/incomplete |",
-            "| --- | --- | ---: | ---: | ---: | ---: |",
+            "| Period | Reached | Passed | Failed | Expired | Data missing | "
+            "Baseline n | Baseline mean net R | Baseline mean net ₹ | "
+            "Variant n | Variant mean net R | Variant mean net ₹ |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+            "---: | ---: | ---: | ---: |",
         ]
     )
     period_rows: dict[str, list[dict[str, Any]]] = {
@@ -710,8 +772,10 @@ def build_report(
         "12-Nov to 16-Nov": [
             row for row in records if row["date"] >= SECOND_PERIOD_START
         ],
+        "All 51": list(records),
     }
     period_means: dict[tuple[str, str], float | None] = {}
+    paired_by_period: dict[str, list[dict[str, Any]]] = {}
     for period, rows in period_rows.items():
         period_paired = [
             row
@@ -719,29 +783,30 @@ def build_report(
             if row["baseline"].status == "complete"
             and row["delayed"].status in {"complete", "not_continued"}
         ]
-        for arm_name, display in (
-            ("baseline", "Baseline"),
-            ("delayed", "Delayed"),
-        ):
-            mean, count = _summary(period_paired, arm_name)
+        paired_by_period[period] = period_paired
+        for arm_name in ("baseline", "delayed"):
+            mean, _ = _summary(period_paired, arm_name)
             period_means[(period, arm_name)] = mean
-            non_continuations = sum(
-                row["delayed"].status == "not_continued"
-                for row in period_paired
+        baseline_mean_r, baseline_count = _summary(period_paired, "baseline")
+        delayed_mean_r, delayed_count = _summary(period_paired, "delayed")
+        baseline_mean_rupees = _mean_net_rupees(period_paired, "baseline")
+        delayed_mean_rupees = _mean_net_rupees(period_paired, "delayed")
+        counts = {
+            status: sum(
+                row["continuation_status"] == status for row in rows
             )
-            missing = len(rows) - len(period_paired)
-            output.append(
-                f"| {period} | {display} | {_fmt(mean)} | {count} | "
-                f"{non_continuations if arm_name == 'delayed' else 0} | "
-                f"{missing} |"
-            )
+            for status in ("passed", "failed", "expired", "data_missing")
+        }
+        output.append(
+            f"| {period} | {len(rows)} | {counts['passed']} | "
+            f"{counts['failed']} | {counts['expired']} | "
+            f"{counts['data_missing']} | {baseline_count} | "
+            f"{_fmt(baseline_mean_r)} | {_fmt(baseline_mean_rupees)} | "
+            f"{delayed_count} | {_fmt(delayed_mean_r)} | "
+            f"{_fmt(delayed_mean_rupees)} |"
+        )
 
-    paired = [
-        row
-        for row in records
-        if row["baseline"].status == "complete"
-        and row["delayed"].status in {"complete", "not_continued"}
-    ]
+    paired = paired_by_period["All 51"]
     best_trade = max(
         paired,
         key=lambda row: row["baseline"].net_r or float("-inf"),
@@ -750,17 +815,17 @@ def build_report(
     paired_without_best = [
         row for row in paired if row is not best_trade
     ]
-    baseline_ex_best, n_ex_best = _summary(
-        paired_without_best, "baseline"
-    )
+    baseline_ex_best, _ = _summary(paired_without_best, "baseline")
     delayed_ex_best, _ = _summary(paired_without_best, "delayed")
     output.extend(
         [
             "",
             "### Without the best trade",
             "",
-            "| Excluded trade (highest baseline net R) | Arm | Mean net R | Paired n |",
-            "| --- | --- | ---: | ---: |",
+            "| Period / sample | Excluded trade | Baseline n | Baseline mean net R | "
+            "Baseline mean net ₹ | Variant n | Variant mean net R | "
+            "Variant mean net ₹ |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     excluded = (
@@ -768,11 +833,40 @@ def build_report(
         if best_trade is not None
         else "unavailable"
     )
+    for period, rows in period_rows.items():
+        without_best = [row for row in paired_by_period[period] if row is not best_trade]
+        baseline_mean_r, baseline_count = _summary(without_best, "baseline")
+        delayed_mean_r, delayed_count = _summary(without_best, "delayed")
+        output.append(
+            f"| {period} | {excluded} | {baseline_count} | "
+            f"{_fmt(baseline_mean_r)} | "
+            f"{_fmt(_mean_net_rupees(without_best, 'baseline'))} | "
+            f"{delayed_count} | {_fmt(delayed_mean_r)} | "
+            f"{_fmt(_mean_net_rupees(without_best, 'delayed'))} |"
+        )
+
+    baseline_only_without_best = [
+        row
+        for row in records
+        if row is not best_trade and row["baseline"].status == "complete"
+    ]
+    baseline_only_mean_r, baseline_only_count = _summary(
+        baseline_only_without_best, "baseline"
+    )
+    output.append("")
     output.append(
-        f"| {excluded} | Baseline | {_fmt(baseline_ex_best)} | {n_ex_best} |"
+        "Reconciliation: the earlier paired baseline without-best result "
+        "(-0.0723 R, n=49) excluded SBIN_CE-2026-11-06T10:05:04.001399+05:30-BUY "
+        "because its legacy replay window was incomplete. The corrected "
+        "clock-window has all five minute buckets; its directional outcome is "
+        "failed, so its baseline -1.0485 R is now included. The fixed-rule "
+        "without-best paired baseline is therefore -0.0918 R (n=50), matching "
+        "the baseline-only cohort."
     )
     output.append(
-        f"| {excluded} | Delayed | {_fmt(delayed_ex_best)} | {n_ex_best} |"
+        f"- Baseline-only without-best: n={baseline_only_count}, "
+        f"mean net R={_fmt(baseline_only_mean_r)}, "
+        f"mean net ₹={_fmt(_mean_net_rupees(baseline_only_without_best, 'baseline'))}."
     )
 
     period1_wins = (
@@ -806,7 +900,7 @@ def build_report(
             "",
             "## Trade-level arm results",
             "",
-            "| Trade | Period | Run-up offline % | 5m result | Baseline net R | Delayed net R |",
+            "| Trade | Period | Run-up offline % | 5m result | Baseline net R | Variant net R |",
             "| --- | --- | ---: | --- | ---: | ---: |",
         ]
     )
@@ -818,14 +912,163 @@ def build_report(
         )
         output.append(
             f"| {row['trade']['trade_id']} | {_period_label(row['date'])} | "
-            f"{_fmt(row['offline_move'])} | {row['delayed'].status} | "
+            f"{_fmt(row['offline_move'])} | {row['continuation_status']} | "
             f"{_fmt(row['baseline'].net_r)} | {_fmt(delayed_r)} |"
         )
     return "\n".join(output) + "\n"
 
 
+def build_followup_session_report(
+    trades: list[dict[str, Any]],
+    paper_data_root: Path,
+    candle_root: Path,
+    charge_config: dict[str, Any] | None = None,
+) -> str:
+    if not trades:
+        return ""
+    target_date = date(2026, 11, 17)
+    if any(
+        (parse_datetime(trade.get("timestamp")) or datetime.min.replace(tzinfo=IST)).date()
+        != target_date
+        for trade in trades
+    ):
+        raise ValueError("The follow-up sample must contain only 2026-11-17 trades")
+
+    counts = {status: 0 for status in ("passed", "failed", "expired", "data_missing")}
+    records: list[dict[str, Any]] = []
+    for trade in trades:
+        signal_time = parse_datetime(trade.get("signal_time"))
+        confirmation_bar_time = parse_datetime(
+            trade.get("confirmation_candle_time")
+        )
+        confirmation_close = _number(trade.get("confirmation_close"))
+        if signal_time is None or confirmation_close is None:
+            raise ValueError(f"Missing 17-Nov replay input: {trade.get('trade_id')}")
+        confirmation_close_time = (
+            confirmation_bar_time + timedelta(minutes=1)
+            if confirmation_bar_time is not None
+            else signal_time + timedelta(minutes=2)
+        )
+        underlying = str(trade["ticker"]).rsplit("_", 1)[0]
+        bars = load_underlying_bars(paper_data_root, target_date, underlying)
+        completion_time, _, status = runtime_five_minute_confirmation(
+            bars,
+            confirmation_close_time,
+            confirmation_close,
+            str(trade["ticker"]).rsplit("_", 1)[1],
+        )
+        candles, quotes = load_option_market(candle_root, trade)
+        entry_time = parse_datetime(trade.get("entry_time")) or parse_datetime(
+            trade.get("timestamp")
+        )
+        quantity = _number(trade.get("quantity"))
+        baseline_entry = _number(trade.get("entry"))
+        if entry_time is None or quantity is None or baseline_entry is None:
+            raise ValueError(f"Missing 17-Nov trade inputs: {trade.get('trade_id')}")
+        baseline = simulate_fixed_exit(
+            candles,
+            quotes,
+            entry_time,
+            baseline_entry,
+            quantity,
+            charge_config,
+        )
+        if status == "failed":
+            variant = ReplayArm("not_continued")
+        elif status == "passed" and completion_time is not None:
+            delayed_quote = _quote_at_or_after(quotes, completion_time)
+            if delayed_quote is None:
+                status = "expired"
+                variant = ReplayArm("expired")
+            else:
+                variant = simulate_fixed_exit(
+                    candles,
+                    quotes,
+                    delayed_quote["time"],
+                    delayed_quote["ask"],
+                    quantity,
+                    charge_config,
+                )
+        else:
+            variant = ReplayArm(status)
+        counts[status] += 1
+        records.append(
+            {
+                "trade": trade,
+                "status": status,
+                "baseline": baseline,
+                "delayed": variant,
+            }
+        )
+
+    paired = [
+        row
+        for row in records
+        if row["baseline"].status == "complete"
+        and row["delayed"].status in {"complete", "not_continued"}
+    ]
+    best_trade = max(
+        paired,
+        key=lambda row: row["baseline"].net_r or float("-inf"),
+        default=None,
+    )
+    paired_without_best = [
+        row for row in paired if row is not best_trade
+    ]
+    excluded = (
+        str(best_trade["trade"]["trade_id"])
+        if best_trade is not None
+        else "unavailable"
+    )
+    baseline_mean_r, baseline_count = _summary(paired, "baseline")
+    variant_mean_r, variant_count = _summary(paired, "delayed")
+    baseline_mean_rupees = _mean_net_rupees(paired, "baseline")
+    variant_mean_rupees = _mean_net_rupees(paired, "delayed")
+    baseline_ex_best, baseline_ex_best_count = _summary(
+        paired_without_best, "baseline"
+    )
+    variant_ex_best, variant_ex_best_count = _summary(
+        paired_without_best, "delayed"
+    )
+    return "\n".join(
+        [
+            "",
+            "## 17-Nov follow-up",
+            "",
+            f"- Reached: {len(trades)}; passed: {counts['passed']}; "
+            f"failed: {counts['failed']}; expired: {counts['expired']}; "
+            f"data_missing: {counts['data_missing']}.",
+            "",
+            "| Sample | Excluded trade | Baseline n | Baseline mean net R | "
+            "Baseline mean net ₹ | Variant n | Variant mean net R | "
+            "Variant mean net ₹ |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            f"| All 5 | — | {baseline_count} | {_fmt(baseline_mean_r)} | "
+            f"{_fmt(baseline_mean_rupees)} | {variant_count} | "
+            f"{_fmt(variant_mean_r)} | {_fmt(variant_mean_rupees)} |",
+            f"| Without best | {excluded} | {baseline_ex_best_count} | "
+            f"{_fmt(baseline_ex_best)} | "
+            f"{_fmt(_mean_net_rupees(paired_without_best, 'baseline'))} | "
+            f"{variant_ex_best_count} | {_fmt(variant_ex_best)} | "
+            f"{_fmt(_mean_net_rupees(paired_without_best, 'delayed'))} |",
+            "",
+        ]
+    )
+
+
 def _fmt(value: float | None) -> str:
     return "N/A" if value is None else f"{value:.4f}"
+
+
+def _mean_net_rupees(rows: list[dict[str, Any]], arm_name: str) -> float | None:
+    values = []
+    for row in rows:
+        arm = row[arm_name]
+        if arm.status == "complete":
+            values.append(arm.net_rupees or 0.0)
+        elif arm_name == "delayed" and arm.status == "not_continued":
+            values.append(0.0)
+    return sum(values) / len(values) if values else None
 
 
 def main() -> int:
@@ -851,12 +1094,30 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        trades = _read_jsonl(args.trades)
+        all_trades = _read_jsonl(args.trades, through=date(2026, 11, 17))
+        trades = [
+            trade
+            for trade in all_trades
+            if (parse_datetime(trade.get("timestamp")) or datetime.min.replace(tzinfo=IST)).date()
+            <= date(2026, 11, 16)
+        ]
+        followup_trades = [
+            trade
+            for trade in all_trades
+            if (parse_datetime(trade.get("timestamp")) or datetime.min.replace(tzinfo=IST)).date()
+            == date(2026, 11, 17)
+        ]
         config = json.loads(args.config.read_text(encoding="utf-8"))
         report = build_report(
             trades,
             args.candles,
             args.paper_data,
+            config,
+        )
+        report += build_followup_session_report(
+            followup_trades,
+            args.paper_data,
+            args.candles,
             config,
         )
         args.output.write_text(report, encoding="utf-8", newline="\n")

@@ -142,9 +142,13 @@ def test_startup_logs_all_requested_runtime_flags(caplog):
 
 def test_run_up_veto_is_enabled_in_startup_log_by_default(caplog):
     with caplog.at_level("INFO", logger="market_bot.kite_main"):
-        _log_runtime_flags({}, "PAPER")
+        flags = _log_runtime_flags({}, "PAPER")
 
     assert "run_up_veto_v2=True" in caplog.text
+    assert flags["run_up_lookback_backfill_v2"] is False
+    assert flags["entry_5m_continuation_v1"] is False
+    assert "run_up_lookback_backfill_v2=False" in caplog.text
+    assert "entry_5m_continuation_v1=False" in caplog.text
 
 
 def test_scenario_tool_rejects_non_temporary_output(monkeypatch):
