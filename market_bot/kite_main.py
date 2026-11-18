@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from uuid import uuid4
 from collections import deque
 from datetime import date, datetime, time as time_type, timedelta, timezone
@@ -124,6 +125,8 @@ PAPER_FLAG_DEFAULTS = {
     "symbol_side_stop_breaker_v1": False,
     "same_side_cluster_limit_v1": False,
     "stock_tier_enabled_v1": True,
+    "run_up_lookback_backfill_v2": False,
+    "entry_5m_continuation_v1": False,
 }
 PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
     {
@@ -132,13 +135,15 @@ PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
         "tier_risk_counters_v1",
         "symbol_side_stop_breaker_v1",
         "same_side_cluster_limit_v1",
+        "run_up_lookback_backfill_v2",
+        "entry_5m_continuation_v1",
     }
 )
 
 
 def _log_runtime_flags(
     config: Dict[str, Any], mode: str, *, simulation_mode: bool = False
-) -> None:
+) -> Dict[str, Any]:
     defaults = {
         "partial_profit_v2": True,
         "entry_feature_logging_v2": True,
@@ -157,11 +162,21 @@ def _log_runtime_flags(
     if mode == "PAPER":
         defaults["gate_state_logging_v1"] = True
         defaults["premarket_context_v1"] = True
+    for key in PAPER_CHANGE_KEYS:
+        defaults.setdefault(
+            key, key not in PAPER_ONLY_EXPERIMENT_FLAGS
+        )
+    for key, value in config.items():
+        if isinstance(value, bool):
+            defaults.setdefault(key, value)
     configured_flags = {
         key: bool(config.get(key, default)) for key, default in defaults.items()
     }
     configured_flags["stock_open_risk_share"] = config.get(
         "stock_open_risk_share", 1.0
+    )
+    configured_flags["entry_5m_max_ask_drift_pct"] = config.get(
+        "entry_5m_max_ask_drift_pct"
     )
     for key in PAPER_ONLY_EXPERIMENT_FLAGS:
         configured_flags[key] = (
@@ -173,6 +188,53 @@ def _log_runtime_flags(
         " ".join(
             f"{key}={value}" for key, value in configured_flags.items()
         ),
+    )
+    return configured_flags
+
+
+def _next_five_minute_window(after: datetime) -> tuple[datetime, datetime]:
+    boundary = after.replace(second=0, microsecond=0)
+    if boundary < after:
+        boundary += timedelta(minutes=1)
+    remainder = boundary.minute % 5
+    if remainder:
+        boundary += timedelta(minutes=5 - remainder)
+    return boundary, boundary + timedelta(minutes=5)
+
+
+def _complete_five_minute_bar(
+    bars: list[Bar], start: datetime
+) -> Bar | None:
+    expected = [
+        start + timedelta(minutes=offset) for offset in range(5)
+    ]
+    indexed = {
+        bar.timestamp: bar
+        for bar in bars
+        if isinstance(getattr(bar, "timestamp", None), datetime)
+    }
+    minutes = [indexed.get(timestamp) for timestamp in expected]
+    if any(bar is None for bar in minutes):
+        return None
+    first = minutes[0]
+    last = minutes[-1]
+    try:
+        values = [
+            float(value)
+            for bar in minutes
+            for value in (bar.open, bar.high, bar.low, bar.close)
+        ]
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if any(not math.isfinite(value) for value in values):
+        return None
+    return Bar(
+        timestamp=start,
+        open=float(first.open),
+        high=max(float(bar.high) for bar in minutes),
+        low=min(float(bar.low) for bar in minutes),
+        close=float(last.close),
+        volume=sum(int(bar.volume) for bar in minutes),
     )
 
 
@@ -999,8 +1061,14 @@ class KiteTradingBot:
             )
         )
         builder = getattr(self, "bar_builder", None)
-        if token is None or builder is None:
-            return prior_60m_option_move([], signal_time)
+        if token is None:
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "unmapped_contract_token"
+            )
+        if builder is None:
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "bar_builder_unavailable"
+            )
         try:
             bars = builder.get_bars(int(token), limit=121)
         except Exception:
@@ -1008,8 +1076,187 @@ class KiteTradingBot:
                 "[%s] Could not read option bars for run_up_veto_v2",
                 symbol,
             )
-            return prior_60m_option_move([], signal_time)
-        return prior_60m_option_move(bars, signal_time)
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "bar_read_error"
+            )
+        if not bars:
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "warm_up_after_restart"
+            )
+        measurement = prior_60m_option_move(bars, signal_time)
+        started_at = getattr(self, "_runtime_started_at", None)
+        cutoff = self._journal_datetime(signal_time)
+        if (
+            measurement.fail_open_cause == "missing_minute"
+            and isinstance(started_at, datetime)
+            and cutoff is not None
+            and cutoff - started_at < timedelta(minutes=60)
+        ):
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "warm_up_after_restart"
+            )
+        return measurement
+
+    def _poll_run_up_backfill(
+        self, symbol: str, signal_time: Any, cause: str
+    ) -> tuple[str, OptionMoveMeasurement | None]:
+        token = (
+            (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                symbol
+            )
+        )
+        if token is None:
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None, "lookback_incomplete", "unmapped_contract_token"
+                ),
+            )
+        cutoff = self._journal_datetime(signal_time)
+        if cutoff is None:
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None, "lookback_incomplete", "invalid_signal_time"
+                ),
+            )
+        if cause == "session_history_incomplete":
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None, "lookback_incomplete", "session_history_incomplete"
+                ),
+            )
+
+        key = (int(token), cutoff.isoformat())
+        futures = getattr(self, "_run_up_backfill_futures", None)
+        if not isinstance(futures, dict):
+            futures = {}
+            self._run_up_backfill_futures = futures
+        request = futures.get(key)
+        if request is None:
+            pending_requests = [
+                future
+                for future, _ in futures.values()
+                if not future.done()
+            ]
+            if pending_requests:
+                logger.warning(
+                    "[%s] Run-up historical backfill failed open; "
+                    "cause=historical_api_rate_limit_deferred",
+                    symbol,
+                )
+                return (
+                    "complete",
+                    OptionMoveMeasurement(
+                        None,
+                        "lookback_incomplete",
+                        "historical_api_rate_limit_deferred",
+                    ),
+                )
+            executor = getattr(self, "_run_up_backfill_executor", None)
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="run-up-backfill"
+                )
+                self._run_up_backfill_executor = executor
+            lock = getattr(self, "_run_up_backfill_rate_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._run_up_backfill_rate_lock = lock
+            last_request = getattr(self, "_run_up_backfill_last_request", 0.0)
+
+            def fetch() -> list[Bar]:
+                nonlocal last_request
+                with lock:
+                    delay = 1.0 - (time.monotonic() - last_request)
+                    if delay > 0:
+                        time.sleep(delay)
+                    self._run_up_backfill_last_request = time.monotonic()
+                provider = getattr(self, "_run_up_backfill_provider", None)
+                if provider is None:
+                    provider = KiteHistoricalProvider(
+                        self.config["kite_api_key"],
+                        self.config["kite_access_token"],
+                    )
+                    self._run_up_backfill_provider = provider
+                history = provider.fetch_history(
+                    int(token),
+                    cutoff - timedelta(minutes=60),
+                    cutoff + timedelta(minutes=1),
+                    interval="minute",
+                )
+                return [
+                    Bar(
+                        timestamp=row["time"],
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        volume=int(row["volume"]),
+                    )
+                    for row in history
+                ]
+
+            future = executor.submit(fetch)
+            request = (future, time.monotonic())
+            futures[key] = request
+            logger.info(
+                "[%s] Run-up historical backfill requested; cause=%s",
+                symbol,
+                cause,
+            )
+        future, requested_at = request
+        if not future.done():
+            if time.monotonic() - requested_at < 15.0:
+                return "pending", None
+            future.cancel()
+            futures.pop(key, None)
+            logger.warning(
+                "[%s] Run-up historical backfill failed open; "
+                "cause=historical_api_timeout",
+                symbol,
+            )
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None, "lookback_incomplete", "historical_api_timeout"
+                ),
+            )
+        futures.pop(key, None)
+        try:
+            bars = future.result()
+        except Exception as error:
+            logger.exception(
+                "[%s] Run-up historical backfill failed open; cause=%s",
+                symbol,
+                type(error).__name__,
+            )
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None,
+                    "lookback_incomplete",
+                    f"historical_api_error:{type(error).__name__}",
+                ),
+            )
+        measurement = prior_60m_option_move(bars, cutoff)
+        if measurement.value_pct is None:
+            return (
+                "complete",
+                OptionMoveMeasurement(
+                    None,
+                    "lookback_incomplete",
+                    "historical_api_incomplete",
+                ),
+            )
+        logger.info(
+            "[%s] Run-up historical backfill completed; "
+            "prior_60m_option_move_pct=%.4f",
+            symbol,
+            measurement.value_pct,
+        )
+        return "complete", measurement
 
     @staticmethod
     def _underlying_symbol(symbol: str) -> str:
@@ -2535,6 +2782,7 @@ class KiteTradingBot:
         self._scorer_bar_observations_seen = set()
         self.config_path = Path(config_path)
         self.config = load_strategy_config(self.config_path)
+        self._runtime_started_at = datetime.now(IST)
         self.config["kite_api_key"] = os.getenv("KITE_API_KEY")
         self.config["kite_access_token"] = os.getenv("KITE_ACCESS_TOKEN")
         self.config["telegram_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -2567,7 +2815,7 @@ class KiteTradingBot:
             self.mode = "PAPER"
         if self.mode == "PAPER":
             self.config.setdefault("gate_state_logging_v1", True)
-        _log_runtime_flags(
+        self.runtime_flags = _log_runtime_flags(
             self.config, self.mode, simulation_mode=self.simulation_mode
         )
         self.config_hash = strategy_config_hash(self.config)
@@ -6879,6 +7127,37 @@ class KiteTradingBot:
                 "momentum_body_ratio_threshold"
             ),
             "direction_rule": pending.get("direction_rule"),
+            "run_up_veto_status": pending.get("run_up_veto_status"),
+            "run_up_fail_open_cause": pending.get("run_up_fail_open_cause"),
+            "five_min_confirmation_time": (
+                pending["five_min_confirmation_time"].isoformat()
+                if pending.get("five_min_confirmation_time")
+                else None
+            ),
+            "five_min_confirmation_close": pending.get(
+                "five_min_confirmation_close"
+            ),
+            "five_min_candle_start": (
+                pending["five_min_candle_start"].isoformat()
+                if pending.get("five_min_candle_start")
+                else None
+            ),
+            "five_min_candle_end": (
+                pending["five_min_candle_end"].isoformat()
+                if pending.get("five_min_candle_end")
+                else None
+            ),
+            "five_min_candle_close": pending.get("five_min_candle_close"),
+            "five_min_continuation_status": pending.get(
+                "five_min_continuation_status"
+            ),
+            "five_min_wait_seconds": pending.get("five_min_wait_seconds"),
+            "five_min_ask_at_confirmation": pending.get(
+                "five_min_confirmation_ask"
+            ),
+            "five_min_ask_at_fill": pending.get("five_min_ask_at_fill"),
+            "five_min_ask_drift_pct": pending.get("five_min_ask_drift_pct"),
+            "five_min_reason": pending.get("five_min_reason"),
             "confirmation_momentum_candle": fields.get(
                 "confirmation_momentum_candle"
             ),
@@ -6916,6 +7195,8 @@ class KiteTradingBot:
             )
             if filter_name and filter_name != "filter":
                 payload["filter_name"] = filter_name
+        if event == "confirmation_waiting_5m":
+            payload["outcome_detail"] = "pending"
         if event == "confirmed_trade":
             trade = getattr(self, "trade_journal", None)
             trade_record = (
@@ -7057,6 +7338,7 @@ class KiteTradingBot:
         reasons: list[str],
         support_candidate: Optional[SupportResistanceReversal],
         now: datetime,
+        ema_reentry_context: Optional[dict] = None,
         paper_change_attributions: Optional[list[str]] = None,
         paper_change_gate_evaluations: Optional[dict] = None,
     ) -> str:
@@ -7121,7 +7403,14 @@ class KiteTradingBot:
             "leg": leg,
             "signal": signal,
             "score": int(score),
-            "route": "support_reversal" if support_route else "scored",
+            "route": (
+                "ema_reentry"
+                if ema_reentry_context is not None
+                else "support_reversal"
+                if support_route
+                else "scored"
+            ),
+            "ema_reentry_context": ema_reentry_context,
             "strategy_variant": strategy_variant,
             "signal_time": signal_time,
             "signal_bar": signal_bar_payload,
@@ -7229,6 +7518,7 @@ class KiteTradingBot:
         confirmation_close: Optional[float] = None,
         confirmation_result: Optional[str] = None,
         confirmation_quote: Optional[dict] = None,
+        **event_fields: Any,
     ) -> None:
         metrics = self._option_quote_metrics(
             confirmation_quote
@@ -7239,8 +7529,14 @@ class KiteTradingBot:
         event = (
             "rejected_by_confirmation"
             if reason.startswith("confirmation_failed_")
+            else "filter_failed_after_confirmation"
+            if reason == "five_min_no_continuation"
             else "expired_signal"
-            if reason == "expired_signal"
+            if reason in {
+                "expired_signal",
+                "five_min_expired",
+                "five_min_data_missing",
+            }
             else "filter_failed_after_confirmation"
             if reason == "filter_failed_after_confirmation"
             else "confirmation_error"
@@ -7251,6 +7547,8 @@ class KiteTradingBot:
             else None
         )
         self._pending_entries.pop(key, None)
+        if reason.startswith("five_min_"):
+            pending["five_min_reason"] = reason
         self._log_entry_confirmation_event(
             pending,
             event,
@@ -7268,6 +7566,7 @@ class KiteTradingBot:
             confirmation_quote_age_seconds=metrics["age_seconds"],
             cancellation_reason=reason,
             cancellation_sub_reason=sub_reason,
+            **event_fields,
         )
 
     def _confirmed_entry_filter_failure(
@@ -7460,7 +7759,10 @@ class KiteTradingBot:
         if not self._live_entry_allowed(symbol):
             return "live_entry_policy"
         can_open, reason = self._can_open_trade_for_signal(
-            symbol, "BUY", pending["score"]
+            symbol,
+            "BUY",
+            pending["score"],
+            ema_reentry_confirmed=pending.get("ema_reentry_context") is not None,
         )
         if not can_open:
             lowered = reason.lower()
@@ -7491,13 +7793,37 @@ class KiteTradingBot:
         for key, pending in due:
             expected_start = pending["confirmation_start"]
             expected_close = expected_start + timedelta(minutes=1)
+            if pending.get("five_min_candle_end") is not None:
+                five_min_end = pending["five_min_candle_end"]
+                if (
+                    pending.get("five_min_passed")
+                    and now > five_min_end + timedelta(minutes=5)
+                ):
+                    self._cancel_confirmed_entry(
+                        key,
+                        pending,
+                        now,
+                        reason="five_min_expired",
+                        sub_reason="no_valid_ask_within_five_minutes",
+                    )
+                    continue
             if confirmation_time > expected_start:
                 self._cancel_confirmed_entry(
                     key,
                     pending,
                     now,
-                    reason="expired_signal",
-                    sub_reason="missing_candle",
+                    reason=(
+                        "five_min_data_missing"
+                        if pending.get("five_min_candle_end") is not None
+                        and not pending.get("five_min_passed")
+                        else "expired_signal"
+                    ),
+                    sub_reason=(
+                        "five_minute_bar_not_completed"
+                        if pending.get("five_min_candle_end") is not None
+                        and not pending.get("five_min_passed")
+                        else "missing_candle"
+                    ),
                 )
                 continue
             if now < expected_close:
@@ -7507,8 +7833,18 @@ class KiteTradingBot:
                     key,
                     pending,
                     now,
-                    reason="expired_signal",
-                    sub_reason="missing_candle",
+                    reason=(
+                        "five_min_data_missing"
+                        if pending.get("five_min_candle_end") is not None
+                        and not pending.get("five_min_passed")
+                        else "expired_signal"
+                    ),
+                    sub_reason=(
+                        "five_minute_bar_not_completed"
+                        if pending.get("five_min_candle_end") is not None
+                        and not pending.get("five_min_passed")
+                        else "missing_candle"
+                    ),
                     confirmation_bar=confirmation_bar,
                 )
                 continue
@@ -7542,11 +7878,94 @@ class KiteTradingBot:
                     confirmation_bar=confirmation_bar,
                 )
                 continue
-            passed = (
-                close > pending["signal_close"]
-                if pending["leg"] == "CE"
-                else close < pending["signal_close"]
-            )
+            if pending.get("confirmation_already_passed"):
+                close = float(pending["confirmation_close"])
+                passed = True
+            elif pending.get("five_min_passed"):
+                close = float(pending["five_min_candle_close"])
+                passed = True
+            elif pending.get("five_min_candle_start") is not None:
+                underlying_token = (
+                    (getattr(self, "config", {}).get("instrument_tokens", {}) or {})
+                    .get(pending["underlying"])
+                )
+                builder = getattr(self, "bar_builder", None)
+                try:
+                    minute_bars = (
+                        builder.get_bars(underlying_token, limit=10)
+                        if builder is not None and underlying_token is not None
+                        else []
+                    )
+                except Exception:
+                    logger.exception(
+                        "[%s] Could not read one-minute bars for 5-minute "
+                        "continuation",
+                        pending["symbol"],
+                    )
+                    minute_bars = []
+                five_min_bar = _complete_five_minute_bar(
+                    minute_bars, pending["five_min_candle_start"]
+                )
+                if five_min_bar is None:
+                    self._cancel_confirmed_entry(
+                        key,
+                        pending,
+                        now,
+                        reason="five_min_data_missing",
+                        sub_reason="incomplete_or_unreadable_five_minute_candle",
+                        five_min_continuation_status="data_missing",
+                        five_min_wait_seconds=max(
+                            0.0,
+                            (now - pending["five_min_confirmation_time"]).total_seconds(),
+                        ),
+                    )
+                    continue
+                close = five_min_bar.close
+                passed = (
+                    close > pending["five_min_confirmation_close"]
+                    if pending["leg"] == "CE"
+                    else close < pending["five_min_confirmation_close"]
+                )
+                pending["five_min_candle_close"] = close
+                pending["five_min_candle_high"] = five_min_bar.high
+                pending["five_min_candle_low"] = five_min_bar.low
+                pending["five_min_passed"] = passed
+                pending["confirmation_already_passed"] = passed
+                pending["confirmation_close"] = close
+                pending["five_min_continuation_status"] = (
+                    "passed" if passed else "failed"
+                )
+                pending["five_min_wait_seconds"] = max(
+                    0.0,
+                    (now - pending["five_min_confirmation_time"]).total_seconds(),
+                )
+                if not passed:
+                    pending["five_min_reason"] = "five_min_no_continuation"
+                    self.accuracy_filters.record_entry(
+                        pending["symbol"], now.timestamp()
+                    )
+                    self._cancel_confirmed_entry(
+                        key,
+                        pending,
+                        now,
+                        reason="five_min_no_continuation",
+                        sub_reason="strict_directional_close_not_met",
+                        confirmation_bar=confirmation_bar,
+                        confirmation_close=close,
+                        confirmation_result="failed",
+                        five_min_continuation_status="failed",
+                        five_min_candle_close=close,
+                        five_min_wait_seconds=pending[
+                            "five_min_wait_seconds"
+                        ],
+                    )
+                    continue
+            else:
+                passed = (
+                    close > pending["signal_close"]
+                    if pending["leg"] == "CE"
+                    else close < pending["signal_close"]
+                )
             if not passed:
                 self._cancel_confirmed_entry(
                     key,
@@ -7578,6 +7997,30 @@ class KiteTradingBot:
                 )
                 continue
             if failure is not None:
+                if (
+                    pending.get("five_min_passed")
+                    and failure in {"stale_quote", "quote_outside_spread"}
+                    and now
+                    < pending["five_min_candle_end"] + timedelta(minutes=5)
+                ):
+                    pending["confirmation_start"] = (
+                        confirmation_time + timedelta(minutes=1)
+                    )
+                    pending["five_min_ask_wait_reason"] = failure
+                    self._log_entry_confirmation_event(
+                        pending,
+                        "confirmation_waiting_5m_ask",
+                        now,
+                        five_min_continuation_status="passed",
+                        five_min_wait_seconds=max(
+                            0.0,
+                            (
+                                now - pending["five_min_confirmation_time"]
+                            ).total_seconds(),
+                        ),
+                        five_min_reason=failure,
+                    )
+                    continue
                 self._cancel_confirmed_entry(
                     key,
                     pending,
@@ -7587,6 +8030,50 @@ class KiteTradingBot:
                     confirmation_bar=confirmation_bar,
                     confirmation_close=close,
                     confirmation_result="passed",
+                )
+                continue
+
+            if (
+                self._paper_change_enabled("entry_5m_continuation_v1")
+                and pending.get("five_min_candle_start") is None
+            ):
+                candle_start, candle_end = _next_five_minute_window(
+                    expected_close
+                )
+                confirmation_quote = self.option_quote_cache.get(
+                    pending["symbol"], {}
+                )
+                confirmation_metrics = self._option_quote_metrics(
+                    confirmation_quote, now=now
+                )
+                pending.update(
+                    {
+                        "five_min_confirmation_time": expected_close,
+                        "five_min_confirmation_close": close,
+                        "five_min_confirmation_ask": confirmation_metrics["ask"],
+                        "five_min_candle_start": candle_start,
+                        "five_min_candle_end": candle_end,
+                        "five_min_continuation_status": "reached",
+                        "five_min_wait_seconds": max(
+                            0.0, (now - expected_close).total_seconds()
+                        ),
+                    }
+                )
+                pending["confirmation_start"] = (
+                    candle_end - timedelta(minutes=1)
+                )
+                self._log_entry_confirmation_event(
+                    pending,
+                    "confirmation_waiting_5m",
+                    now,
+                    confirmation_candle_time=confirmation_time.isoformat(),
+                    confirmation_close=close,
+                    confirmation_ask=confirmation_metrics["ask"],
+                    five_min_continuation_status="reached",
+                    five_min_candle_start=candle_start.isoformat(),
+                    five_min_candle_end=candle_end.isoformat(),
+                    five_min_wait_seconds=pending["five_min_wait_seconds"],
+                    five_min_reason=None,
                 )
                 continue
 
@@ -7605,6 +8092,28 @@ class KiteTradingBot:
                 0.0,
                 (now - (pending["signal_time"] + timedelta(minutes=1))).total_seconds(),
             )
+            if pending.get("five_min_passed"):
+                ask_at_fill = metrics["ask"]
+                ask_at_confirmation = pending.get("five_min_confirmation_ask")
+                drift_pct = (
+                    (ask_at_fill - ask_at_confirmation)
+                    / ask_at_confirmation
+                    * 100.0
+                    if ask_at_fill is not None
+                    and ask_at_confirmation not in (None, 0)
+                    else None
+                )
+                pending.update(
+                    {
+                        "five_min_ask_at_fill": ask_at_fill,
+                        "five_min_ask_drift_pct": drift_pct,
+                        "five_min_reason": "passed",
+                        "five_min_wait_seconds": max(
+                            0.0,
+                            (now - pending["five_min_confirmation_time"]).total_seconds(),
+                        ),
+                    }
+                )
             metadata = {
                 "signal_id": pending["signal_id"],
                 "signal_uid": pending.get("signal_uid"),
@@ -7626,6 +8135,35 @@ class KiteTradingBot:
                     "order": now.isoformat(timespec="seconds"),
                 },
                 "confirmation_close": close,
+                "five_min_confirmation_time": (
+                    pending["five_min_confirmation_time"].isoformat()
+                    if pending.get("five_min_confirmation_time")
+                    else None
+                ),
+                "five_min_confirmation_close": pending.get(
+                    "five_min_confirmation_close"
+                ),
+                "five_min_candle_start": (
+                    pending["five_min_candle_start"].isoformat()
+                    if pending.get("five_min_candle_start")
+                    else None
+                ),
+                "five_min_candle_end": (
+                    pending["five_min_candle_end"].isoformat()
+                    if pending.get("five_min_candle_end")
+                    else None
+                ),
+                "five_min_candle_close": pending.get("five_min_candle_close"),
+                "five_min_continuation_status": pending.get(
+                    "five_min_continuation_status"
+                ),
+                "five_min_wait_seconds": pending.get("five_min_wait_seconds"),
+                "five_min_ask_at_confirmation": pending.get(
+                    "five_min_confirmation_ask"
+                ),
+                "five_min_ask_at_fill": pending.get("five_min_ask_at_fill"),
+                "five_min_ask_drift_pct": pending.get("five_min_ask_drift_pct"),
+                "five_min_reason": pending.get("five_min_reason"),
                 "confirmation_result": "passed",
                 "confirmation_bid": metrics["bid"],
                 "confirmation_ask": metrics["ask"],
@@ -7678,6 +8216,49 @@ class KiteTradingBot:
                     "entry_feature_null_reasons", {}
                 ),
             }
+            if (
+                self._paper_change_enabled("run_up_veto_v2")
+                and self._paper_change_enabled(
+                    "run_up_lookback_backfill_v2"
+                )
+            ):
+                live_measurement = self._run_up_veto_measurement(
+                    pending["symbol"], pending["signal_time"]
+                )
+                if live_measurement.value_pct is None:
+                    backfill_state, backfill_measurement = (
+                        self._poll_run_up_backfill(
+                            pending["symbol"],
+                            pending["signal_time"],
+                            live_measurement.fail_open_cause
+                            or "lookback_incomplete",
+                        )
+                    )
+                    if backfill_state == "pending":
+                        pending["confirmation_already_passed"] = True
+                        pending["confirmation_close"] = close
+                        pending["run_up_backfill_pending"] = True
+                        pending["confirmation_start"] = (
+                            confirmation_time + timedelta(minutes=1)
+                        )
+                        self._log_entry_confirmation_event(
+                            pending,
+                            "confirmation_waiting_run_up_backfill",
+                            now,
+                            confirmation_result="passed",
+                            confirmation_close=close,
+                            run_up_veto_status="failed_open",
+                            run_up_fail_open_cause="historical_api_pending",
+                        )
+                        continue
+                else:
+                    backfill_measurement = live_measurement
+                if backfill_measurement is not None:
+                    metadata["run_up_backfill_measurement"] = {
+                        "value_pct": backfill_measurement.value_pct,
+                        "status": backfill_measurement.status,
+                        "fail_open_cause": backfill_measurement.fail_open_cause,
+                    }
             gate_contexts = getattr(
                 self, "_signal_change_gate_evaluations", None
             )
@@ -7694,6 +8275,7 @@ class KiteTradingBot:
                     pending["score"],
                     strategy_variant=pending["strategy_variant"],
                     minimum_signal_score=pending["minimum_signal_score"],
+                    ema_reentry_context=pending.get("ema_reentry_context"),
                     confirmed_entry_metadata=metadata,
                     force_ask_fill=True,
                     entry_fill_override=(
@@ -7722,6 +8304,13 @@ class KiteTradingBot:
                     confirmation_quote=quote,
                 )
                 continue
+            pending["run_up_veto_status"] = metadata.get(
+                "run_up_veto_status", "failed_open"
+            )
+            pending["run_up_fail_open_cause"] = metadata.get(
+                "run_up_fail_open_cause",
+                "entry_revalidation_failed_before_run_up_check",
+            )
             if outcome != "trade_opened":
                 lowered = outcome.lower()
                 if "cutoff" in lowered:
@@ -7802,6 +8391,25 @@ class KiteTradingBot:
         else:
             now = now.astimezone(IST)
         for key, pending in list(getattr(self, "_pending_entries", {}).items()):
+            five_min_end = pending.get("five_min_candle_end")
+            if five_min_end is not None:
+                if now > five_min_end + timedelta(minutes=5):
+                    self._cancel_confirmed_entry(
+                        key,
+                        pending,
+                        now,
+                        reason=(
+                            "five_min_expired"
+                            if pending.get("five_min_passed")
+                            else "five_min_data_missing"
+                        ),
+                        sub_reason=(
+                            "no_valid_ask_within_five_minutes"
+                            if pending.get("five_min_passed")
+                            else "five_minute_bar_not_completed"
+                        ),
+                    )
+                continue
             expected_close = pending["confirmation_start"] + timedelta(minutes=1)
             if (now - expected_close).total_seconds() > 5:
                 self._cancel_confirmed_entry(
@@ -8678,7 +9286,10 @@ class KiteTradingBot:
                 getattr(self, "entry_mode", "immediate") == "confirmed"
                 and self._options_enabled()
                 and symbol.endswith(("_CE", "_PE"))
-                and ema_reentry_context is None
+                and (
+                    ema_reentry_context is None
+                    or self._paper_change_enabled("entry_5m_continuation_v1")
+                )
                 and not (
                     getattr(market_score, "strategy_variant", None)
                     == "paper_underlying_support_reversal"
@@ -8695,6 +9306,7 @@ class KiteTradingBot:
                     reasons=market_score.reasons,
                     support_candidate=support_candidate,
                     now=now,
+                    ema_reentry_context=ema_reentry_context,
                     paper_change_attributions=list(
                         self._signal_change_attributions.get(symbol, [])
                     ),
@@ -13015,6 +13627,9 @@ class KiteTradingBot:
             reasons = [outcome]
         entry_evaluations = getattr(self, "_pending_entry_evaluations", {})
         entry_evaluation = entry_evaluations.pop(symbol, None)
+        run_up_entry_decision = getattr(
+            self, "_last_run_up_entry_decision", {}
+        ).pop(symbol, {})
         if (
             isinstance(entry_evaluation, dict)
             and getattr(self, "paper_trading_enabled", False)
@@ -13216,6 +13831,7 @@ class KiteTradingBot:
                 "paper_change_gate_evaluations": gate_measurements.get(
                     "paper_change_gate_evaluations", {}
                 ),
+                **run_up_entry_decision,
                 "would_pass_baseline": gate_measurements.get(
                     "would_pass_baseline",
                     {key: True for key in ATTRIBUTABLE_CHANGE_KEYS},
@@ -13381,67 +13997,127 @@ class KiteTradingBot:
                 logger.info("[%s] Trade blocked: %s", symbol, reason)
                 return f"trade_blocked:{reason}"
             run_up_measurement = None
-            if (
-                self._paper_change_enabled("run_up_veto_v2")
-                and self._options_enabled()
-                and symbol.endswith(("_CE", "_PE"))
-            ):
+            if self._options_enabled() and symbol.endswith(("_CE", "_PE")):
                 entry_metadata = confirmed_entry_metadata or entry_telemetry or {}
-                run_up_measurement = self._run_up_veto_measurement(
-                    symbol, entry_metadata.get("signal_time")
-                )
-                status = run_up_measurement.status
-                move_pct = run_up_measurement.value_pct
-                change_evaluations = getattr(
-                    self, "_signal_change_gate_evaluations", None
-                )
-                if not isinstance(change_evaluations, dict):
-                    change_evaluations = {}
-                    self._signal_change_gate_evaluations = change_evaluations
-                change_evaluations.setdefault(symbol, {})["run_up_veto_v2"] = {
-                    "passed": (
-                        move_pct is None
-                        or move_pct <= RUN_UP_VETO_THRESHOLD_PCT
-                        or math.isclose(
+                if self._paper_change_enabled("run_up_veto_v2"):
+                    backfilled = entry_metadata.get(
+                        "run_up_backfill_measurement"
+                    )
+                    run_up_measurement = (
+                        OptionMoveMeasurement(
+                            backfilled.get("value_pct"),
+                            str(backfilled.get("status")),
+                            backfilled.get("fail_open_cause"),
+                        )
+                        if isinstance(backfilled, dict)
+                        else self._run_up_veto_measurement(
+                            symbol, entry_metadata.get("signal_time")
+                        )
+                    )
+                    status = run_up_measurement.status
+                    move_pct = run_up_measurement.value_pct
+                    vetoed = (
+                        move_pct is not None
+                        and move_pct > RUN_UP_VETO_THRESHOLD_PCT
+                        and not math.isclose(
                             move_pct,
                             RUN_UP_VETO_THRESHOLD_PCT,
                             rel_tol=0.0,
                             abs_tol=1e-9,
                         )
-                    ),
-                    "status": status,
-                    "prior_60m_option_move_pct": move_pct,
-                    "threshold_pct": RUN_UP_VETO_THRESHOLD_PCT,
-                }
-
-                feature_values = dict(
-                    entry_metadata.get("entry_feature_values") or {}
-                )
-                feature_values["prior_60m_option_move_pct"] = move_pct
-                entry_metadata["entry_feature_values"] = feature_values
-                null_reasons = dict(
-                    entry_metadata.get("entry_feature_null_reasons") or {}
-                )
-                if move_pct is None:
-                    null_reasons["prior_60m_option_move_pct"] = (
-                        "lookback_incomplete"
                     )
-                else:
-                    null_reasons.pop("prior_60m_option_move_pct", None)
-                entry_metadata["entry_feature_null_reasons"] = null_reasons
-                entry_metadata["run_up_veto_v2_status"] = status
+                    veto_status = (
+                        "failed_open"
+                        if move_pct is None
+                        else "vetoed"
+                        if vetoed
+                        else "passed"
+                    )
+                    change_evaluations = getattr(
+                        self, "_signal_change_gate_evaluations", None
+                    )
+                    if not isinstance(change_evaluations, dict):
+                        change_evaluations = {}
+                        self._signal_change_gate_evaluations = change_evaluations
+                    change_evaluations.setdefault(symbol, {})["run_up_veto_v2"] = {
+                        "passed": not vetoed,
+                        "status": status,
+                        "veto_status": veto_status,
+                        "fail_open_cause": run_up_measurement.fail_open_cause,
+                        "prior_60m_option_move_pct": move_pct,
+                        "threshold_pct": RUN_UP_VETO_THRESHOLD_PCT,
+                    }
 
-                if move_pct is None:
+                    feature_values = dict(
+                        entry_metadata.get("entry_feature_values") or {}
+                    )
+                    feature_values["prior_60m_option_move_pct"] = move_pct
+                    entry_metadata["entry_feature_values"] = feature_values
+                    null_reasons = dict(
+                        entry_metadata.get("entry_feature_null_reasons") or {}
+                    )
+                    if move_pct is None:
+                        null_reasons["prior_60m_option_move_pct"] = (
+                            run_up_measurement.fail_open_cause
+                            or "lookback_incomplete"
+                        )
+                    else:
+                        null_reasons.pop("prior_60m_option_move_pct", None)
+                    entry_metadata["entry_feature_null_reasons"] = null_reasons
+                    entry_metadata["run_up_veto_v2_status"] = status
+                    entry_metadata["run_up_veto_status"] = veto_status
+                    entry_metadata["run_up_fail_open_cause"] = (
+                        run_up_measurement.fail_open_cause
+                    )
+
+                    if veto_status == "failed_open":
+                        logger.info(
+                            "[%s] run_up_veto_v2 failed open; cause=%s",
+                            symbol,
+                            run_up_measurement.fail_open_cause
+                            or "unspecified_incomplete_lookback",
+                        )
+                    elif vetoed:
+                        logger.info(
+                            "[%s] Entry rejected: run_up_veto_v2 "
+                            "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
+                            symbol,
+                            move_pct,
+                            RUN_UP_VETO_THRESHOLD_PCT,
+                        )
+                    else:
+                        logger.info(
+                            "[%s] run_up_veto_v2 passed "
+                            "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
+                            symbol,
+                            move_pct,
+                            RUN_UP_VETO_THRESHOLD_PCT,
+                        )
+                elif self.paper_trading_enabled and not self.live_orders_enabled:
+                    entry_metadata["run_up_veto_status"] = "failed_open"
+                    entry_metadata["run_up_fail_open_cause"] = "veto_flag_off"
                     logger.info(
-                        "[%s] run_up_veto_v2 lookback_incomplete; allowing entry",
+                        "[%s] run_up_veto_v2 failed open; cause=veto_flag_off",
                         symbol,
                     )
-                elif move_pct > RUN_UP_VETO_THRESHOLD_PCT and not math.isclose(
-                    move_pct,
-                    RUN_UP_VETO_THRESHOLD_PCT,
-                    rel_tol=0.0,
-                    abs_tol=1e-9,
-                ):
+                if self.paper_trading_enabled and not self.live_orders_enabled:
+                    self._last_run_up_entry_decision = getattr(
+                        self, "_last_run_up_entry_decision", {}
+                    )
+                    if not isinstance(self._last_run_up_entry_decision, dict):
+                        self._last_run_up_entry_decision = {}
+                    self._last_run_up_entry_decision[symbol] = {
+                        "run_up_veto_status": entry_metadata[
+                            "run_up_veto_status"
+                        ],
+                        "run_up_fail_open_cause": entry_metadata.get(
+                            "run_up_fail_open_cause"
+                        ),
+                    }
+
+                if run_up_measurement is not None and entry_metadata.get(
+                    "run_up_veto_status"
+                ) == "vetoed":
                     if "run_up_veto_v2" not in paper_change_attributions:
                         paper_change_attributions.append("run_up_veto_v2")
                     signal_attributions = getattr(
@@ -13454,21 +14130,9 @@ class KiteTradingBot:
                     if "run_up_veto_v2" not in values:
                         values.append("run_up_veto_v2")
                     logger.info(
-                        "[%s] Entry rejected: run_up_veto_v2 "
-                        "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
-                        symbol,
-                        move_pct,
-                        RUN_UP_VETO_THRESHOLD_PCT,
+                        "[%s] Entry rejected: run_up_veto_v2", symbol
                     )
                     return "run_up_veto_v2"
-                else:
-                    logger.info(
-                        "[%s] run_up_veto_v2 passed "
-                        "prior_60m_option_move_pct=%.4f threshold_pct=%.1f",
-                        symbol,
-                        move_pct,
-                        RUN_UP_VETO_THRESHOLD_PCT,
-                    )
             if (
                 symbol in self.intraday_manager.session_trade_symbols
                 and strategy_variant != "paper_ema_stop_reentry"
@@ -15073,7 +15737,12 @@ class KiteTradingBot:
             self.last_daily_summary_date = today
             logger.info("Daily finalization Telegram queued")
         review_path = write_daily_review(
-            data_dir=".", paper_data_dir=self.paper_trading_dir, target_date=today
+            data_dir=".",
+            paper_data_dir=self.paper_trading_dir,
+            target_date=today,
+            config_hash=getattr(self, "config_hash", None),
+            git_sha=getattr(getattr(self, "git_identity", None), "sha", None),
+            flag_values=getattr(self, "runtime_flags", {}),
         )
         if not review_path.is_file():
             raise OSError(f"Daily review was not written: {review_path}")

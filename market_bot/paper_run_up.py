@@ -16,6 +16,7 @@ RUN_UP_VETO_THRESHOLD_PCT = 8.0
 class OptionMoveMeasurement:
     value_pct: float | None
     status: str
+    fail_open_cause: str | None = None
 
 
 def _as_ist(value: datetime | str) -> datetime | None:
@@ -37,7 +38,7 @@ def prior_60m_option_move(
     """Measure a complete, contiguous 60-minute option-close move at signal time."""
     cutoff = _as_ist(signal_time)
     if cutoff is None:
-        return OptionMoveMeasurement(None, "lookback_incomplete")
+        return OptionMoveMeasurement(None, "lookback_incomplete", "invalid_signal_time")
 
     closes: dict[datetime, float] = {}
     for bar in bars:
@@ -52,7 +53,7 @@ def prior_60m_option_move(
             closes[timestamp] = close
 
     if not closes:
-        return OptionMoveMeasurement(None, "lookback_incomplete")
+        return OptionMoveMeasurement(None, "lookback_incomplete", "no_valid_closes")
 
     latest = max(closes)
     earliest = latest - timedelta(minutes=RUN_UP_LOOKBACK_MINUTES)
@@ -60,8 +61,18 @@ def prior_60m_option_move(
         earliest + timedelta(minutes=offset)
         for offset in range(RUN_UP_LOOKBACK_MINUTES + 1)
     )
-    if any(timestamp not in closes for timestamp in expected_times):
-        return OptionMoveMeasurement(None, "lookback_incomplete")
+    missing_times = [
+        timestamp for timestamp in expected_times if timestamp not in closes
+    ]
+    if missing_times:
+        session_open = datetime.combine(
+            cutoff.date(), datetime.min.time(), tzinfo=IST
+        ).replace(hour=9, minute=15)
+        if earliest < session_open:
+            return OptionMoveMeasurement(
+                None, "lookback_incomplete", "session_history_incomplete"
+            )
+        return OptionMoveMeasurement(None, "lookback_incomplete", "missing_minute")
 
     start_close = closes[earliest]
     latest_close = closes[latest]

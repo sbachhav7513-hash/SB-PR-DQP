@@ -87,6 +87,18 @@ def test_prior_60m_move_marks_missing_minute_as_incomplete():
 
     assert measurement.value_pct is None
     assert measurement.status == "lookback_incomplete"
+    assert measurement.fail_open_cause == "session_history_incomplete"
+
+
+def test_prior_60m_move_classifies_gap_after_session_warmup():
+    signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
+    bars = _bars(signal_time)
+    bars.pop(20)
+
+    measurement = prior_60m_option_move(bars, signal_time)
+
+    assert measurement.status == "lookback_incomplete"
+    assert measurement.fail_open_cause == "missing_minute"
 
 
 @pytest.mark.parametrize("symbol", ["NIFTY_CE", "TCS_PE"])
@@ -158,4 +170,124 @@ def test_incomplete_lookback_fails_open_and_is_logged(caplog):
     )
 
     assert result == "position_size_zero"
-    assert "run_up_veto_v2 lookback_incomplete; allowing entry" in caplog.text
+    assert "run_up_veto_v2 failed open; cause=session_history_incomplete" in caplog.text
+    assert "failed_open" == bot._last_run_up_entry_decision["NIFTY_CE"][
+        "run_up_veto_status"
+    ]
+
+
+def test_backfilled_measurement_is_used_by_the_existing_veto_gate():
+    signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
+    bot = _entry_bot(flag=True)
+
+    result = bot._handle_buy_signal(
+        "NIFTY_CE",
+        100.0,
+        80,
+        confirmed_entry_metadata={
+            "signal_time": signal_time,
+            "run_up_backfill_measurement": {
+                "value_pct": 8.5,
+                "status": "complete",
+                "fail_open_cause": None,
+            },
+        },
+    )
+
+    assert result == "run_up_veto_v2"
+    assert bot._signal_change_gate_evaluations["NIFTY_CE"]["run_up_veto_v2"][
+        "prior_60m_option_move_pct"
+    ] == 8.5
+
+
+def test_historical_backfill_computes_the_same_61_close_measurement(monkeypatch):
+    from concurrent.futures import Future
+    import time
+
+    import market_bot.kite_main as kite_main
+
+    class InlineExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def submit(self, function):
+            future = Future()
+            try:
+                future.set_result(function())
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
+    rows = [
+        {
+            "time": signal_time - timedelta(minutes=60 - offset),
+            "open": 100.0,
+            "high": 110.0,
+            "low": 100.0,
+            "close": 100.0 + offset / 60 * 9.0,
+            "volume": 1,
+        }
+        for offset in range(61)
+    ]
+
+    class Provider:
+        def fetch_history(self, token, start, end, *, interval):
+            assert token == 123
+            assert start == signal_time - timedelta(minutes=60)
+            assert end == signal_time + timedelta(minutes=1)
+            assert interval == "minute"
+            return rows
+
+    monkeypatch.setattr(kite_main, "ThreadPoolExecutor", InlineExecutor)
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"instrument_tokens": {"NIFTY_CE": 123}}
+    bot._run_up_backfill_provider = Provider()
+    bot._run_up_backfill_last_request = time.monotonic() - 2
+
+    state, measurement = bot._poll_run_up_backfill(
+        "NIFTY_CE", signal_time, "missing_minute"
+    )
+
+    assert state == "complete"
+    assert measurement.status == "complete"
+    assert measurement.value_pct == pytest.approx(9.0)
+
+
+def test_historical_backfill_failure_is_logged_and_fails_open(monkeypatch, caplog):
+    from concurrent.futures import Future
+    import time
+
+    import market_bot.kite_main as kite_main
+
+    class InlineExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def submit(self, function):
+            future = Future()
+            try:
+                future.set_result(function())
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    class Provider:
+        def fetch_history(self, *_args, **_kwargs):
+            raise RuntimeError("historical API unavailable")
+
+    monkeypatch.setattr(kite_main, "ThreadPoolExecutor", InlineExecutor)
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {"instrument_tokens": {"NIFTY_CE": 123}}
+    bot._run_up_backfill_provider = Provider()
+    bot._run_up_backfill_last_request = time.monotonic() - 2
+    signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
+
+    with caplog.at_level("WARNING", logger="market_bot.kite_main"):
+        state, measurement = bot._poll_run_up_backfill(
+            "NIFTY_CE", signal_time, "missing_minute"
+        )
+
+    assert state == "complete"
+    assert measurement.fail_open_cause == "historical_api_error:RuntimeError"
+    assert "Run-up historical backfill failed open" in caplog.text

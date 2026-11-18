@@ -177,19 +177,19 @@ def _net_r_multiple(trade: Dict[str, Any]) -> float | None:
 
 def _tier_review_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     costs = [_trade_cost_values(trade) for trade in trades]
-    net_rows = [(index, values[2]) for index, values in enumerate(costs) if values[2] is not None]
-    best_index = max(net_rows, key=lambda item: item[1])[0] if net_rows else None
-    net_r = [
-        value
+    net_values = [values[2] for values in costs if values[2] is not None]
+    r_by_index = [
+        (index, value)
         for index, trade in enumerate(trades)
         if (value := _net_r_multiple(trade)) is not None
     ]
+    best_r_index = (
+        max(r_by_index, key=lambda item: item[1])[0] if r_by_index else None
+    )
+    net_r = [value for _, value in r_by_index]
     net_r_without_best = [
-        value
-        for index, trade in enumerate(trades)
-        if index != best_index and (value := _net_r_multiple(trade)) is not None
+        value for index, value in r_by_index if index != best_r_index
     ]
-    net_values = [value for _, value in net_rows]
     fees = [values[1] for values in costs if values[1] is not None]
     return {
         "trades": len(trades),
@@ -1773,7 +1773,13 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def write_daily_review(
-    data_dir: str = ".", paper_data_dir: str = "paper_trading_data", target_date=None
+    data_dir: str = ".",
+    paper_data_dir: str = "paper_trading_data",
+    target_date=None,
+    *,
+    config_hash: str | None = None,
+    git_sha: str | None = None,
+    flag_values: Dict[str, Any] | None = None,
 ) -> Path:
     """Write a human-readable, date-scoped review of trades and entry decisions."""
     target_date = target_date or datetime.now(IST).date()
@@ -1807,6 +1813,26 @@ def write_daily_review(
         "decisions.parquet",
         target_date,
     )
+    runtime_records = [*decisions, *trades]
+    if config_hash is None:
+        config_hash = next(
+            (
+                str(record["config_hash"])
+                for record in runtime_records
+                if record.get("config_hash")
+            ),
+            None,
+        )
+    if git_sha is None:
+        git_sha = next(
+            (
+                str(record["git_sha"])
+                for record in runtime_records
+                if record.get("git_sha")
+            ),
+            None,
+        )
+    flag_values = flag_values or {}
     commands = _date_records(
         Path(data_dir) / "commands.jsonl",
         Path(paper_data_dir),
@@ -1874,6 +1900,74 @@ def write_daily_review(
                 for reason in reasons:
                     if reason:
                         hold_reasons[str(reason)] += 1
+
+    run_up_fail_open_by_cause: Dict[str, int] = defaultdict(int)
+    run_up_status_counts: Dict[str, int] = defaultdict(int)
+    run_up_by_signal: Dict[str, dict] = {}
+    for decision in decisions:
+        if decision.get("run_up_veto_status") not in {
+            "passed",
+            "vetoed",
+            "failed_open",
+        }:
+            continue
+        signal_key = str(
+            decision.get("signal_id")
+            or decision.get("signal_uid")
+            or f"{decision.get('ticker')}|{decision.get('timestamp')}"
+        )
+        run_up_by_signal[signal_key] = decision
+    for decision in run_up_by_signal.values():
+        status = str(decision.get("run_up_veto_status"))
+        run_up_status_counts[status] += 1
+        if decision.get("run_up_veto_status") == "failed_open":
+            cause = str(
+                decision.get("run_up_fail_open_cause")
+                or "unspecified"
+            )
+            run_up_fail_open_by_cause[cause] += 1
+    five_min_by_signal: Dict[str, tuple[str, str, dict]] = {}
+    for decision in decisions:
+        status = decision.get("five_min_continuation_status")
+        cancellation_reason = str(
+            decision.get("cancellation_reason") or ""
+        )
+        if not status and not cancellation_reason.startswith("five_min_"):
+            continue
+        signal_key = str(
+            decision.get("signal_id")
+            or decision.get("signal_uid")
+            or f"{decision.get('ticker')}|{decision.get('timestamp')}"
+        )
+        if cancellation_reason == "five_min_expired":
+            result = "expired"
+        elif cancellation_reason == "five_min_data_missing" or status == "data_missing":
+            result = "data_missing"
+        elif cancellation_reason == "five_min_no_continuation" or status == "failed":
+            result = "failed"
+        elif status == "passed":
+            result = "passed"
+        else:
+            result = "reached"
+        five_min_by_signal[signal_key] = (
+            _review_tier(decision),
+            result,
+            decision,
+        )
+    five_min_counts: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {
+            "reached": 0,
+            "passed": 0,
+            "failed": 0,
+            "expired": 0,
+            "data_missing": 0,
+        }
+    )
+    for tier, result, _ in five_min_by_signal.values():
+        counts = five_min_counts[tier]
+        counts["reached"] += 1
+        if result != "reached":
+            counts[result] += 1
 
     day_dir = (
         Path(paper_data_dir)
@@ -2001,6 +2095,19 @@ def write_daily_review(
         f"- Win rate: {win_rate:.1f}%",
         f"- Decisions: {len(decisions)}",
         "",
+        "## Runtime Identity and Flags",
+        f"- Commit SHA: {git_sha or 'not recorded'}",
+        f"- Normalized config hash: {config_hash or 'not recorded'}",
+        "- Flags: "
+        + (
+            ", ".join(
+                f"{name}={value}"
+                for name, value in sorted(flag_values.items())
+            )
+            if flag_values
+            else "not recorded"
+        ),
+        "",
         "## Modeled Fees and Net Performance",
         f"- Gross P&L: {cost_totals['gross_pnl']:.2f}",
         (
@@ -2049,6 +2156,28 @@ def write_daily_review(
         f"- Average delay: {entry_confirmation['average_delay_seconds']:.1f}s",
         "- Average premium change from signal to fill: "
         f"{entry_confirmation['average_premium_change_pct']:.3f}%",
+        "",
+        "## Run-up Veto Status Counts",
+        *(
+            f"- {status}: {run_up_status_counts[status]}"
+            for status in ("passed", "vetoed", "failed_open")
+        ),
+        "",
+        "## Run-up Veto Fail-Open Counts",
+        *format_counts(run_up_fail_open_by_cause),
+        "",
+        "## 5-minute Entry Continuation by Tier",
+        "",
+        "| Tier | Reached | Passed | Failed | Expired | Data missing |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        *(
+            f"| {tier} | {five_min_counts[tier]['reached']} | "
+            f"{five_min_counts[tier]['passed']} | "
+            f"{five_min_counts[tier]['failed']} | "
+            f"{five_min_counts[tier]['expired']} | "
+            f"{five_min_counts[tier]['data_missing']} |"
+            for tier in ("STOCK", "NIFTY", "BANKNIFTY")
+        ),
         "",
         "## EMA Stop-Loss Re-entry",
         f"- Eligible stop-loss trades: {ema_reentry['eligible_stop_losses']}",
@@ -2268,7 +2397,7 @@ def write_daily_review(
                 f"{values.get('signal_premium', 'N/A')}; "
                 f"tier/lots/qty={values.get('tier', 'N/A')}/"
                 f"{values.get('lots', 'N/A')}/{values.get('quantity', 'N/A')}; "
-                f"risk/cap={values.get('risk_amount', 'N/A')}/"
+                f"risk/open-risk limit={values.get('risk_amount', 'N/A')}/"
                 f"{values.get('risk_cap', 'N/A')}; "
                 f"bucket={values.get('time_of_day_bucket', 'N/A')}; "
                 f"partial={values.get('partial_status', 'N/A')}; "

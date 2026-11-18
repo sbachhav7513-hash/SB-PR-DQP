@@ -8,7 +8,11 @@ import pytest
 
 from market_bot.bar_builder import Bar
 from market_bot.intraday_manager import IntradayManager
-from market_bot.kite_main import KiteTradingBot
+from market_bot.kite_main import (
+    KiteTradingBot,
+    _complete_five_minute_bar,
+    _next_five_minute_window,
+)
 from market_bot.telegram_notifier import TelegramNotifier
 from market_bot.trade_journal import DecisionJournal
 
@@ -185,6 +189,297 @@ def test_no_entry_until_confirmation_candle_has_closed(tmp_path):
     event = _events(tmp_path / "decisions.jsonl")[-1]
     assert event["confirmation_event"] == "rejected_by_confirmation"
     assert event["confirmation_candle_time"] == confirmation.timestamp.isoformat()
+
+
+def test_five_minute_window_is_clock_aligned_and_requires_all_minutes():
+    start, end = _next_five_minute_window(
+        datetime(2026, 10, 29, 11, 26, tzinfo=IST)
+    )
+    assert start == datetime(2026, 10, 29, 11, 30, tzinfo=IST)
+    assert end == datetime(2026, 10, 29, 11, 35, tzinfo=IST)
+
+    bars = [
+        Bar(start + timedelta(minutes=i), 100 + i, 102 + i, 99 + i, 101 + i, 10)
+        for i in range(5)
+    ]
+    aggregate = _complete_five_minute_bar(bars, start)
+    assert aggregate is not None
+    assert aggregate.open == 100
+    assert aggregate.high == 106
+    assert aggregate.low == 99
+    assert aggregate.close == 105
+    assert aggregate.volume == 50
+    assert _complete_five_minute_bar(bars[:-1], start) is None
+
+
+def _enable_five_minute_gate(bot, bars):
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.simulation_mode = False
+    bot.config["entry_5m_continuation_v1"] = True
+    bot.config["option_candle_momentum"] = False
+    bot.config["option_premium_rising_momentum_v2"] = False
+    bot.config["instrument_tokens"]["NIFTY"] = 999
+    bot.bar_builder = SimpleNamespace(get_bars=Mock(return_value=bars))
+
+
+def test_five_minute_continuation_passes_strictly_and_logs_fill_fields(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    pending = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [pending], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+    assert bot._handle_buy_signal.call_count == 0
+    assert pending["five_min_candle_start"] == start + timedelta(minutes=5)
+
+    candle_start = pending["five_min_candle_start"]
+    minute_bars = [
+        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        for i in range(5)
+    ]
+    bot.bar_builder.get_bars.return_value = minute_bars
+    fill_time = candle_start + timedelta(minutes=5)
+    bot.option_quote_cache["NIFTY_CE"].update(
+        timestamp=fill_time - timedelta(seconds=1),
+        bid=20.3,
+        ask=20.5,
+        last_price=20.4,
+    )
+    bot._process_confirmed_entries(
+        "NIFTY",
+        minute_bars[-1],
+        fill_time,
+    )
+
+    bot._handle_buy_signal.assert_called_once()
+    metadata = bot._handle_buy_signal.call_args.kwargs[
+        "confirmed_entry_metadata"
+    ]
+    assert metadata["five_min_candle_close"] == 106
+    assert metadata["five_min_continuation_status"] == "passed"
+    assert metadata["five_min_ask_at_confirmation"] == pytest.approx(20.1)
+    assert metadata["five_min_ask_at_fill"] == pytest.approx(20.5)
+    assert metadata["five_min_ask_drift_pct"] == pytest.approx(
+        (20.5 / 20.1 - 1) * 100
+    )
+    assert metadata["route"] == "scored"
+
+    event = _events(tmp_path / "decisions.jsonl")[-1]
+    assert event["five_min_candle_start"] == candle_start.isoformat()
+    assert event["five_min_continuation_status"] == "passed"
+    assert event["five_min_ask_drift_pct"] == pytest.approx(
+        (20.5 / 20.1 - 1) * 100
+    )
+
+
+def test_five_minute_flag_off_keeps_existing_confirmation_fill(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    bot.paper_trading_enabled = True
+    bot.live_orders_enabled = False
+    bot.simulation_mode = False
+    bot.config["entry_5m_continuation_v1"] = False
+    bot.config["option_candle_momentum"] = False
+
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+
+    bot._handle_buy_signal.assert_called_once()
+    assert signal.get("five_min_candle_start") is None
+    metadata = bot._handle_buy_signal.call_args.kwargs[
+        "confirmed_entry_metadata"
+    ]
+    assert metadata["five_min_continuation_status"] is None
+
+
+def test_five_minute_pass_waits_for_a_fresh_valid_ask(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+
+    candle_start = signal["five_min_candle_start"]
+    minute_bars = [
+        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        for i in range(5)
+    ]
+    bot.bar_builder.get_bars.return_value = minute_bars
+    close_time = candle_start + timedelta(minutes=5)
+    bot.option_quote_cache["NIFTY_CE"]["timestamp"] = (
+        close_time - timedelta(minutes=2)
+    )
+    bot._process_confirmed_entries("NIFTY", minute_bars[-1], close_time)
+    assert bot._handle_buy_signal.call_count == 0
+    assert signal["five_min_passed"] is True
+
+    fresh_time = close_time
+    fresh_close = close_time + timedelta(minutes=1)
+    bot.option_quote_cache["NIFTY_CE"].update(
+        timestamp=fresh_close - timedelta(seconds=1),
+        ask=20.4,
+        last_price=20.3,
+    )
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(fresh_time, 101, 103, 100, 107, 10),
+        fresh_close,
+    )
+
+    bot._handle_buy_signal.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("leg", "signal_close", "first_close", "final_close", "expected_reason"),
+    [
+        ("CE", 100.0, 101.0, 101.0, "five_min_no_continuation"),
+        ("PE", 100.0, 99.0, 99.0, "five_min_no_continuation"),
+        ("PE", 100.0, 99.0, 98.9, None),
+    ],
+)
+def test_five_minute_continuation_strict_boundary_for_both_legs(
+    tmp_path, leg, signal_close, first_close, final_close, expected_reason
+):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending(f"NIFTY_{leg}", start, signal_close)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 98, first_close, 100),
+        start + timedelta(minutes=2),
+    )
+
+    candle_start = signal["five_min_candle_start"]
+    minute_bars = [
+        Bar(
+            candle_start + timedelta(minutes=i),
+            final_close,
+            final_close,
+            final_close,
+            final_close if i == 4 else (first_close + final_close) / 2,
+            10,
+        )
+        for i in range(5)
+    ]
+    bot.bar_builder.get_bars.return_value = minute_bars
+    close_time = candle_start + timedelta(minutes=5)
+    bot.option_quote_cache[signal["symbol"]]["timestamp"] = (
+        close_time - timedelta(seconds=1)
+    )
+    bot._process_confirmed_entries("NIFTY", minute_bars[-1], close_time)
+
+    if expected_reason:
+        bot._handle_buy_signal.assert_not_called()
+        event = _events(tmp_path / "decisions.jsonl")[-1]
+        assert event["cancellation_reason"] == expected_reason
+    else:
+        bot._handle_buy_signal.assert_called_once()
+
+
+def test_five_minute_missing_data_drops_signal(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+    candle_start = signal["five_min_candle_start"]
+    incomplete = [
+        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        for i in (0, 1, 3, 4)
+    ]
+    bot.bar_builder.get_bars.return_value = incomplete
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(candle_start + timedelta(minutes=4), 101, 103, 100, 106, 10),
+        candle_start + timedelta(minutes=5),
+    )
+
+    bot._handle_buy_signal.assert_not_called()
+    event = _events(tmp_path / "decisions.jsonl")[-1]
+    assert event["cancellation_reason"] == "five_min_data_missing"
+
+
+def test_five_minute_pass_rechecks_open_risk_before_fill(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+    bot._can_open_trade_for_signal.side_effect = [
+        (True, "OK"),
+        (False, "daily loss cap exceeded"),
+    ]
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+
+    candle_start = signal["five_min_candle_start"]
+    minute_bars = [
+        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        for i in range(5)
+    ]
+    bot.bar_builder.get_bars.return_value = minute_bars
+    close_time = candle_start + timedelta(minutes=5)
+    bot.option_quote_cache[signal["symbol"]]["timestamp"] = (
+        close_time - timedelta(seconds=1)
+    )
+    bot._process_confirmed_entries("NIFTY", minute_bars[-1], close_time)
+
+    bot._handle_buy_signal.assert_not_called()
+    event = _events(tmp_path / "decisions.jsonl")[-1]
+    assert event["cancellation_reason"] == "filter_failed_after_confirmation"
+    assert event["cancellation_sub_reason"] == "loss_cap"
+
+
+def test_five_minute_pass_expires_when_no_valid_ask_arrives(tmp_path):
+    start = datetime(2026, 10, 29, 10, 0, tzinfo=IST)
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+    bot._process_confirmed_entries(
+        "NIFTY",
+        Bar(start + timedelta(minutes=1), 100, 102, 99, 101, 100),
+        start + timedelta(minutes=2),
+    )
+    candle_start = signal["five_min_candle_start"]
+    minute_bars = [
+        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        for i in range(5)
+    ]
+    bot.bar_builder.get_bars.return_value = minute_bars
+    close_time = candle_start + timedelta(minutes=5)
+    bot.option_quote_cache[signal["symbol"]]["timestamp"] = (
+        close_time - timedelta(minutes=2)
+    )
+    bot._process_confirmed_entries("NIFTY", minute_bars[-1], close_time)
+    assert signal["five_min_passed"] is True
+    assert bot._handle_buy_signal.call_count == 0
+
+    bot._expire_pending_confirmed_entries(
+        signal["five_min_candle_end"] + timedelta(minutes=5, seconds=1)
+    )
+    event = _events(tmp_path / "decisions.jsonl")[-1]
+    assert event["cancellation_reason"] == "five_min_expired"
+    assert event["five_min_continuation_status"] == "passed"
 
 
 def test_29_oct_nifty_ce_replay_examples(tmp_path):
