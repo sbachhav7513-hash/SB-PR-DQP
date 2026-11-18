@@ -165,3 +165,76 @@ In the list below, every implemented status is `data_missing`; each difference i
 ### Parity row-count clarification
 
 The earlier `9,539` count included only `bar_decision` rows. The later exact-key comparison also included 10 `entry_confirmation` telemetry rows, so it counted `9,539 + 10 = 9,549` rows. Both the baseline 4b replay and the flags-OFF worktree emitted 9,539 bar decisions plus the same 10 confirmation events; no bar-decision rows were added.
+
+## Follow-up correction — clock-aligned 5-minute gate (18-Nov-2026)
+
+This follow-up starts from branch commit `78afb45` and supersedes the
+confirmation-aligned replay assumptions and results above. It does not rewrite
+the historical entries.
+
+### Production timestamp and window behavior
+
+`BarBuilder.process_tick` in `market_bot/bar_builder.py` timestamps each
+completed one-minute bar with its interval's stored `bar_start`, set from the
+first tick in that interval. It is not stamped with the closing tick time.
+Consequently, a completed 10:09 bar can be stamped `10:09:18`; the next
+interval is still clock-aligned at the minute level.
+
+`_complete_five_minute_bar` in `market_bot/kite_main.py` now selects the five
+clock-minute buckets represented by timestamps in `[HH:MM:00, HH:MM+5:00)`,
+ignoring seconds and microseconds when identifying each bucket. The window end
+is exclusive; all five buckets must exist. Open comes from the first minute
+bar and close from the fifth. The pending-entry path waits for the completed
+final-minute bar before evaluating the candle. CE and PE continuation checks
+remain strict inequalities.
+
+Three consecutive `data_missing` continuation outcomes now disable
+`entry_5m_continuation_v1` for the rest of the IST session date. The trip logs
+`five_min_autodisabled`, is stored on the triggering decision, and is counted
+in the daily review. The daily decision journal restores the streak/tripped
+state after process restart. The config flag remains false by default and is
+not changed by the breaker.
+
+### Corrected paired replay
+
+The fixed rule was replayed on the 51-trade sample with the same baseline and
+variant exit model. All reported means are after fees; failed continuation
+signals contribute a zero-R variant outcome, and this run had no data-missing
+outcomes.
+
+| Period | Reached | Passed | Failed | Expired | Data missing | Baseline mean net R / ₹ | Variant mean net R / ₹ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 30-Oct to 11-Nov | 34 | 19 | 15 | 0 | 0 | 0.1660 / 261.6707 | -0.0823 / -84.7654 |
+| 12-Nov to 16-Nov | 17 | 6 | 11 | 0 | 0 | -0.4653 / -820.3553 | -0.1753 / -274.0812 |
+| All 51 | 51 | 25 | 26 | 0 | 0 | -0.0444 / -99.0046 | -0.1133 / -147.8707 |
+
+Without the best baseline trade (`LT_CE`, 9-Nov), the all-51 baseline is
+n=50, **-0.0918 R / -171.4575 ₹**, and the paired variant is
+n=50, **-0.1155 R / -150.8281 ₹**. The earlier paired baseline (-0.0723 R,
+n=49) omitted `SBIN_CE` on 6-Nov because the old replay marked its five-minute
+window incomplete. Under the corrected clock-window it has all five bars,
+fails the continuation check, and contributes its baseline -1.0485 R; this
+produces the reconciled n=50 baseline.
+
+The 17-Nov underlying and option archives do contain usable candle/quote
+records; the prior statement that option candles were unavailable was
+incorrect. The same fixed-rule replay reached 5, passed 3, failed 2, expired
+0, and had 0 data-missing outcomes. Baseline mean net was -1.0673 R /
+-1766.1820 ₹; variant mean net was -0.6671 R / -1040.8070 ₹. Excluding the
+best baseline trade (`INFY_CE`, 13:44), n=4 baseline was -1.1142 R /
+-1826.3400 ₹ and variant was -0.8339 R / -1301.0087 ₹. This five-trade
+follow-up is descriptive, not evidence of an edge. Full per-period and
+trade-level outputs are in
+[the regenerated replay report](./PAPER_RUN_UP_AND_5M_REPLAY_2026-10-30_to-2026-11-16.md).
+
+### Validation and operations
+
+- Focused regression tests: **78 passed**.
+- Full suite: **667 passed, 1 skipped**.
+- The scorer-observability test fixture now supplies `available_daily_risk`;
+  this resolves the previously documented fixture-only failure.
+- `entry_5m_continuation_v1` remains false. Deployment steps are documented in
+  `DAILY_WEEKLY_OPERATIONS.md`; no merge, push, or deployment is authorized by
+  this follow-up.
+- OLD-vs-NEW flags-OFF parity is to be rerun against the final committed SHA
+  and recorded as post-commit evidence.

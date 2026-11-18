@@ -966,6 +966,7 @@ def test_selected_option_legs_evaluate_candle_quote_risk_and_capital_gates():
         },
         max_risk_per_trade=1_000,
         open_position_risk=lambda: 0,
+        available_daily_risk=lambda: 1_000,
     )
     option_bar = Bar(
         datetime(2026, 11, 12, 9, 30, tzinfo=IST),

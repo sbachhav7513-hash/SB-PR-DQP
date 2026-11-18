@@ -237,6 +237,17 @@ def test_daily_review_includes_runtime_identity_flags_and_veto_counts(tmp_path):
         {
             "timestamp": timestamp,
             "event": "entry_confirmation",
+            "confirmation_event": "expired_signal",
+            "signal_id": "signal-1",
+            "ticker": "TCS_CE",
+            "tier": "STOCK",
+            "five_min_continuation_status": "data_missing",
+            "five_min_autodisabled": True,
+            "cancellation_reason": "five_min_data_missing",
+        },
+        {
+            "timestamp": timestamp,
+            "event": "entry_confirmation",
             "confirmation_event": "confirmed_trade",
             "signal_id": "signal-2",
             "ticker": "TCS_CE",
@@ -278,7 +289,8 @@ def test_daily_review_includes_runtime_identity_flags_and_veto_counts(tmp_path):
     assert "- vetoed: 1" in content
     assert "- failed_open: 1" in content
     assert "missing_minute: 1" in content
-    assert "| STOCK | 1 | 0 | 0 | 0 | 0 |" in content
+    assert "| STOCK | 1 | 0 | 0 | 0 | 1 |" in content
+    assert "- five_min_autodisabled: 1" in content
     assert "risk/open-risk limit=100.0/4000.0" in content
 
 

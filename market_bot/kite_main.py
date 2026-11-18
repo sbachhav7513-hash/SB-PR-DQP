@@ -205,14 +205,15 @@ def _next_five_minute_window(after: datetime) -> tuple[datetime, datetime]:
 def _complete_five_minute_bar(
     bars: list[Bar], start: datetime
 ) -> Bar | None:
-    expected = [
-        start + timedelta(minutes=offset) for offset in range(5)
-    ]
-    indexed = {
-        bar.timestamp: bar
-        for bar in bars
-        if isinstance(getattr(bar, "timestamp", None), datetime)
-    }
+    end = start + timedelta(minutes=5)
+    indexed: dict[datetime, Bar] = {}
+    for bar in bars:
+        timestamp = getattr(bar, "timestamp", None)
+        if not isinstance(timestamp, datetime) or not start <= timestamp < end:
+            continue
+        minute = timestamp.replace(second=0, microsecond=0)
+        indexed.setdefault(minute, bar)
+    expected = [start + timedelta(minutes=offset) for offset in range(5)]
     minutes = [indexed.get(timestamp) for timestamp in expected]
     if any(bar is None for bar in minutes):
         return None
@@ -757,6 +758,11 @@ class KiteTradingBot:
             bool(getattr(self, "paper_trading_enabled", False))
             and not bool(getattr(self, "live_orders_enabled", False))
             and not (
+                key == "entry_5m_continuation_v1"
+                and getattr(self, "_five_min_autodisabled_date", None)
+                == datetime.now(IST).date()
+            )
+            and not (
                 key in PAPER_ONLY_EXPERIMENT_FLAGS
                 and bool(getattr(self, "simulation_mode", False))
             )
@@ -769,6 +775,98 @@ class KiteTradingBot:
                 )
             )
         )
+
+    def _record_five_min_outcome(
+        self, pending: dict, now: datetime, status: str
+    ) -> tuple[bool, int]:
+        session_date = now.astimezone(IST).date() if now.tzinfo else now.date()
+        if getattr(self, "_five_min_session_date", None) != session_date:
+            self._five_min_session_date = session_date
+            self._five_min_data_missing_streak = 0
+            self._five_min_autodisabled_date = None
+            self._five_min_autodisabled_logged = False
+
+        if status == "data_missing":
+            streak = getattr(self, "_five_min_data_missing_streak", 0) + 1
+            self._five_min_data_missing_streak = streak
+            if (
+                streak >= 3
+                and getattr(self, "_five_min_autodisabled_date", None)
+                != session_date
+            ):
+                self._five_min_autodisabled_date = session_date
+                self._five_min_autodisabled_logged = True
+                logger.error(
+                    "five_min_autodisabled session=%s missing_streak=%s signal_id=%s",
+                    session_date.isoformat(),
+                    streak,
+                    pending.get("signal_id"),
+                )
+                return True, streak
+            return False, streak
+
+        self._five_min_data_missing_streak = 0
+        return False, 0
+
+    def _restore_five_min_circuit_breaker_state(
+        self, session_date: date
+    ) -> None:
+        self._five_min_session_date = session_date
+        self._five_min_data_missing_streak = 0
+        self._five_min_autodisabled_date = None
+        self._five_min_autodisabled_logged = False
+        journal = getattr(self, "decision_journal", None)
+        path = getattr(journal, "path", None)
+        if not isinstance(path, (str, Path)) or not Path(path).is_file():
+            return
+
+        try:
+            with Path(path).open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Ignoring invalid decision-journal row %s:%s "
+                            "while restoring the 5-minute circuit breaker",
+                            path,
+                            line_number,
+                        )
+                        continue
+                    if record.get("event") != "entry_confirmation":
+                        continue
+                    timestamp = self._journal_datetime(record.get("timestamp"))
+                    if timestamp is None or timestamp.astimezone(IST).date() != session_date:
+                        continue
+                    if record.get("five_min_autodisabled"):
+                        self._five_min_autodisabled_date = session_date
+                        self._five_min_autodisabled_logged = True
+                    status = record.get("five_min_continuation_status")
+                    reason = record.get("cancellation_reason")
+                    if reason == "five_min_data_missing" or status == "data_missing":
+                        self._five_min_data_missing_streak += 1
+                    elif (
+                        reason in {"five_min_no_continuation", "five_min_expired"}
+                        or status in {"passed", "failed"}
+                    ):
+                        self._five_min_data_missing_streak = 0
+        except OSError:
+            logger.exception(
+                "Could not restore the 5-minute circuit breaker from %s", path
+            )
+            return
+
+        if self._five_min_data_missing_streak >= 3:
+            self._five_min_autodisabled_date = session_date
+            if not self._five_min_autodisabled_logged:
+                logger.error(
+                    "five_min_autodisabled recovered session=%s missing_streak=%s",
+                    session_date.isoformat(),
+                    self._five_min_data_missing_streak,
+                )
+                self._five_min_autodisabled_logged = True
 
     def _premarket_context_for_row(self, ticker: Any) -> Optional[dict]:
         if (
@@ -3023,6 +3121,7 @@ class KiteTradingBot:
             git_sha=self.git_identity.sha,
             git_dirty=self.git_identity.dirty,
         )
+        self._restore_five_min_circuit_breaker_state(datetime.now(IST).date())
         self.trade_journal.premarket_context_provider = (
             self._premarket_context_for_row
         )
@@ -7520,6 +7619,33 @@ class KiteTradingBot:
         confirmation_quote: Optional[dict] = None,
         **event_fields: Any,
     ) -> None:
+        five_min_status = (
+            "data_missing"
+            if reason == "five_min_data_missing"
+            else "failed"
+            if reason == "five_min_no_continuation"
+            else "expired"
+            if reason == "five_min_expired"
+            else None
+        )
+        if (
+            five_min_status is not None
+            and pending.get("five_min_candle_start") is not None
+        ):
+            autodisabled, missing_streak = self._record_five_min_outcome(
+                pending, now, five_min_status
+            )
+            event_fields.setdefault(
+                "five_min_continuation_status",
+                (
+                    pending.get("five_min_continuation_status") or "expired"
+                )
+                if reason == "five_min_expired"
+                else five_min_status,
+            )
+            event_fields["five_min_missing_streak"] = missing_streak
+            if autodisabled:
+                event_fields["five_min_autodisabled"] = True
         metrics = self._option_quote_metrics(
             confirmation_quote
             if confirmation_quote is not None
@@ -7793,6 +7919,10 @@ class KiteTradingBot:
         for key, pending in due:
             expected_start = pending["confirmation_start"]
             expected_close = expected_start + timedelta(minutes=1)
+            waiting_for_five_min_candle = (
+                pending.get("five_min_candle_end") is not None
+                and not pending.get("five_min_passed")
+            )
             if pending.get("five_min_candle_end") is not None:
                 five_min_end = pending["five_min_candle_end"]
                 if (
@@ -7807,7 +7937,16 @@ class KiteTradingBot:
                         sub_reason="no_valid_ask_within_five_minutes",
                     )
                     continue
-            if confirmation_time > expected_start:
+            compared_confirmation_time = confirmation_time
+            compared_expected_start = expected_start
+            if waiting_for_five_min_candle:
+                compared_confirmation_time = confirmation_time.replace(
+                    second=0, microsecond=0
+                )
+                compared_expected_start = expected_start.replace(
+                    second=0, microsecond=0
+                )
+            if compared_confirmation_time > compared_expected_start:
                 self._cancel_confirmed_entry(
                     key,
                     pending,
@@ -7826,9 +7965,16 @@ class KiteTradingBot:
                     ),
                 )
                 continue
+            if waiting_for_five_min_candle and (
+                compared_confirmation_time < compared_expected_start
+            ):
+                continue
             if now < expected_close:
                 continue
-            if (now - expected_close).total_seconds() > 5:
+            if (
+                not waiting_for_five_min_candle
+                and (now - expected_close).total_seconds() > 5
+            ):
                 self._cancel_confirmed_entry(
                     key,
                     pending,
@@ -7935,6 +8081,8 @@ class KiteTradingBot:
                 pending["five_min_continuation_status"] = (
                     "passed" if passed else "failed"
                 )
+                if passed:
+                    self._record_five_min_outcome(pending, now, "passed")
                 pending["five_min_wait_seconds"] = max(
                     0.0,
                     (now - pending["five_min_confirmation_time"]).total_seconds(),

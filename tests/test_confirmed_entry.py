@@ -211,6 +211,28 @@ def test_five_minute_window_is_clock_aligned_and_requires_all_minutes():
     assert aggregate.volume == 50
     assert _complete_five_minute_bar(bars[:-1], start) is None
 
+    offset_bars = [
+        Bar(
+            start + timedelta(minutes=i, seconds=17),
+            200 + i,
+            202 + i,
+            199 + i,
+            201 + i,
+            10,
+        )
+        for i in range(5)
+    ]
+    boundary_bars = [
+        Bar(start - timedelta(microseconds=1), 1, 1, 1, 1, 1),
+        *offset_bars,
+        Bar(end, 999, 999, 999, 999, 999),
+    ]
+    offset_aggregate = _complete_five_minute_bar(boundary_bars, start)
+    assert offset_aggregate is not None
+    assert offset_aggregate.open == 200
+    assert offset_aggregate.close == 205
+    assert _complete_five_minute_bar(offset_bars[:2] + offset_bars[3:], start) is None
+
 
 def _enable_five_minute_gate(bot, bars):
     bot.paper_trading_enabled = True
@@ -239,11 +261,18 @@ def test_five_minute_continuation_passes_strictly_and_logs_fill_fields(tmp_path)
 
     candle_start = pending["five_min_candle_start"]
     minute_bars = [
-        Bar(candle_start + timedelta(minutes=i), 101, 103, 100, 102 + i, 10)
+        Bar(
+            candle_start + timedelta(minutes=i, seconds=18),
+            101,
+            103,
+            100,
+            102 + i,
+            10,
+        )
         for i in range(5)
     ]
     bot.bar_builder.get_bars.return_value = minute_bars
-    fill_time = candle_start + timedelta(minutes=5)
+    fill_time = candle_start + timedelta(minutes=5, seconds=18)
     bot.option_quote_cache["NIFTY_CE"].update(
         timestamp=fill_time - timedelta(seconds=1),
         bid=20.3,
@@ -346,6 +375,7 @@ def test_five_minute_pass_waits_for_a_fresh_valid_ask(tmp_path):
     ("leg", "signal_close", "first_close", "final_close", "expected_reason"),
     [
         ("CE", 100.0, 101.0, 101.0, "five_min_no_continuation"),
+        ("CE", 100.0, 101.0, 101.1, None),
         ("PE", 100.0, 99.0, 99.0, "five_min_no_continuation"),
         ("PE", 100.0, 99.0, 98.9, None),
     ],
@@ -415,6 +445,52 @@ def test_five_minute_missing_data_drops_signal(tmp_path):
     bot._handle_buy_signal.assert_not_called()
     event = _events(tmp_path / "decisions.jsonl")[-1]
     assert event["cancellation_reason"] == "five_min_data_missing"
+
+
+def test_five_minute_circuit_breaker_disables_after_three_consecutive_missing(
+    tmp_path, caplog
+):
+    start = datetime.now(IST).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
+    signal = _pending("NIFTY_CE", start, 100.0)
+    bot = _bot(tmp_path, [signal], start + timedelta(minutes=2))
+    _enable_five_minute_gate(bot, [])
+
+    def missing(signal_number):
+        pending = _pending(
+            "NIFTY_CE",
+            start + timedelta(minutes=signal_number),
+            100.0,
+        )
+        pending.update(
+            five_min_candle_start=start,
+            five_min_candle_end=start + timedelta(minutes=5),
+            five_min_continuation_status="reached",
+        )
+        key = (pending["symbol"], pending["leg"])
+        bot._pending_entries[key] = pending
+        bot._cancel_confirmed_entry(
+            key,
+            pending,
+            start + timedelta(minutes=6, seconds=signal_number),
+            reason="five_min_data_missing",
+        )
+
+    missing(1)
+    missing(2)
+    assert bot._paper_change_enabled("entry_5m_continuation_v1") is True
+    bot._record_five_min_outcome(signal, start + timedelta(minutes=7), "passed")
+    missing(3)
+    missing(4)
+    assert bot._paper_change_enabled("entry_5m_continuation_v1") is True
+    missing(5)
+
+    assert bot._paper_change_enabled("entry_5m_continuation_v1") is False
+    events = _events(tmp_path / "decisions.jsonl")
+    assert events[-1]["five_min_autodisabled"] is True
+    assert events[-1]["five_min_missing_streak"] == 3
+    assert "five_min_autodisabled" in caplog.text
 
 
 def test_five_minute_pass_rechecks_open_risk_before_fill(tmp_path):

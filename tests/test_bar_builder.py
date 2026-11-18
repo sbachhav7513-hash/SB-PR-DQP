@@ -30,3 +30,4 @@ def test_process_tick_converts_cumulative_volume_to_bar_delta() -> None:
     builder.process_tick(Tick(1, start + timedelta(seconds=60), 102.0, volume=123))
 
     assert builder.get_bars(1)[0].volume == 15
+    assert builder.get_bars(1)[0].timestamp == start

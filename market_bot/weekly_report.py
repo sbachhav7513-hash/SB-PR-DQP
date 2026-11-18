@@ -1432,6 +1432,9 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
         "entry_mode", "route", "signal_time", "signal_close",
         "confirmation_candle_time", "confirmation_close",
         "confirmation_result", "confirmation_delay_seconds",
+        "five_min_candle_start", "five_min_candle_end",
+        "five_min_continuation_status", "five_min_autodisabled",
+        "five_min_missing_streak",
         "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
         "order_premium", "order_bid", "order_ask", "order_ltp",
         "cancellation_reason", "cancellation_sub_reason",
@@ -1927,6 +1930,7 @@ def write_daily_review(
             )
             run_up_fail_open_by_cause[cause] += 1
     five_min_by_signal: Dict[str, tuple[str, str, dict]] = {}
+    five_min_autodisabled_signals: set[str] = set()
     for decision in decisions:
         status = decision.get("five_min_continuation_status")
         cancellation_reason = str(
@@ -1939,6 +1943,8 @@ def write_daily_review(
             or decision.get("signal_uid")
             or f"{decision.get('ticker')}|{decision.get('timestamp')}"
         )
+        if decision.get("five_min_autodisabled"):
+            five_min_autodisabled_signals.add(signal_key)
         if cancellation_reason == "five_min_expired":
             result = "expired"
         elif cancellation_reason == "five_min_data_missing" or status == "data_missing":
@@ -2178,6 +2184,7 @@ def write_daily_review(
             f"{five_min_counts[tier]['data_missing']} |"
             for tier in ("STOCK", "NIFTY", "BANKNIFTY")
         ),
+        f"- five_min_autodisabled: {len(five_min_autodisabled_signals)}",
         "",
         "## EMA Stop-Loss Re-entry",
         f"- Eligible stop-loss trades: {ema_reentry['eligible_stop_losses']}",

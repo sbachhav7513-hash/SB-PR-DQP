@@ -83,24 +83,27 @@ Persisted runtime values were only available for the later telemetry cohort; ear
 ## Paired simulator
 
 - Baseline entry: recorded PAPER ask fill and original quantity.
-- Delayed entry: first complete run of five contiguous one-minute underlying bars from the signal; requires the 5-minute close to continue directionally beyond the recorded one-minute confirmation close; entry at the first valid archived option ask at or after that 5-minute close.
+- Variant entry: the clock-aligned five-minute candle uses the completed one-minute bars whose timestamps are in `[HH:MM:00, HH:MM+5:00)`, accepting seconds offsets. All five minute buckets must be present, including the last completed minute. The candle close must strictly continue beyond the recorded one-minute confirmation close; entry uses the first valid archived option ask after the last minute has closed.
 - Both arms use a 10% premium stop and a 20% target recalculated from that arm's ask entry, with identical quantity. If stop and target touch in one candle, stop wins. Stops use archived bid quotes when available; the session-end exit uses the last available bid. A target requires an observed bid at/above target.
 - Fees are deducted on both executed orders using the configured PAPER charge model. Net R divides net rupees by 10% of entry ask times quantity. A valid no-continuation is zero R; missing data is excluded and shown in coverage.
 - The best-trade exclusion removes the single highest baseline net-R trade from both arms to preserve the paired sample.
 
-| Period | Arm | Mean net R | Paired n | Non-continuations | Missing/incomplete |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 30-Oct to 11-Nov | Baseline | 0.2028 | 33 | 0 | 1 |
-| 30-Oct to 11-Nov | Delayed | 0.1682 | 33 | 16 | 1 |
-| 12-Nov to 16-Nov | Baseline | -0.4653 | 17 | 0 | 0 |
-| 12-Nov to 16-Nov | Delayed | -0.0690 | 17 | 10 | 0 |
+| Period | Reached | Passed | Failed | Expired | Data missing | Baseline n | Baseline mean net R | Baseline mean net ₹ | Variant n | Variant mean net R | Variant mean net ₹ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 30-Oct to 11-Nov | 34 | 19 | 15 | 0 | 0 | 34 | 0.1660 | 261.6707 | 34 | -0.0823 | -84.7654 |
+| 12-Nov to 16-Nov | 17 | 6 | 11 | 0 | 0 | 17 | -0.4653 | -820.3553 | 17 | -0.1753 | -274.0812 |
+| All 51 | 51 | 25 | 26 | 0 | 0 | 51 | -0.0444 | -99.0046 | 51 | -0.1133 | -147.8707 |
 
 ### Without the best trade
 
-| Excluded trade (highest baseline net R) | Arm | Mean net R | Paired n |
-| --- | --- | ---: | ---: |
-| LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | Baseline | -0.0723 | 49 |
-| LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | Delayed | 0.0894 | 49 |
+| Period / sample | Excluded trade | Baseline n | Baseline mean net R | Baseline mean net ₹ | Variant n | Variant mean net R | Variant mean net ₹ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 30-Oct to 11-Nov | LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | 33 | 0.1006 | 162.8232 | 33 | -0.0848 | -87.3341 |
+| 12-Nov to 16-Nov | LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | 17 | -0.4653 | -820.3553 | 17 | -0.1753 | -274.0812 |
+| All 51 | LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | 50 | -0.0918 | -171.4575 | 50 | -0.1155 | -150.8281 |
+
+Reconciliation: the earlier paired baseline without-best result (-0.0723 R, n=49) excluded SBIN_CE-2026-11-06T10:05:04.001399+05:30-BUY because its legacy replay window was incomplete. The corrected clock-window has all five minute buckets; its directional outcome is failed, so its baseline -1.0485 R is now included. The fixed-rule without-best paired baseline is therefore -0.0918 R (n=50), matching the baseline-only cohort.
+- Baseline-only without-best: n=50, mean net R=-0.0918, mean net ₹=-171.4575.
 
 ## Recommendation
 
@@ -108,56 +111,65 @@ Do not recommend the 5-minute continuation rule: it does not win in both periods
 
 ## Trade-level arm results
 
-| Trade | Period | Run-up offline % | 5m result | Baseline net R | Delayed net R |
+| Trade | Period | Run-up offline % | 5m result | Baseline net R | Variant net R |
 | --- | --- | ---: | --- | ---: | ---: |
-| NIFTY_PE-2026-10-30T10:07:21.189181+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | -1.0731 | -1.0681 |
-| RELIANCE_CE-2026-11-03T09:58:37.552708+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | -1.1218 | -1.7551 |
-| HDFCBANK_CE-2026-11-03T13:00:31.294452+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | 0.5019 | 0.0000 |
-| INFY_CE-2026-11-03T13:26:35.553817+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | 0.0486 | 0.0228 |
-| LT_PE-2026-11-04T10:19:50.401341+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | 2.0411 | 0.0000 |
-| RELIANCE_CE-2026-11-04T12:27:49.645890+05:30-BUY | 30-Oct to 11-Nov | -0.6803 | complete | 1.9486 | 1.9486 |
-| SBIN_CE-2026-11-04T13:19:49.413291+05:30-BUY | 30-Oct to 11-Nov | 11.2583 | complete | 0.1654 | -0.0096 |
-| TCS_CE-2026-11-04T14:25:53.154906+05:30-BUY | 30-Oct to 11-Nov | 0.4908 | complete | -0.0369 | -0.0845 |
-| HDFCBANK_CE-2026-11-05T11:31:03.340974+05:30-BUY | 30-Oct to 11-Nov | 1.4706 | complete | 2.0499 | 2.0900 |
-| RELIANCE_CE-2026-11-05T13:43:03.335864+05:30-BUY | 30-Oct to 11-Nov | 8.7452 | not_continued | -1.0541 | 0.0000 |
-| LT_PE-2026-11-05T14:22:08.089786+05:30-BUY | 30-Oct to 11-Nov | 14.9109 | not_continued | -1.0804 | 0.0000 |
-| SBIN_CE-2026-11-06T10:05:04.001399+05:30-BUY | 30-Oct to 11-Nov | N/A | five_minute_path_incomplete | -1.0485 | N/A |
-| NIFTY_PE-2026-11-06T10:41:37.273817+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | -1.1935 | 0.0000 |
-| HDFCBANK_PE-2026-11-06T10:41:37.464399+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | -1.1679 | 0.0000 |
-| TCS_PE-2026-11-06T10:53:36.280612+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | 0.6784 | 0.5616 |
-| INFY_PE-2026-11-06T10:55:37.279923+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | -1.2263 | -1.3455 |
-| INFY_CE-2026-11-06T11:48:38.033746+05:30-BUY | 30-Oct to 11-Nov | -8.6287 | not_continued | -1.1553 | 0.0000 |
-| BANKNIFTY_CE-2026-11-06T12:11:37.532648+05:30-BUY | 30-Oct to 11-Nov | 2.1709 | complete | 2.0181 | 2.0068 |
-| LT_CE-2026-11-06T13:16:34.530139+05:30-BUY | 30-Oct to 11-Nov | 6.4477 | complete | 1.9814 | 1.9814 |
-| TCS_CE-2026-11-06T13:16:36.537440+05:30-BUY | 30-Oct to 11-Nov | -8.8154 | complete | -0.3299 | -0.3204 |
-| INFY_CE-2026-11-06T14:33:37.782767+05:30-BUY | 30-Oct to 11-Nov | 1.4519 | not_continued | 0.9663 | 0.0000 |
-| LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | 2.3224 | 0.0000 |
-| ICICIBANK_PE-2026-11-09T10:36:22.341814+05:30-BUY | 30-Oct to 11-Nov | N/A | not_continued | -1.1587 | 0.0000 |
-| RELIANCE_CE-2026-11-09T11:28:22.855071+05:30-BUY | 30-Oct to 11-Nov | -4.3584 | complete | 2.1089 | 1.9312 |
-| TCS_PE-2026-11-09T12:16:22.846458+05:30-BUY | 30-Oct to 11-Nov | -7.1380 | complete | -0.2982 | -0.3814 |
-| INFY_CE-2026-11-09T12:51:24.338410+05:30-BUY | 30-Oct to 11-Nov | -11.7073 | not_continued | 0.7806 | 0.0000 |
-| BANKNIFTY_PE-2026-11-09T13:16:57.381000+05:30-BUY | 30-Oct to 11-Nov | 3.6147 | not_continued | -1.1161 | 0.0000 |
-| TCS_CE-2026-11-09T13:59:23.086457+05:30-BUY | 30-Oct to 11-Nov | 4.8864 | not_continued | 0.6013 | 0.0000 |
-| HDFCBANK_CE-2026-11-11T11:33:05.261555+05:30-BUY | 30-Oct to 11-Nov | 13.1336 | complete | -1.0508 | -1.0894 |
-| TCS_PE-2026-11-11T12:06:05.294871+05:30-BUY | 30-Oct to 11-Nov | N/A | complete | 1.9690 | -1.0542 |
-| LT_PE-2026-11-11T13:39:05.480164+05:30-BUY | 30-Oct to 11-Nov | -2.0122 | complete | 1.9663 | 2.1170 |
-| RELIANCE_PE-2026-11-11T13:41:05.981460+05:30-BUY | 30-Oct to 11-Nov | -1.1111 | not_continued | -1.0565 | 0.0000 |
-| INFY_CE-2026-11-11T14:01:05.495244+05:30-BUY | 30-Oct to 11-Nov | -4.7452 | not_continued | -0.2501 | 0.0000 |
-| BANKNIFTY_PE-2026-11-11T14:21:21.479640+05:30-BUY | 30-Oct to 11-Nov | 14.8406 | not_continued | -1.0870 | 0.0000 |
-| HDFCBANK_PE-2026-11-12T10:11:04.590286+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0461 | 0.0000 |
-| BANKNIFTY_PE-2026-11-12T10:27:19.572005+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0733 | 0.0000 |
-| HDFCBANK_CE-2026-11-12T10:48:04.318098+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | 0.2492 | 0.0000 |
-| ICICIBANK_PE-2026-11-12T12:06:04.624825+05:30-BUY | 12-Nov to 16-Nov | 10.5405 | complete | -1.0539 | -1.0528 |
-| RELIANCE_CE-2026-11-12T12:49:04.584964+05:30-BUY | 12-Nov to 16-Nov | 12.6344 | complete | -1.0804 | -1.1844 |
-| LT_CE-2026-11-12T13:09:06.550071+05:30-BUY | 12-Nov to 16-Nov | -10.3653 | complete | -0.5728 | -0.7378 |
-| RELIANCE_CE-2026-11-13T10:07:14.146387+05:30-BUY | 12-Nov to 16-Nov | N/A | complete | 2.0025 | 2.0290 |
-| HDFCBANK_PE-2026-11-13T10:12:13.629137+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.8217 | 0.0000 |
-| INFY_CE-2026-11-13T10:35:15.396028+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0732 | 0.0000 |
-| BANKNIFTY_CE-2026-11-13T10:50:29.411239+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0528 | 0.0000 |
-| TCS_PE-2026-11-16T10:25:13.642973+05:30-BUY | 12-Nov to 16-Nov | N/A | complete | 2.1458 | 1.9709 |
-| NIFTY_PE-2026-11-16T10:31:49.833340+05:30-BUY | 12-Nov to 16-Nov | N/A | complete | -1.2732 | -1.0898 |
-| BANKNIFTY_PE-2026-11-16T10:31:50.201800+05:30-BUY | 12-Nov to 16-Nov | N/A | complete | 1.9321 | -1.1072 |
-| RELIANCE_PE-2026-11-16T10:35:14.102813+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0466 | 0.0000 |
-| RELIANCE_PE-2026-11-16T11:21:13.795869+05:30-BUY | 12-Nov to 16-Nov | N/A | not_continued | -1.0464 | 0.0000 |
-| TCS_CE-2026-11-16T12:16:13.670355+05:30-BUY | 12-Nov to 16-Nov | -2.1327 | not_continued | -1.0468 | 0.0000 |
-| INFY_PE-2026-11-16T12:53:13.327157+05:30-BUY | 12-Nov to 16-Nov | 5.0000 | not_continued | -1.0524 | 0.0000 |
+| NIFTY_PE-2026-10-30T10:07:21.189181+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | -1.0731 | -1.0811 |
+| RELIANCE_CE-2026-11-03T09:58:37.552708+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | -1.1218 | -1.5225 |
+| HDFCBANK_CE-2026-11-03T13:00:31.294452+05:30-BUY | 30-Oct to 11-Nov | N/A | failed | 0.5019 | 0.0000 |
+| INFY_CE-2026-11-03T13:26:35.553817+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | 0.0486 | -0.0916 |
+| LT_PE-2026-11-04T10:19:50.401341+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | 2.0411 | 1.9592 |
+| RELIANCE_CE-2026-11-04T12:27:49.645890+05:30-BUY | 30-Oct to 11-Nov | -0.6803 | failed | 1.9486 | 0.0000 |
+| SBIN_CE-2026-11-04T13:19:49.413291+05:30-BUY | 30-Oct to 11-Nov | 11.2583 | failed | 0.1654 | 0.0000 |
+| TCS_CE-2026-11-04T14:25:53.154906+05:30-BUY | 30-Oct to 11-Nov | 0.4908 | passed | -0.0369 | -0.1668 |
+| HDFCBANK_CE-2026-11-05T11:31:03.340974+05:30-BUY | 30-Oct to 11-Nov | 1.4706 | failed | 2.0499 | 0.0000 |
+| RELIANCE_CE-2026-11-05T13:43:03.335864+05:30-BUY | 30-Oct to 11-Nov | 8.7452 | passed | -1.0541 | -1.0539 |
+| LT_PE-2026-11-05T14:22:08.089786+05:30-BUY | 30-Oct to 11-Nov | 14.9109 | failed | -1.0804 | 0.0000 |
+| SBIN_CE-2026-11-06T10:05:04.001399+05:30-BUY | 30-Oct to 11-Nov | N/A | failed | -1.0485 | 0.0000 |
+| NIFTY_PE-2026-11-06T10:41:37.273817+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | -1.1935 | -1.0582 |
+| HDFCBANK_PE-2026-11-06T10:41:37.464399+05:30-BUY | 30-Oct to 11-Nov | N/A | failed | -1.1679 | 0.0000 |
+| TCS_PE-2026-11-06T10:53:36.280612+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | 0.6784 | -1.0484 |
+| INFY_PE-2026-11-06T10:55:37.279923+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | -1.2263 | -1.1677 |
+| INFY_CE-2026-11-06T11:48:38.033746+05:30-BUY | 30-Oct to 11-Nov | -8.6287 | failed | -1.1553 | 0.0000 |
+| BANKNIFTY_CE-2026-11-06T12:11:37.532648+05:30-BUY | 30-Oct to 11-Nov | 2.1709 | passed | 2.0181 | 2.1919 |
+| LT_CE-2026-11-06T13:16:34.530139+05:30-BUY | 30-Oct to 11-Nov | 6.4477 | passed | 1.9814 | 2.1046 |
+| TCS_CE-2026-11-06T13:16:36.537440+05:30-BUY | 30-Oct to 11-Nov | -8.8154 | failed | -0.3299 | 0.0000 |
+| INFY_CE-2026-11-06T14:33:37.782767+05:30-BUY | 30-Oct to 11-Nov | 1.4519 | passed | 0.9663 | 0.7960 |
+| LT_CE-2026-11-09T10:04:22.638133+05:30-BUY | 30-Oct to 11-Nov | N/A | failed | 2.3224 | 0.0000 |
+| ICICIBANK_PE-2026-11-09T10:36:22.341814+05:30-BUY | 30-Oct to 11-Nov | N/A | passed | -1.1587 | -1.0520 |
+| RELIANCE_CE-2026-11-09T11:28:22.855071+05:30-BUY | 30-Oct to 11-Nov | -4.3584 | passed | 2.1089 | 1.9894 |
+| TCS_PE-2026-11-09T12:16:22.846458+05:30-BUY | 30-Oct to 11-Nov | -7.1380 | passed | -0.2982 | -0.9135 |
+| INFY_CE-2026-11-09T12:51:24.338410+05:30-BUY | 30-Oct to 11-Nov | -11.7073 | passed | 0.7806 | 0.5245 |
+| BANKNIFTY_PE-2026-11-09T13:16:57.381000+05:30-BUY | 30-Oct to 11-Nov | 3.6147 | failed | -1.1161 | 0.0000 |
+| TCS_CE-2026-11-09T13:59:23.086457+05:30-BUY | 30-Oct to 11-Nov | 4.8864 | failed | 0.6013 | 0.0000 |
+| HDFCBANK_CE-2026-11-11T11:33:05.261555+05:30-BUY | 30-Oct to 11-Nov | 13.1336 | passed | -1.0508 | -1.0894 |
+| TCS_PE-2026-11-11T12:06:05.294871+05:30-BUY | 30-Oct to 11-Nov | N/A | failed | 1.9690 | 0.0000 |
+| LT_PE-2026-11-11T13:39:05.480164+05:30-BUY | 30-Oct to 11-Nov | -2.0122 | failed | 1.9663 | 0.0000 |
+| RELIANCE_PE-2026-11-11T13:41:05.981460+05:30-BUY | 30-Oct to 11-Nov | -1.1111 | passed | -1.0565 | -1.0553 |
+| INFY_CE-2026-11-11T14:01:05.495244+05:30-BUY | 30-Oct to 11-Nov | -4.7452 | passed | -0.2501 | -1.0636 |
+| BANKNIFTY_PE-2026-11-11T14:21:21.479640+05:30-BUY | 30-Oct to 11-Nov | 14.8406 | failed | -1.0870 | 0.0000 |
+| HDFCBANK_PE-2026-11-12T10:11:04.590286+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0461 | 0.0000 |
+| BANKNIFTY_PE-2026-11-12T10:27:19.572005+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0733 | 0.0000 |
+| HDFCBANK_CE-2026-11-12T10:48:04.318098+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | 0.2492 | 0.0000 |
+| ICICIBANK_PE-2026-11-12T12:06:04.624825+05:30-BUY | 12-Nov to 16-Nov | 10.5405 | passed | -1.0539 | -1.0862 |
+| RELIANCE_CE-2026-11-12T12:49:04.584964+05:30-BUY | 12-Nov to 16-Nov | 12.6344 | failed | -1.0804 | 0.0000 |
+| LT_CE-2026-11-12T13:09:06.550071+05:30-BUY | 12-Nov to 16-Nov | -10.3653 | failed | -0.5728 | 0.0000 |
+| RELIANCE_CE-2026-11-13T10:07:14.146387+05:30-BUY | 12-Nov to 16-Nov | N/A | passed | 2.0025 | -1.1925 |
+| HDFCBANK_PE-2026-11-13T10:12:13.629137+05:30-BUY | 12-Nov to 16-Nov | N/A | passed | -1.8217 | 1.9388 |
+| INFY_CE-2026-11-13T10:35:15.396028+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0732 | 0.0000 |
+| BANKNIFTY_CE-2026-11-13T10:50:29.411239+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0528 | 0.0000 |
+| TCS_PE-2026-11-16T10:25:13.642973+05:30-BUY | 12-Nov to 16-Nov | N/A | passed | 2.1458 | -0.3891 |
+| NIFTY_PE-2026-11-16T10:31:49.833340+05:30-BUY | 12-Nov to 16-Nov | N/A | passed | -1.2732 | -1.0898 |
+| BANKNIFTY_PE-2026-11-16T10:31:50.201800+05:30-BUY | 12-Nov to 16-Nov | N/A | passed | 1.9321 | -1.1605 |
+| RELIANCE_PE-2026-11-16T10:35:14.102813+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0466 | 0.0000 |
+| RELIANCE_PE-2026-11-16T11:21:13.795869+05:30-BUY | 12-Nov to 16-Nov | N/A | failed | -1.0464 | 0.0000 |
+| TCS_CE-2026-11-16T12:16:13.670355+05:30-BUY | 12-Nov to 16-Nov | -2.1327 | failed | -1.0468 | 0.0000 |
+| INFY_PE-2026-11-16T12:53:13.327157+05:30-BUY | 12-Nov to 16-Nov | 5.0000 | failed | -1.0524 | 0.0000 |
+
+## 17-Nov follow-up
+
+- Reached: 5; passed: 3; failed: 2; expired: 0; data_missing: 0.
+
+| Sample | Excluded trade | Baseline n | Baseline mean net R | Baseline mean net ₹ | Variant n | Variant mean net R | Variant mean net ₹ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All 5 | — | 5 | -1.0673 | -1766.1820 | 5 | -0.6671 | -1040.8070 |
+| Without best | INFY_CE-2026-11-17T13:44:24.405269+05:30-BUY | 4 | -1.1142 | -1826.3400 | 4 | -0.8339 | -1301.0087 |

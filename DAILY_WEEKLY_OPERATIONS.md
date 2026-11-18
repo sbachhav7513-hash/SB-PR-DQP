@@ -82,6 +82,30 @@ modified by this telemetry.
 Post-confirmation filter failures record the specific `filter_name` alongside
 `cancellation_sub_reason`.
 
+### PAPER 5-minute continuation entry gate
+
+`entry_5m_continuation_v1` is PAPER-only and remains `false` unless explicitly
+approved for a PAPER session. Do not enable it in LIVE or BACKTEST. Before
+installing an approved code revision on the VPS, verify its commit SHA, stop
+`kite-trading-bot.service`, update the application from the approved release
+package, confirm the active `kite_config.json` still has
+`"entry_5m_continuation_v1": false`, then start the service. Check the startup
+identity/runtime-flags line and `systemctl status` before leaving the service
+running. This implementation task does not authorize an update, merge, or
+deployment.
+
+If a later PAPER trial is approved, change only
+`"entry_5m_continuation_v1"` to `true`, keep `live_orders_enabled` false, and
+restart PAPER. The gate uses the next clock-aligned five-minute window after
+the one-minute confirmation close. All five one-minute buckets must be
+present; the final bucket is evaluated only after its completed bar arrives.
+Three consecutive `data_missing` results disable this gate in memory for the
+rest of that IST session date and emit `five_min_autodisabled`. On restart,
+the bot restores the session streak/tripped state from that day's decision
+journal. The daily review reports the trip count. The breaker does not edit
+the config; the configured flag can apply again on the next IST session date.
+For rollback, set only `entry_5m_continuation_v1` to `false` and restart PAPER.
+
 The observer uses the existing asynchronous paper-journal writer and fails
 open: a telemetry or persistence error is counted/logged without interrupting
 bar processing. To disable it, set `"scorer_input_logging_v1": false` in the

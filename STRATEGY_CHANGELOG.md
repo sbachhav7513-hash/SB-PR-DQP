@@ -58,6 +58,22 @@ Follow-up or reason to revisit:
 
 No completed experiments recorded yet.
 
+### EXP-2026-11-18-01 — Clock-aligned five-minute continuation replay
+
+- Status: implemented; strategy-performance result is inconclusive and the flag remains OFF.
+- Problem and evidence: The prior helper required exact minute-start timestamps, while the production bar builder stamps completed bars with the interval start observed from the first tick (for example, `10:09:18`). Its prior archived replay therefore labeled windows incomplete even when all five minute buckets were present.
+- Prior related log entries checked: The pending-items report's earlier T3 replay and the 2026-11-06 exit-policy experiment; this is a timing-correctness correction, not a claim that the continuation rule improves returns.
+- Hypothesis: Bucket timestamps within the exclusive clock window `[HH:MM:00, HH:MM+5:00)` by minute and wait for the fifth completed bar, so archived/runtime windows with seconds offsets are evaluated consistently.
+- Single variable being changed: Five-minute continuation window assembly and its completion timing; other entry, exit, quote, and risk conditions remain unchanged.
+- Code commit/version and config before: Started from `78afb45`; `entry_5m_continuation_v1=false`.
+- Baseline period and metrics: The earlier replay reported an all-51 no-best paired baseline of -0.0723 R (n=49), omitting SBIN_CE on 6-Nov due to the exact-timestamp incomplete-window bug.
+- Test method and fixed evaluation period/sample: Replay the same 51 closed trades with unchanged baseline/variant exit assumptions, fees, and quantity; additionally replay the five 17-Nov candidates from archived underlying and option data. Report reached/pass/fail/expired/missing counts and paired net R/rupees, including without-best.
+- Change made: Clock-bucket aggregation, completed-final-bar waiting, a three-consecutive-`data_missing` session breaker and daily-review count, and focused regression tests; dated 2026-11-18.
+- Results: For 30-Oct–11-Nov, 34 reached, 19 passed, 15 failed, 0 expired/missing; baseline vs variant mean net return was 0.1660 vs -0.0823 R and ₹261.6707 vs -₹84.7654. For 12-Nov–16-Nov, 17 reached, 6 passed, 11 failed, 0 expired/missing; means were -0.4653 vs -0.1753 R and -₹820.3553 vs -₹274.0812. All 51: 51 reached, 25 passed, 26 failed, 0 expired/missing; means were -0.0444 vs -0.1133 R and -₹99.0046 vs -₹147.8707. Without the best baseline trade, the corrected baseline is -0.0918 R, n=50, versus variant -0.1155 R, n=50. The correction adds SBIN_CE's -1.0485 baseline R to the n=49 cohort. For 17-Nov, 5 reached, 3 passed, 2 failed, 0 expired/missing; baseline/variant means were -1.0673/-0.6671 R and -₹1,766.1820/-₹1,040.8070. Without-best n=4 means were -1.1142/-0.8339 R and -₹1,826.3400/-₹1,301.0087. See `PAPER_RUN_UP_AND_5M_REPLAY_2026-10-30_to-2026-11-16.md` for detail.
+- Decision and evidence: Keep the flag OFF. Although the variant was less negative in the second period and 17-Nov, it underperformed the baseline overall and in the first period; the 17-Nov sample has only five trades. These data do not establish an edge or justify enabling the rule.
+- Rollback/version if reverted: Set `entry_5m_continuation_v1=false` and restart PAPER; LIVE and BACKTEST must not use this flag.
+- Follow-up or reason to revisit: Run final flags-OFF OLD-vs-NEW parity after commit. Reconsider only with a materially larger, reproducible PAPER sample and unchanged fixed evaluation methodology.
+
 ### EXP-2026-11-06-01
 
 - Status: running; replay and forward paper outcomes are unmeasured.
