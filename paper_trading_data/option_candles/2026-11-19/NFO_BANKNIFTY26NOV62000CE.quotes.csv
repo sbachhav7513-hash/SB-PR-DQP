@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-19T15:30:29+05:30,NFO:BANKNIFTY26NOV62000CE,BANKNIFTY,CE,62000.0,2026-11-23,1149.0,1142.3,1148.75,2026-11-19T15:30:29+05:30,0.49043,8c6ad4d04041cc85ba5b7c603f38722ff82480b9edc4e36d73c511220895bbe1,908bdc988d34da2dba63bdc43d334f43b75bd4cd,True
