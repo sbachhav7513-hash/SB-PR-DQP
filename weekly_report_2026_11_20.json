@@ -1,0 +1,552 @@
+{
+  "generated_at": "2026-11-20T15:30:24+05:30",
+  "session_timezone": "Asia/Kolkata",
+  "market_session_hours": {
+    "open": "09:15",
+    "close": "15:30"
+  },
+  "period_days": 7,
+  "closed_trades": 19,
+  "total_pnl": -11495.5,
+  "winning_trades": 7,
+  "losing_trades": 12,
+  "win_rate": 36.84,
+  "average_win": 862.04,
+  "average_loss": -1460.81,
+  "largest_win": 1419.0,
+  "largest_loss": -2250.0,
+  "profit_factor": 0.34,
+  "decisions_recorded": 52151,
+  "signal_counts": {
+    "BUY": 1447,
+    "SELL": 811,
+    "HOLD": 47867,
+    "ERROR": 0
+  },
+  "outcome_counts": {
+    "operational": 22652,
+    "hold": 28031,
+    "option_filter": 1048,
+    "accuracy_filter": 400,
+    "trade_opened": 20,
+    "risk_blocked": 0,
+    "execution_failed": 0
+  },
+  "market_session_counts": {
+    "before_open": 1157,
+    "regular_session": 50960,
+    "after_close": 34
+  },
+  "decision_reconciliation": {
+    "approved_entries": 20,
+    "classified_rejections": 1448,
+    "non_entry_decisions": 50683,
+    "accounted_decisions": 52151,
+    "matches_decisions_recorded": true
+  },
+  "performance_by_symbol": {
+    "TCS_PE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 900.0
+    },
+    "NIFTY_PE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 263.25
+    },
+    "BANKNIFTY_PE": {
+      "trades": 2,
+      "wins": 1,
+      "losses": 1,
+      "win_rate": 50.0,
+      "total_pnl": -702.0
+    },
+    "RELIANCE_PE": {
+      "trades": 3,
+      "wins": 0,
+      "losses": 3,
+      "win_rate": 0.0,
+      "total_pnl": -4425.0
+    },
+    "TCS_CE": {
+      "trades": 3,
+      "wins": 0,
+      "losses": 3,
+      "win_rate": 0.0,
+      "total_pnl": -5557.5
+    },
+    "INFY_PE": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -1560.0
+    },
+    "INFY_CE": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -2580.0
+    },
+    "NIFTY_CE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 1270.75
+    },
+    "LT_CE": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 420.0
+    },
+    "RELIANCE_CE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 475.0
+    }
+  },
+  "performance_by_hour": {
+    "10": {
+      "trades": 10,
+      "wins": 5,
+      "losses": 5,
+      "win_rate": 50.0,
+      "total_pnl": -3908.75
+    },
+    "11": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -3930.0
+    },
+    "12": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -3585.0
+    },
+    "13": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "win_rate": 66.67,
+      "total_pnl": 1289.5
+    },
+    "14": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -1286.25
+    },
+    "9": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -75.0
+    }
+  },
+  "performance_by_strategy_variant": {
+    "paper_underlying_support_reversal": {
+      "trades": 13,
+      "wins": 6,
+      "losses": 7,
+      "win_rate": 46.15,
+      "total_pnl": -5213.0
+    },
+    "paper_underlying_support_reversal_stop_reentry": {
+      "trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -3150.0
+    },
+    "primary": {
+      "trades": 3,
+      "wins": 1,
+      "losses": 2,
+      "win_rate": 33.33,
+      "total_pnl": -1220.0
+    },
+    "paper_ema_stop_reentry": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -1912.5
+    }
+  },
+  "performance_by_exit_reason": {
+    "MANUAL_TARGET": {
+      "trades": 4,
+      "wins": 4,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 4508.5
+    },
+    "PROFIT_LOCK": {
+      "trades": 4,
+      "wins": 2,
+      "losses": 2,
+      "win_rate": 50.0,
+      "total_pnl": 663.25
+    },
+    "STOP_LOSS": {
+      "trades": 9,
+      "wins": 0,
+      "losses": 9,
+      "win_rate": 0.0,
+      "total_pnl": -16554.75
+    },
+    "MARKET_CLOSE_FORCED_EXIT": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -900.0
+    },
+    "TAKE_PROFIT_V2": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0,
+      "total_pnl": 787.5
+    }
+  },
+  "cost_totals": {
+    "gross_pnl": -11495.5,
+    "modeled_fees": 1668.0,
+    "net_pnl": -13163.5,
+    "fee_coverage": 19,
+    "net_coverage": 19,
+    "trades": 19
+  },
+  "cost_performance": {
+    "tier": {
+      "stock": {
+        "trades": 9,
+        "gross_pnl": -10901.25,
+        "fee_coverage": 9,
+        "net_coverage": 9,
+        "r_coverage": 1,
+        "modeled_fees": 789.44,
+        "net_pnl": -11690.69,
+        "total_r": 0.626,
+        "average_r": 0.626
+      },
+      "index": {
+        "trades": 3,
+        "gross_pnl": 2953.0,
+        "fee_coverage": 3,
+        "net_coverage": 3,
+        "r_coverage": 1,
+        "modeled_fees": 266.08,
+        "net_pnl": 2686.92,
+        "total_r": 0.232,
+        "average_r": 0.232
+      },
+      "STOCK": {
+        "trades": 6,
+        "gross_pnl": -1426.25,
+        "fee_coverage": 6,
+        "net_coverage": 6,
+        "r_coverage": 2,
+        "modeled_fees": 520.4,
+        "net_pnl": -1946.65,
+        "total_r": 0.913,
+        "average_r": 0.457
+      },
+      "BANKNIFTY": {
+        "trades": 1,
+        "gross_pnl": -2121.0,
+        "fee_coverage": 1,
+        "net_coverage": 1,
+        "r_coverage": 0,
+        "modeled_fees": 92.08,
+        "net_pnl": -2213.08,
+        "total_r": null,
+        "average_r": null
+      }
+    },
+    "CE/PE": {
+      "PE": {
+        "trades": 9,
+        "gross_pnl": -5523.75,
+        "fee_coverage": 9,
+        "net_coverage": 9,
+        "r_coverage": 2,
+        "modeled_fees": 798.58,
+        "net_pnl": -6322.33,
+        "total_r": 0.858,
+        "average_r": 0.429
+      },
+      "CE": {
+        "trades": 10,
+        "gross_pnl": -5971.75,
+        "fee_coverage": 10,
+        "net_coverage": 10,
+        "r_coverage": 2,
+        "modeled_fees": 869.42,
+        "net_pnl": -6841.17,
+        "total_r": 0.913,
+        "average_r": 0.457
+      }
+    },
+    "exit_trigger": {
+      "human /exitat reached": {
+        "trades": 4,
+        "gross_pnl": 4508.5,
+        "fee_coverage": 4,
+        "net_coverage": 4,
+        "r_coverage": 2,
+        "modeled_fees": 383.45,
+        "net_pnl": 4125.05,
+        "total_r": 1.224,
+        "average_r": 0.612
+      },
+      "profit lock": {
+        "trades": 4,
+        "gross_pnl": 663.25,
+        "fee_coverage": 4,
+        "net_coverage": 4,
+        "r_coverage": 2,
+        "modeled_fees": 372.63,
+        "net_pnl": 290.62,
+        "total_r": 0.546,
+        "average_r": 0.273
+      },
+      "bot stop": {
+        "trades": 9,
+        "gross_pnl": -16554.75,
+        "fee_coverage": 9,
+        "net_coverage": 9,
+        "r_coverage": 0,
+        "modeled_fees": 753.85,
+        "net_pnl": -17308.6,
+        "total_r": null,
+        "average_r": null
+      },
+      "forced EOD": {
+        "trades": 1,
+        "gross_pnl": -900.0,
+        "fee_coverage": 1,
+        "net_coverage": 1,
+        "r_coverage": 0,
+        "modeled_fees": 86.58,
+        "net_pnl": -986.58,
+        "total_r": null,
+        "average_r": null
+      },
+      "bot_take_profit": {
+        "trades": 1,
+        "gross_pnl": 787.5,
+        "fee_coverage": 1,
+        "net_coverage": 1,
+        "r_coverage": 0,
+        "modeled_fees": 71.49,
+        "net_pnl": 716.01,
+        "total_r": null,
+        "average_r": null
+      }
+    }
+  },
+  "human_command_affected_trade": true,
+  "ema_reentry_summary": {
+    "paper_only": true,
+    "eligible_stop_losses": 8,
+    "signals_confirmed": 1,
+    "windows_expired": 0,
+    "no_signal": 0,
+    "entry_rejections": 0,
+    "reentries_closed": 1,
+    "trade_log": [
+      {
+        "trade_id": "TCS_CE-2026-11-18T10:13:31.965221+05:30-BUY",
+        "original_trade_id": "TCS_CE-2026-11-18T10:04:07.206817+05:30-BUY",
+        "ticker": "TCS_CE",
+        "stop_time": "2026-11-18T04:38:57.841731+00:00",
+        "signal_time": "2026-11-18T04:43:06+00:00",
+        "reason": "EMA(5) crossed above EMA(20), then underlying closed above crossover high",
+        "entry_price": 32.9,
+        "exit_price": 28.65,
+        "pnl": -1912.5,
+        "outcome": "LOSS"
+      }
+    ],
+    "wins": 0,
+    "losses": 1,
+    "breakeven": 0,
+    "win_rate_pct": 0.0,
+    "total_reentry_pnl": -1912.5,
+    "baseline_comparison": {
+      "baseline_closed_trades": 18,
+      "baseline_pnl": -9583.0,
+      "strategy_closed_trades": 19,
+      "strategy_pnl": -11495.5,
+      "incremental_reentry_pnl": -1912.5,
+      "pnl_change": -1912.5,
+      "baseline_win_rate_pct": 38.89,
+      "strategy_win_rate_pct": 36.84
+    },
+    "pnl_basis": "Recorded paper option P&L; includes the original stopped trade and any closed re-entry. Unmodeled costs may apply."
+  },
+  "option_exit_comparison": {
+    "paper_option_adaptive": {
+      "trade_entries": 19,
+      "entries_per_day": 2.71,
+      "closed_trades": 19,
+      "average_pnl_per_trade": -605.03,
+      "total_pnl": -11495.5
+    }
+  },
+  "quote_cost_coverage": {
+    "closed_trades": 19,
+    "quote_consistent_trades": 10,
+    "quote_based_pnl": -3397.75
+  },
+  "stop_risk_overruns": {
+    "stop_losses_with_risk_data": 9,
+    "overrun_trades": 9,
+    "total_overrun_rupees": 1335.13
+  },
+  "stop_out_recovery": {
+    "trades": 9,
+    "incomplete": 9,
+    "stop_within_5m": 2,
+    "reclaimed_entry": 0,
+    "reached_plus_1r": 0,
+    "underlying_reversed": 9
+  },
+  "paper_exit_rollback": {
+    "runner_gap_v2": {
+      "tagged_trades": 42,
+      "rollback_reasons": [],
+      "checks": [
+        "runner_drawdowns=0 closed_trade_sessions=5/5",
+        "risk_overruns=0 days_at_or_below_-6000=0"
+      ],
+      "rollback_required": false
+    },
+    "profit_lock_v2": {
+      "tagged_trades": 42,
+      "rollback_reasons": [],
+      "checks": [
+        "risk_overruns=0 days_at_or_below_-6000=0",
+        "first_ten_old_rule_better=0 paired=10/10 missing=0 tagged=42/10"
+      ],
+      "rollback_required": false
+    },
+    "trail_close_confirm_v2": {
+      "tagged_trades": 42,
+      "rollback_reasons": [],
+      "checks": [
+        "risk_overruns=0 days_at_or_below_-6000=0",
+        "first_ten_old_rule_better=0 paired=10/10 missing=0 tagged=42/10"
+      ],
+      "rollback_required": false
+    },
+    "partial_profit_v2": {
+      "tagged_trades": 35,
+      "rollback_reasons": [],
+      "checks": [
+        "executed=0 accounting_errors=0 duplicate_partials=0 days_at_daily_loss_limit=0",
+        "first_ten_partial_off_better=0 paired=0/10 missing=0 eligible=0/10"
+      ],
+      "rollback_required": false
+    },
+    "stop_quote_validation_v2": {
+      "tagged_trades": 35,
+      "rollback_reasons": [
+        "trade HDFCBANK_PE-2026-11-13T10:12:13.629137+05:30-BUY filled more than 3% below its stop trigger"
+      ],
+      "checks": [
+        "exit_fill_gap_rupees=0.2406",
+        "exit_fill_gap_pct=0.4674",
+        "guarded_quotes=0",
+        "fills_more_than_3pct_below_stop=2"
+      ],
+      "rollback_required": true
+    },
+    "stock_take_profit_v2": {
+      "tagged_trades": 28,
+      "rollback_reasons": [
+        "stock_take_profit_v2 tagged daily loss reached INR 6000.00 on 2026-11-16 (P&L -7035.00)"
+      ],
+      "checks": [
+        "take_profit_exits=5 fill_minus_trigger_gap_avg=0.2024",
+        "capped_winner_exits_bid_more_than_0.5R_within_30m=3 quote_missing=0",
+        "tagged_daily_loss=2026-11-11:655.00, 2026-11-12:-792.50, 2026-11-13:-1772.50, 2026-11-16:-7035.00, 2026-11-17:-3866.25, 2026-11-18:-3132.50, 2026-11-19:918.75, 2026-11-20:787.50 days_at_limit=1",
+        "first_ten_paired_stock_pnl_delta_avg=NA paired=0/10 missing=10 eligible=28/10"
+      ],
+      "rollback_required": true
+    }
+  },
+  "filter_stats": {
+    "volatility_rejected": 281,
+    "confirmation_rejected": 88,
+    "cooldown_rejected": 1,
+    "hours_rejected": 7,
+    "threshold_rejected": 23,
+    "approved_entries": 20,
+    "option_rejected": 1048,
+    "risk_rejected": 0,
+    "execution_failures": 0,
+    "total_rejected": 1448
+  },
+  "news_summary": {
+    "risk_counts": {
+      "NORMAL": 0,
+      "ELEVATED": 0,
+      "HIGH": 0,
+      "UNKNOWN": 52151,
+      "DISABLED": 0
+    },
+    "suppressed_entries": 0
+  },
+  "best_observed_profiles": [],
+  "pnl_basis": "Gross recorded P&L; modeled brokerage, taxes, and fees are reported separately. Net P&L is gross less modeled fees; no slippage is deducted.",
+  "learning_feedback": {
+    "status": "minimum_screening_sample_met",
+    "closed_trades": 19,
+    "minimum_closed_trades_for_screening": 10,
+    "recorded_pnl_before_costs": -11495.5,
+    "average_recorded_pnl_before_costs": -605.03,
+    "loss_patterns_for_review": [
+      {
+        "exit_reason": "SL",
+        "trades": 9,
+        "losses": 9,
+        "recorded_pnl_before_costs": -16554.75,
+        "average_recorded_pnl_before_costs": -1839.42
+      }
+    ],
+    "automatic_strategy_changes": false,
+    "recommendation": "The minimum screening count is met, not proof of an edge. Validate any candidate change with walk-forward replay and realistic costs; no strategy settings are changed automatically."
+  },
+  "recommendation": "The minimum screening count is met, not proof of an edge. Validate any candidate change with walk-forward replay and realistic costs; no strategy settings are changed automatically.",
+  "best_setup_windows": [
+    {
+      "label": "10:BUY",
+      "trades": 10,
+      "wins": 5,
+      "losses": 5,
+      "win_rate": 50.0,
+      "total_pnl": -3908.75,
+      "average_pnl": -390.88
+    }
+  ]
+}
