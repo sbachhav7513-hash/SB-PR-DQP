@@ -9,12 +9,35 @@ from market_bot.trade_journal import read_decisions
 from market_bot.weekly_report import (
     _daily_record_columns,
     _option_capture_window_status,
+    _weekly_net_r_multiple,
     build_weekly_report,
     summarize_best_setup_windows,
     write_daily_review,
     write_weekly_report,
     write_weekly_review,
 )
+
+
+def test_weekly_net_r_multiple_uses_entry_risk_not_remaining_planned_risk():
+    trade = {
+        "pnl_rupees": 768.25,
+        "fees_rupees": 0.0,
+        "planned_risk_rupees": 768.25,
+        "paper_entry_risk_rupees": 1536.5,
+    }
+
+    assert _weekly_net_r_multiple(trade) == 0.5
+
+
+def test_weekly_net_r_multiple_falls_back_to_initial_risk_times_entry_quantity():
+    trade = {
+        "pnl_rupees": 768.25,
+        "fees_rupees": 0.0,
+        "initial_risk_per_unit": 4.39,
+        "entry_quantity": 350,
+    }
+
+    assert _weekly_net_r_multiple(trade) == 0.5
 
 
 def test_weekly_report_does_not_recommend_a_profile_below_screening_sample(tmp_path):
@@ -428,6 +451,7 @@ def test_daily_and_weekly_reviews_group_modeled_fees_net_pnl_and_r(tmp_path):
         "fee_model_status": "modeled",
         "after_cost_pnl": 90.0,
         "net_pnl": 90.0,
+        "paper_entry_risk_rupees": 60.0,
         "tier": "A",
         "exit_trigger": "bot stop",
         "r_multiple": 1.5,

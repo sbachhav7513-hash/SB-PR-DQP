@@ -175,6 +175,26 @@ def _net_r_multiple(trade: Dict[str, Any]) -> float | None:
     return net / risk if risk is not None else None
 
 
+def _weekly_net_r_multiple(trade: Dict[str, Any]) -> float | None:
+    _, _, net = _trade_cost_values(trade)
+    if net is None:
+        return None
+    risk = _optional_finite_number(trade.get("paper_entry_risk_rupees"))
+    if risk is None or risk <= 0:
+        initial_risk_per_unit = _optional_finite_number(
+            trade.get("initial_risk_per_unit")
+        )
+        entry_quantity = _optional_finite_number(trade.get("entry_quantity"))
+        if (
+            initial_risk_per_unit is not None
+            and initial_risk_per_unit > 0
+            and entry_quantity is not None
+            and entry_quantity > 0
+        ):
+            risk = initial_risk_per_unit * entry_quantity
+    return net / risk if risk is not None and risk > 0 else None
+
+
 def _tier_review_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     costs = [_trade_cost_values(trade) for trade in trades]
     net_values = [values[2] for values in costs if values[2] is not None]
@@ -228,7 +248,7 @@ def _cost_performance(trades: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]
     }
     for trade in trades:
         gross, fees, net = _trade_cost_values(trade)
-        risk_multiple = _optional_finite_number(trade.get("r_multiple"))
+        risk_multiple = _weekly_net_r_multiple(trade)
         labels = {
             "tier": str(trade.get("tier") or "UNKNOWN"),
             "CE/PE": _option_leg(trade),
@@ -1042,7 +1062,8 @@ def build_weekly_report(
             "manual_exit", "manual_exit_events", "exit_command",
             "exit_reason_tag", "chart_context_snapshot",
             "strategy_variant", "exit_strategy", "reason", "exit_reason_category",
-            "quantity", "entry", "exit_price", "paper_entry_bid",
+            "quantity", "entry_quantity", "initial_risk_per_unit", "entry",
+            "exit_price", "paper_entry_bid",
             "paper_entry_ask", "paper_exit_ltp", "paper_exit_bid",
             "paper_exit_ask", "paper_exit_quote_timestamp",
             "paper_entry_risk_rupees",

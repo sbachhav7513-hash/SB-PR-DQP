@@ -47,6 +47,7 @@ paper_trading_data/**/.weekly_review_stage_*.md
 sim/
 .scratch_backtest/
 .scratch_lock_analysis/
+tmp/
 
 # Testing
 .pytest_cache/

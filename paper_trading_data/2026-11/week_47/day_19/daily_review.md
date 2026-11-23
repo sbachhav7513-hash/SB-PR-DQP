@@ -8,7 +8,7 @@
 - Decisions: 10589
 
 ## Runtime Identity and Flags
-- Commit SHA: 908bdc988d34da2dba63bdc43d334f43b75bd4cd
+- Commit SHA: 17eb41c86efe74e15cfca3850684f32e85af851f
 - Normalized config hash: 8c6ad4d04041cc85ba5b7c603f38722ff82480b9edc4e36d73c511220895bbe1
 - Flags: allow_trend_continuation=True, auto_discover_futures=False, banknifty_caps_v2=True, capital_based_risk_v2=True, capture_all_evaluated_contracts=True, ema_reentry_enabled=True, entry_5m_continuation_v1=False, entry_5m_max_ask_drift_pct=None, entry_feature_logging_v2=True, extend_option_timebox=True, gate_state_logging_v1=True, hard_context_filter=True, index_persistence_pass=True, late_window_enabled=False, level_stop_v2=False, live_orders_confirmed=False, news_enabled=False, nifty_range_gate_v1=True, nifty_vol_floor_v2=True, option_adaptive_exit_enabled=True, option_candle_momentum=True, option_premium_rising_momentum_v2=True, option_quote_validated_stops_enabled=True, option_range_breakout_enabled=False, partial_profit_v2=True, premarket_context_v1=True, premium_floor_v2=True, profit_lock_v2=True, reversal_confirm_v2=False, run_up_lookback_backfill_v2=False, run_up_veto_v2=True, runner_gap_v2=True, same_side_cluster_limit_v1=False, scorer_input_logging_v1=True, staged_option_targets_enabled=True, stale_quote_candle_fallback=True, stock_open_risk_share=1.0, stock_take_profit_v2=True, stock_tier_enabled_v1=True, stop_quote_validation_v2=True, stop_reentry_enabled=True, support_reversal_enabled=True, support_reversal_levels_diagnostics_v1=True, symbol_side_stop_breaker_v1=False, tier_risk_counters_v1=False, trail_close_confirm_v2=True, trailing_enabled=True, use_market_context=True
 
