@@ -1,0 +1,12 @@
+Option capture report — 2026-11-23
+Signals: 0
+Resolved contract_id: 0/0
+60-minute forward candles: 0/0
+Match rate: 100.0%
+Contracts captured (0): 
+Contract capture timing: {"NFO:NIFTY26D0125800CE": {"first_candle_time": null, "first_tick_time": "2026-11-23T09:03:10+05:30", "registration_time": null}, "NFO:NIFTY26D0125800PE": {"first_candle_time": null, "first_tick_time": "2026-11-23T09:03:10+05:30", "registration_time": null}}
+Contracts skipped (0): []
+Tick gaps >30s: {"NFO:NIFTY26D0125800CE": 4, "NFO:NIFTY26D0125800PE": 2}
+Candle gaps: {}
+Dropped rows: 0
+Subscription start delays: []
