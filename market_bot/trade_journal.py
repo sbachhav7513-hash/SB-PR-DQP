@@ -430,6 +430,7 @@ class PaperTradingRecorder:
         "entry_signal_time", "entry_blocked_by",
         "body_ratio_source",
         "atr_pct", "effective_volatility_threshold_pct", "momentum_candle",
+        "effective_min_trend_strength",
         "momentum_body_ratio", "momentum_body_ratio_threshold", "direction_rule",
         "active_paper_change_attributions",
         "confirmation_candle_time", "confirmation_close",

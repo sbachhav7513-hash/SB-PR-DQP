@@ -181,6 +181,10 @@
     "BANKNIFTY": false
   },
   "min_trend_strength": 0.005,
+  "min_trend_strength_overrides": {
+    "NIFTY": 0.0022,
+    "BANKNIFTY": 0.003
+  },
   "signal_proximity_pct": 0.0075,
   "ema_fast": 9,
   "ema_slow": 21,

@@ -1084,7 +1084,7 @@ def build_weekly_report(
         [
             "timestamp", "ticker", "signal", "outcome", "score", "reasons",
             "outcome_detail", "rejection_reason", "market_session", "market_hours",
-            "session_timezone", "strategy_variant",
+            "session_timezone", "strategy_variant", "effective_min_trend_strength",
             "event", "ema_reentry_event", "original_trade_id", "stop_time",
             "reentry_signal_time", "reentry_reason", "reentry_vwap",
         ],
@@ -1456,6 +1456,7 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
         "five_min_candle_start", "five_min_candle_end",
         "five_min_continuation_status", "five_min_autodisabled",
         "five_min_missing_streak",
+        "effective_min_trend_strength",
         "signal_premium", "signal_bid", "signal_ask", "signal_ltp",
         "order_premium", "order_bid", "order_ask", "order_ltp",
         "cancellation_reason", "cancellation_sub_reason",

@@ -4,7 +4,7 @@ import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time as datetime_time, timedelta
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -45,20 +45,48 @@ class BarBuilder:
         interval_seconds: int = 60,
         on_bar_callback: Optional[Callable[[str, Bar], None]] = None,
         max_bars_per_symbol: int = 100,
+        session_start: Optional[datetime_time] = None,
+        session_end: Optional[datetime_time] = None,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.on_bar_callback = on_bar_callback
         self.max_bars_per_symbol = max_bars_per_symbol  # Limit memory usage
+        self.session_start = session_start
+        self.session_end = session_end
         self.bars: Dict[int, List[Bar]] = defaultdict(list)
         self.current_bar: Dict[int, dict] = {}
         self.last_bar_time: Dict[int, datetime] = {}
         self.last_cumulative_volume: Dict[int, int] = {}
+
+    def _in_session(self, timestamp: datetime) -> bool:
+        if self.session_start is None and self.session_end is None:
+            return True
+        local = timestamp.astimezone(IST) if timestamp.tzinfo else timestamp
+        t = local.time()
+        if self.session_start is not None and t < self.session_start:
+            return False
+        if self.session_end is not None and t >= self.session_end:
+            return False
+        return True
+
+    def _slot_start(self, timestamp: datetime) -> datetime:
+        seconds = timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second
+        floored = seconds - (seconds % self.interval_seconds)
+        return timestamp.replace(
+            hour=floored // 3600,
+            minute=(floored % 3600) // 60,
+            second=floored % 60,
+            microsecond=0,
+        )
 
     def process_tick(self, tick: Tick) -> None:
         """Process a single tick and aggregate into bars."""
         token = tick.instrument_token
         price = tick.last_price
         timestamp = tick.timestamp
+        if not self._in_session(timestamp):
+            return
+        slot = self._slot_start(timestamp)
         previous_volume = self.last_cumulative_volume.get(token)
         volume_delta = 0 if previous_volume is None else max(tick.volume - previous_volume, 0)
         self.last_cumulative_volume[token] = tick.volume
@@ -66,14 +94,14 @@ class BarBuilder:
         ask = self._valid_quote(tick.ask)
 
         if token not in self.last_bar_time:
-            self.last_bar_time[token] = timestamp
+            self.last_bar_time[token] = slot
             self.current_bar[token] = {
                 "open": price,
                 "high": price,
                 "low": price,
                 "close": price,
                 "volume": volume_delta,
-                "start_time": timestamp,
+                "start_time": slot,
                 "bid": bid,
                 "ask": ask,
             }
@@ -81,9 +109,8 @@ class BarBuilder:
 
         # Check if we need to start a new bar
         bar_start = self.last_bar_time[token]
-        bar_end = bar_start + timedelta(seconds=self.interval_seconds)
 
-        if timestamp >= bar_end:
+        if slot > bar_start:
             # Emit the completed bar
             completed = self.current_bar.get(token)
             if completed:
@@ -107,15 +134,26 @@ class BarBuilder:
                     self.on_bar_callback(str(token), bar)
                 logger.debug(f"Bar completed for token {token}: {bar}")
 
+            skipped_seconds = (
+                (slot - bar_start).total_seconds() - self.interval_seconds
+            )
+            if skipped_seconds >= 120:
+                logger.warning(
+                    "Feed gap for token %s: no ticks for %.0fs before %s",
+                    token,
+                    skipped_seconds,
+                    slot,
+                )
+
             # Start a new bar
-            self.last_bar_time[token] = bar_end
+            self.last_bar_time[token] = slot
             self.current_bar[token] = {
                 "open": price,
                 "high": price,
                 "low": price,
                 "close": price,
                 "volume": volume_delta,
-                "start_time": bar_end,
+                "start_time": slot,
                 "bid": bid,
                 "ask": ask,
             }

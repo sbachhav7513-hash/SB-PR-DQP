@@ -262,6 +262,32 @@ class OptionCaptureWriter:
             "signal registration",
         )
 
+    def register_contract(
+        self, contract: Dict[str, Any], registered_at: Optional[datetime] = None
+    ) -> bool:
+        """Register a selected contract for capture without creating a signal."""
+        if not self.enabled or self._closed:
+            return False
+        token = int(contract["instrument_token"])
+        contract_id = str(contract.get("contract_id", ""))
+        if token <= 0 or not contract_id:
+            raise ValueError("A capture contract needs a positive token and contract_id")
+        metadata = dict(contract)
+        metadata["instrument_token"] = token
+        self.contracts_by_token[token] = metadata
+        return self._enqueue(
+            (
+                "register_contract",
+                {
+                    "contract": metadata,
+                    "registered_at": _as_ist(
+                        registered_at or datetime.now(IST)
+                    ),
+                },
+            ),
+            "contract registration",
+        )
+
     def update_signal_status(
         self, signal_id: str, *, pending: bool, rejected: bool
     ) -> bool:
@@ -367,6 +393,8 @@ class OptionCaptureWriter:
                     self._append_underlying_bar(payload)
                 elif kind == "register":
                     self._handle_registration(payload)
+                elif kind == "register_contract":
+                    self._handle_contract_registration(payload)
                 elif kind == "signal_status":
                     self._handle_signal_status(*payload)
                 elif kind == "skipped":
@@ -532,6 +560,34 @@ class OptionCaptureWriter:
             if role == "contract":
                 signals[signal_id]["contract_id"] = contract_id
             self._persist_registered_history(day_key, token, signal_time)
+
+    def _handle_contract_registration(self, payload: Dict[str, Any]) -> None:
+        metadata = dict(payload["contract"])
+        token = int(metadata["instrument_token"])
+        registered_at = _as_ist(payload["registered_at"])
+        day_key = registered_at.date().isoformat()
+        self.contracts_by_token[token] = metadata
+        timing = self._thread_state["contract_capture_timing"][day_key].setdefault(
+            str(metadata["contract_id"]),
+            {
+                "registration_time": None,
+                "first_tick_time": None,
+                "first_candle_time": None,
+            },
+        )
+        timing["registration_time"] = timing["registration_time"] or _iso(
+            registered_at
+        )
+        metadata["resolved_at"] = metadata.get("resolved_at") or _iso(registered_at)
+        self._thread_state["registered"][day_key][token] = metadata
+        session_open = datetime.combine(
+            registered_at.date(), datetime_time(9, 15), IST
+        )
+        first_minute = max(_minute_start(registered_at), session_open)
+        self._thread_state["next_minute"].setdefault(
+            (day_key, token), first_minute
+        )
+        self._thread_state["flush_dirty"][day_key].add(token)
 
     def _append_underlying_bar(self, payload: Dict[str, Any]) -> None:
         day_key = payload["timestamp"].date().isoformat()

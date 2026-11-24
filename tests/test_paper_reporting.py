@@ -13,6 +13,7 @@ from market_bot.trade_journal import (
 )
 from market_bot.weekly_report import (
     _tier_review_metrics,
+    _date_records,
     build_weekly_report,
     write_daily_review,
     write_daily_summary,
@@ -47,6 +48,7 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
         "ticker": "NIFTY",
         "contract_id": "NFO:NIFTY26SEP25000CE",
         "signal": "BUY",
+        "effective_min_trend_strength": 0.0022,
     })
     decisions.log_decision({"timestamp": timestamp, "ticker": "NIFTY", "signal": "HOLD"})
     assert decisions.flush_decisions()
@@ -90,6 +92,17 @@ def test_paper_journals_partition_parquet_by_week_and_day(tmp_path):
         "NFO:NIFTY26SEP25000CE",
         "",
     ]
+    assert decision_frame["effective_min_trend_strength"].tolist() == [
+        "0.0022",
+        "",
+    ]
+    daily_decisions = _date_records(
+        tmp_path / "decision_log.jsonl",
+        paper_dir,
+        "decisions.parquet",
+        date(2026, 9, 7),
+    )
+    assert daily_decisions[0]["effective_min_trend_strength"] == "0.0022"
     assert list((day_dir / "decisions").glob("decisions_*.parquet"))
 
 

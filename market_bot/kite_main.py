@@ -1364,6 +1364,30 @@ class KiteTradingBot:
     def _underlying_symbol(symbol: str) -> str:
         return symbol.rsplit("_", 1)[0].upper() if symbol.endswith(("_CE", "_PE")) else symbol.upper()
 
+    def _min_trend_strength_override(self, symbol: str) -> Optional[float]:
+        config = getattr(self, "config", {}) or {}
+        overrides = config.get("min_trend_strength_overrides", {})
+        if not isinstance(overrides, dict):
+            return None
+        normalized_symbol = str(symbol).upper()
+        matching = [
+            (str(underlying).upper(), value)
+            for underlying, value in overrides.items()
+            if normalized_symbol == str(underlying).upper()
+            or normalized_symbol.startswith(f"{str(underlying).upper()}_")
+        ]
+        if not matching:
+            return None
+        _, value = max(matching, key=lambda item: len(item[0]))
+        return float(value)
+
+    def _minimum_trend_strength(self, symbol: str) -> float:
+        override = self._min_trend_strength_override(symbol)
+        if override is not None:
+            return override
+        config = getattr(self, "config", {}) or {}
+        return float(config.get("min_trend_strength", 0.005))
+
     def _minimum_volatility_pct(self, symbol: str) -> float:
         if (
             self._underlying_symbol(symbol) == "NIFTY"
@@ -3024,6 +3048,8 @@ class KiteTradingBot:
         self.bar_builder = BarBuilder(
             interval_seconds=self.config.get("bar_interval_seconds", 60),
             on_bar_callback=self.on_bar_complete,
+            session_start=None if self.simulation_mode else time_type(9, 15),
+            session_end=None if self.simulation_mode else time_type(15, 30),
         )
         if self.simulation_mode:
             self.kite_stream = SimulationMarketStream(
@@ -3072,6 +3098,12 @@ class KiteTradingBot:
         self.option_capture_writer.set_skipped_contracts(
             self.kite_stream.capture_subscription_skipped
         )
+        if options_mode:
+            registration_time = datetime.now(IST)
+            for contract in self.kite_stream.capture_contracts_by_token.values():
+                self.option_capture_writer.register_contract(
+                    contract, registered_at=registration_time
+                )
         if (
             self.config.get("ema_reentry_enabled", True)
             and options_mode
@@ -3183,6 +3215,11 @@ class KiteTradingBot:
         self.latest_prices: Dict[str, float] = {}
         self._last_quote_timestamps: Dict[str, datetime] = {}
         self.option_quote_cache: Dict[str, dict] = {}
+        self._last_option_reselect_minute: Optional[datetime] = None
+        self._nifty_feed_watchdog_date: Optional[date] = None
+        self._last_nifty_tick_monotonic: Optional[float] = None
+        self._nifty_feed_stale_alerted = False
+        self._nifty_feed_resubscribe_attempted = False
         self._option_tick_diagnostics: Dict[int, dict] = {}
         self.premarkarket_candidates: list[tuple[str, str, int, str]] = []
         self.benchmark_symbol = self.config.get("benchmark_symbol", "NIFTY")
@@ -5248,6 +5285,7 @@ class KiteTradingBot:
         account_measurements: Optional[dict] = None,
     ) -> dict:
         config = getattr(self, "config", {}) or {}
+        minimum_trend_strength = self._minimum_trend_strength(symbol)
         local_time = self._gate_evaluation_time(timestamp)
         local_time = (
             local_time.replace(tzinfo=IST)
@@ -5361,7 +5399,7 @@ class KiteTradingBot:
                     direction == "BUY"
                     and fast > slow
                     and closes[-1] > closes[-20]
-                    and strength > float(config.get("min_trend_strength", 0.02))
+                    and strength > minimum_trend_strength
                     and macd >= 0
                     and macd >= previous_macd - 1e-9
                     and recent
@@ -5370,7 +5408,7 @@ class KiteTradingBot:
                     direction == "SELL"
                     and fast < slow
                     and closes[-1] < closes[-20]
-                    and strength > float(config.get("min_trend_strength", 0.02))
+                    and strength > minimum_trend_strength
                     and macd <= 0
                     and macd <= previous_macd + 1e-9
                     and recent
@@ -5380,9 +5418,7 @@ class KiteTradingBot:
                     bool(passed),
                     {"trend_strength": strength, "direction": direction},
                     {
-                        "minimum_trend_strength": config.get(
-                            "min_trend_strength", 0.02
-                        ),
+                        "minimum_trend_strength": minimum_trend_strength,
                         "price_proximity_pct": proximity,
                     },
                 )
@@ -8928,6 +8964,7 @@ class KiteTradingBot:
         provider = KiteHistoricalProvider(
             self.config["kite_api_key"], self.config["kite_access_token"]
         )
+        self._historical_provider = provider
         to_date = datetime.now(IST)
         from_date = to_date - timedelta(days=5)
         interval_seconds = self.config.get("bar_interval_seconds", 60)
@@ -8958,20 +8995,295 @@ class KiteTradingBot:
                 )
         logger.info("Historical warm-up complete: %d bars loaded", seeded)
 
-    def on_bar_complete(self, token_str: str, bar: Bar) -> None:
-        """Called when a new bar is completed."""
-        token = int(token_str)
-        symbol = self.symbol_map.get(token, f"TOKEN_{token}")
-        getattr(self, "_scorer_context_by_symbol", {}).pop(symbol, None)
-        getattr(self, "_support_reversal_eval_by_symbol", {}).pop(
-            symbol, None
+    @staticmethod
+    def _local_market_timestamp(timestamp: datetime) -> datetime:
+        return timestamp.astimezone(IST) if timestamp.tzinfo else timestamp.replace(
+            tzinfo=IST
         )
-        if not symbol.endswith(("_CE", "_PE")):
-            writer = getattr(self, "option_capture_writer", None)
-            if writer is not None:
-                writer.record_underlying_bar(symbol, bar)
-            self._record_completed_scorer_bar(symbol, bar)
-        if symbol.endswith(("_CE", "_PE")):
+
+    @classmethod
+    def _is_market_session_timestamp(cls, timestamp: datetime) -> bool:
+        local = cls._local_market_timestamp(timestamp)
+        return time_type(9, 15) <= local.time() < time_type(15, 30)
+
+    def _has_position_or_pending_entry_for_underlying(self, underlying: str) -> bool:
+        underlying = str(underlying).upper()
+        active_positions = getattr(self.intraday_manager, "active_positions", {})
+        for symbol, position in active_positions.items():
+            symbol_underlying = str(
+                position.get("underlying", symbol.rsplit("_", 1)[0])
+            ).upper()
+            if symbol_underlying == underlying:
+                return True
+
+        for pending in getattr(self, "_pending_entries", {}).values():
+            pending_underlying = str(
+                pending.get(
+                    "underlying",
+                    str(pending.get("symbol", "")).rsplit("_", 1)[0],
+                )
+            ).upper()
+            if pending_underlying == underlying:
+                return True
+        return False
+
+    def _seed_reselected_option_bars(
+        self, token: int, timestamp: datetime, symbol: str
+    ) -> None:
+        local_timestamp = self._local_market_timestamp(timestamp)
+        session_open = datetime.combine(
+            local_timestamp.date(), time_type(9, 15), IST
+        )
+        current_minute = local_timestamp.replace(second=0, microsecond=0)
+        if current_minute <= session_open:
+            return
+
+        provider = getattr(self, "_historical_provider", None)
+        if provider is None:
+            provider = KiteHistoricalProvider(
+                self.config["kite_api_key"], self.config["kite_access_token"]
+            )
+            self._historical_provider = provider
+        history = provider.fetch_history(
+            token,
+            session_open,
+            current_minute,
+            interval="minute",
+        )
+        bars = []
+        for item in history:
+            bar_time = item["time"]
+            bar_time = (
+                bar_time.astimezone(IST)
+                if bar_time.tzinfo
+                else bar_time.replace(tzinfo=IST)
+            )
+            if (
+                bar_time.date() != local_timestamp.date()
+                or bar_time < session_open
+                or bar_time >= current_minute
+            ):
+                continue
+            bars.append(
+                Bar(
+                    timestamp=bar_time,
+                    open=item["open"],
+                    high=item["high"],
+                    low=item["low"],
+                    close=item["close"],
+                    volume=item["volume"],
+                )
+            )
+        self.bar_builder.seed_bars(token, bars)
+        logger.info(
+            "[%s] Seeded %d today's-session bars after option re-selection",
+            symbol,
+            len(bars),
+        )
+
+    def _reselect_option_contracts_if_needed(self, timestamp: datetime) -> None:
+        if getattr(self, "simulation_mode", False):
+            return
+        if self.config.get("trading_mode") not in {
+            "intraday_options",
+            "intraday_both",
+        }:
+            return
+        local_timestamp = self._local_market_timestamp(timestamp)
+        if not self._is_market_session_timestamp(local_timestamp):
+            return
+        current_minute = local_timestamp.replace(second=0, microsecond=0)
+        if current_minute == getattr(self, "_last_option_reselect_minute", None):
+            return
+        self._last_option_reselect_minute = current_minute
+
+        stream = self.kite_stream
+        if not hasattr(stream, "options_needing_reselect"):
+            return
+        underlyings = [
+            str(name).upper()
+            for name in self.config.get("options_underlyings", [])
+        ]
+        spot_prices = {
+            underlying: self.latest_prices.get(underlying, 0)
+            for underlying in underlyings
+        }
+        for underlying in stream.options_needing_reselect(spot_prices):
+            if self._has_position_or_pending_entry_for_underlying(underlying):
+                logger.info(
+                    "[%s] Skipping option re-selection while a position or "
+                    "confirmed entry is active",
+                    underlying,
+                )
+                continue
+            self._reselect_options_for_underlying(underlying, local_timestamp)
+
+    def _reselect_options_for_underlying(
+        self, underlying: str, timestamp: datetime
+    ) -> None:
+        underlying = str(underlying).upper()
+        stream = self.kite_stream
+        old_tokens = dict(self.config["instrument_tokens"])
+        old_contract_ids = sorted(
+            {
+                str(metadata.get("contract_id"))
+                for metadata in stream.capture_contracts_by_token.values()
+                if str(metadata.get("underlying", "")).upper() == underlying
+            }
+        )
+        old_subscription_tokens = set(old_tokens.values()) | set(
+            stream.capture_only_tokens
+        )
+
+        updated_tokens = stream.reselect_options_for_underlying(underlying)
+        self.config["instrument_tokens"] = updated_tokens
+        self.symbol_map = {token: symbol for symbol, token in updated_tokens.items()}
+        self.intraday_manager.set_contract_specs(stream.contract_specs)
+
+        option_symbols = {
+            symbol
+            for symbol in old_tokens
+            if symbol.upper().startswith(f"{underlying}_")
+        } | {
+            symbol
+            for symbol in updated_tokens
+            if symbol.upper().startswith(f"{underlying}_")
+        }
+        for symbol in option_symbols:
+            self.latest_prices.pop(symbol, None)
+            self.option_quote_cache.pop(symbol, None)
+            self._last_quote_timestamps.pop(symbol, None)
+            getattr(self, "_option_gate_context", {}).pop(symbol, None)
+        for token in old_subscription_tokens:
+            if token not in set(updated_tokens.values()) | set(stream.capture_only_tokens):
+                self._option_tick_diagnostics.pop(token, None)
+
+        subscribed_at = datetime.now(IST)
+        option_metadata = [
+            metadata
+            for metadata in stream.capture_contracts_by_token.values()
+            if str(metadata.get("underlying", "")).upper() == underlying
+        ]
+        for metadata in option_metadata:
+            token = int(metadata["instrument_token"])
+            if token in old_subscription_tokens:
+                continue
+            metadata["subscription_started_at"] = subscribed_at.isoformat(
+                timespec="seconds"
+            )
+            stream.capture_subscription_started_at[token] = subscribed_at
+        writer = getattr(self, "option_capture_writer", None)
+        if writer is not None:
+            for metadata in option_metadata:
+                writer.register_contract(metadata, registered_at=timestamp)
+
+        new_subscription_tokens = set(updated_tokens.values()) | set(
+            stream.capture_only_tokens
+        )
+        tokens_to_subscribe = sorted(
+            new_subscription_tokens - old_subscription_tokens
+        )
+        tokens_to_unsubscribe = sorted(
+            old_subscription_tokens - new_subscription_tokens
+        )
+        if stream.is_connected:
+            if tokens_to_subscribe:
+                stream.ticker.subscribe(tokens_to_subscribe)
+                stream.ticker.set_mode(
+                    stream.ticker.MODE_FULL, tokens_to_subscribe
+                )
+            if tokens_to_unsubscribe:
+                stream.ticker.unsubscribe(tokens_to_unsubscribe)
+
+        new_contract_ids = sorted(
+            {
+                str(metadata.get("contract_id"))
+                for metadata in option_metadata
+            }
+        )
+        logger.info(
+            "[%s] Re-selected option contracts: old=%s new=%s",
+            underlying,
+            old_contract_ids,
+            new_contract_ids,
+        )
+
+        for symbol, token in updated_tokens.items():
+            if (
+                symbol.upper().startswith(f"{underlying}_")
+                and old_tokens.get(symbol) != token
+            ):
+                self._seed_reselected_option_bars(
+                    token, timestamp, symbol
+                )
+
+    def _check_underlying_feed_watchdog(
+        self,
+        now: Optional[datetime] = None,
+        monotonic_now: Optional[float] = None,
+    ) -> None:
+        if getattr(self, "simulation_mode", False):
+            return
+        local_now = self._local_market_timestamp(now or datetime.now(IST))
+        if not self._is_market_session_timestamp(local_now):
+            return
+        if "NIFTY" not in self.symbol_map.values():
+            return
+
+        current_monotonic = time.monotonic() if monotonic_now is None else monotonic_now
+        if self._nifty_feed_watchdog_date != local_now.date():
+            self._nifty_feed_watchdog_date = local_now.date()
+            self._last_nifty_tick_monotonic = current_monotonic
+            self._nifty_feed_stale_alerted = False
+            self._nifty_feed_resubscribe_attempted = False
+            return
+        if self._last_nifty_tick_monotonic is None:
+            self._last_nifty_tick_monotonic = current_monotonic
+            return
+
+        stale_seconds = current_monotonic - self._last_nifty_tick_monotonic
+        if stale_seconds < 60:
+            return
+        if not self._nifty_feed_stale_alerted:
+            message = (
+                f"NIFTY underlying feed has been stale for {stale_seconds:.0f}s "
+                "during market hours."
+            )
+            logger.warning(message)
+            try:
+                queued = self.telegram_notifier.send_message(
+                    message, priority="high"
+                )
+                if not queued:
+                    logger.warning("NIFTY stale-feed Telegram alert was not queued")
+            except Exception:
+                logger.exception("Could not queue NIFTY stale-feed Telegram alert")
+            self._nifty_feed_stale_alerted = True
+
+        if stale_seconds < 180 or self._nifty_feed_resubscribe_attempted:
+            return
+        self._nifty_feed_resubscribe_attempted = True
+        stream = self.kite_stream
+        tokens = sorted(
+            set(stream.config.instrument_tokens.values())
+            | set(stream.capture_only_tokens)
+        )
+        if not tokens or not stream.is_connected:
+            logger.warning(
+                "NIFTY stale-feed recovery skipped: stream disconnected or no tokens"
+            )
+            return
+        try:
+            stream.ticker.subscribe(tokens)
+            stream.ticker.set_mode(stream.ticker.MODE_FULL, tokens)
+            logger.warning(
+                "Resubscribed %d Kite tokens after NIFTY feed stalled for %.0fs",
+                len(tokens),
+                stale_seconds,
+            )
+        except Exception:
+            logger.exception("Could not resubscribe Kite tokens after NIFTY feed stall")
+
     def _sideways_reference_range_pct(
         self, symbol: str, current_day: date
     ) -> Optional[float]:
@@ -9028,6 +9340,20 @@ class KiteTradingBot:
         cache[cache_key] = average_range
         return average_range
 
+    def on_bar_complete(self, token_str: str, bar: Bar) -> None:
+        """Called when a new bar is completed."""
+        token = int(token_str)
+        symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        getattr(self, "_scorer_context_by_symbol", {}).pop(symbol, None)
+        getattr(self, "_support_reversal_eval_by_symbol", {}).pop(
+            symbol, None
+        )
+        if not symbol.endswith(("_CE", "_PE")):
+            writer = getattr(self, "option_capture_writer", None)
+            if writer is not None:
+                writer.record_underlying_bar(symbol, bar)
+            self._record_completed_scorer_bar(symbol, bar)
+        if symbol.endswith(("_CE", "_PE")):
             self._confirm_option_trailing_close(symbol, bar)
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
             contexts = getattr(self, "_signal_change_attributions", None)
@@ -9162,6 +9488,29 @@ class KiteTradingBot:
                     ]
 
         try:
+            sideways_symbol = (
+                symbol.rsplit("_", 1)[0].upper() if "_" in symbol else symbol.upper()
+            )
+            minimum_trend_strength = self._minimum_trend_strength(symbol)
+            trend_strength_override = self._min_trend_strength_override(symbol)
+            sideways_overrides = self.config.get("sideways_overrides", {})
+            sideways_er_threshold = (
+                self.config.get("sideways_er_threshold")
+                if getattr(self, "paper_trading_enabled", False)
+                else None
+            )
+            sideways_reference_range_pct = None
+            if (
+                sideways_er_threshold is not None
+                and sideways_symbol not in sideways_overrides
+            ):
+                latest_timestamp = signal_bars[-1].timestamp
+                sideways_reference_range_pct = self._sideways_reference_range_pct(
+                    sideways_symbol,
+                    latest_timestamp.astimezone(IST).date()
+                    if latest_timestamp.tzinfo
+                    else latest_timestamp.date(),
+                )
             market_score = score_market(
                 symbol,
                 history,
@@ -9177,11 +9526,25 @@ class KiteTradingBot:
                 sideways_net_move_pct=float(
                     self.config.get("sideways_net_move_pct", 1.0)
                 ),
-                min_trend_strength=float(
-                    self.config.get("min_trend_strength", 0.02)
+                sideways_er_threshold=(
+                    float(sideways_er_threshold)
+                    if sideways_er_threshold is not None
+                    else None
                 ),
+                sideways_range_multiple=float(
+                    self.config.get("sideways_range_multiple", 0.6)
+                ),
+                sideways_reference_range_pct=sideways_reference_range_pct,
+                sideways_overrides=sideways_overrides,
+                sideways_symbol=sideways_symbol,
+                regime_hard_filter_overrides=self.config.get(
+                    "regime_hard_filter_overrides"
+                ),
+                min_trend_strength=minimum_trend_strength,
                 trend_momentum_bonus_threshold=(
-                    float(self.config["trend_momentum_bonus_threshold"])
+                    minimum_trend_strength
+                    if trend_strength_override is not None
+                    else float(self.config["trend_momentum_bonus_threshold"])
                     if self.config.get("trend_momentum_bonus_threshold") is not None
                     else None
                 ),
@@ -9471,27 +9834,6 @@ class KiteTradingBot:
         active_positions = getattr(self.intraday_manager, "active_positions", None)
         if (
             self._options_enabled()
-            sideways_symbol = (
-                symbol.rsplit("_", 1)[0].upper() if "_" in symbol else symbol.upper()
-            )
-            sideways_overrides = self.config.get("sideways_overrides", {})
-            sideways_er_threshold = (
-                self.config.get("sideways_er_threshold")
-                if getattr(self, "paper_trading_enabled", False)
-                else None
-            )
-            sideways_reference_range_pct = None
-            if (
-                sideways_er_threshold is not None
-                and sideways_symbol not in sideways_overrides
-            ):
-                latest_timestamp = signal_bars[-1].timestamp
-                sideways_reference_range_pct = self._sideways_reference_range_pct(
-                    sideways_symbol,
-                    latest_timestamp.astimezone(IST).date()
-                    if latest_timestamp.tzinfo
-                    else latest_timestamp.date(),
-                )
             and symbol.endswith(("_CE", "_PE"))
             and isinstance(active_positions, dict)
             and symbol in active_positions
@@ -9507,20 +9849,6 @@ class KiteTradingBot:
                         self.accuracy_filters.min_score_floor,
                     )
                 )
-                sideways_er_threshold=(
-                    float(sideways_er_threshold)
-                    if sideways_er_threshold is not None
-                    else None
-                ),
-                sideways_range_multiple=float(
-                    self.config.get("sideways_range_multiple", 0.6)
-                ),
-                sideways_reference_range_pct=sideways_reference_range_pct,
-                sideways_overrides=sideways_overrides,
-                sideways_symbol=sideways_symbol,
-                regime_hard_filter_overrides=self.config.get(
-                    "regime_hard_filter_overrides"
-                ),
                 self._check_option_signal_health(
                     symbol,
                     market_score.signal,
@@ -11231,6 +11559,16 @@ class KiteTradingBot:
                     state["daily_tick_gaps_over_30s"],
                 )
         self.latest_prices[symbol] = tick.last_price
+        if (
+            symbol.upper() == "NIFTY"
+            and self._is_market_session_timestamp(tick.timestamp)
+        ):
+            self._last_nifty_tick_monotonic = time.monotonic()
+            self._nifty_feed_watchdog_date = self._local_market_timestamp(
+                tick.timestamp
+            ).date()
+            self._nifty_feed_stale_alerted = False
+            self._nifty_feed_resubscribe_attempted = False
         self._last_quote_timestamps = getattr(
             self, "_last_quote_timestamps", {}
         )
@@ -11242,6 +11580,10 @@ class KiteTradingBot:
             "volume": int(tick.volume),
             "timestamp": tick.timestamp,
         }
+        try:
+            self._reselect_options_if_needed(tick.timestamp)
+        except Exception:
+            logger.exception("Could not re-select stale option contracts")
         self._update_paper_shadow_runner(symbol, tick)
         position = self.intraday_manager.active_positions.get(symbol)
         if position:
@@ -14169,6 +14511,60 @@ class KiteTradingBot:
         strategy_variant: Optional[str] = None,
         ema_reentry_context: Optional[dict] = None,
     ) -> None:
+        regime_symbol = self._underlying_symbol(symbol)
+        decision_history = [
+            item.to_dict() if hasattr(item, "to_dict") else item
+            for item in bars
+        ]
+        if symbol.endswith(("_CE", "_PE")):
+            underlying_token = (
+                getattr(self, "config", {})
+                .get("instrument_tokens", {})
+                .get(regime_symbol)
+            )
+            builder = getattr(self, "bar_builder", None)
+            if underlying_token is not None and builder is not None:
+                underlying_bars = builder.get_bars(underlying_token, limit=100)
+                if underlying_bars:
+                    decision_history = [item.to_dict() for item in underlying_bars]
+        decision_closes = [
+            float(item["close"])
+            for item in decision_history
+            if isinstance(item, dict) and item.get("close") is not None
+        ]
+        config = getattr(self, "config", {}) or {}
+        sideways_overrides = config.get("sideways_overrides", {})
+        er_threshold = (
+            config.get("sideways_er_threshold")
+            if getattr(self, "paper_trading_enabled", False)
+            else None
+        )
+        decision_time = self._journal_datetime(bar.timestamp)
+        reference_range = None
+        if (
+            er_threshold is not None
+            and regime_symbol not in sideways_overrides
+            and decision_time is not None
+        ):
+            reference_range = self._sideways_reference_range_pct(
+                regime_symbol, decision_time.date()
+            )
+        regime_label = classify_price_regime(
+            decision_closes,
+            sideways_range_pct=float(config.get("sideways_range_pct", 1.0)),
+            sideways_net_move_pct=float(
+                config.get("sideways_net_move_pct", 1.0)
+            ),
+            sideways_er_threshold=(
+                float(er_threshold) if er_threshold is not None else None
+            ),
+            sideways_range_multiple=float(
+                config.get("sideways_range_multiple", 0.6)
+            ),
+            sideways_reference_range_pct=reference_range,
+            symbol=regime_symbol,
+            sideways_overrides=sideways_overrides,
+        )
         option_decision = (
             hasattr(self, "config")
             and self._options_enabled()
@@ -14369,6 +14765,8 @@ class KiteTradingBot:
                 ),
                 "signal": signal,
                 "outcome": outcome,
+                "effective_min_trend_strength": self._minimum_trend_strength(symbol),
+                "regime_label": regime_label,
                 "bars_available": len(bars),
                 "history": [item.to_dict() for item in bars],
                 "score": market_score.score if market_score else None,
@@ -14486,60 +14884,6 @@ class KiteTradingBot:
                     else None
                 ),
                 "reentry_vwap": (
-        regime_symbol = self._underlying_symbol(symbol)
-        decision_history = [
-            item.to_dict() if hasattr(item, "to_dict") else item
-            for item in bars
-        ]
-        if symbol.endswith(("_CE", "_PE")):
-            underlying_token = (
-                getattr(self, "config", {})
-                .get("instrument_tokens", {})
-                .get(regime_symbol)
-            )
-            builder = getattr(self, "bar_builder", None)
-            if underlying_token is not None and builder is not None:
-                underlying_bars = builder.get_bars(underlying_token, limit=100)
-                if underlying_bars:
-                    decision_history = [item.to_dict() for item in underlying_bars]
-        decision_closes = [
-            float(item["close"])
-            for item in decision_history
-            if isinstance(item, dict) and item.get("close") is not None
-        ]
-        config = getattr(self, "config", {}) or {}
-        sideways_overrides = config.get("sideways_overrides", {})
-        er_threshold = (
-            config.get("sideways_er_threshold")
-            if getattr(self, "paper_trading_enabled", False)
-            else None
-        )
-        decision_time = self._journal_datetime(bar.timestamp)
-        reference_range = None
-        if (
-            er_threshold is not None
-            and regime_symbol not in sideways_overrides
-            and decision_time is not None
-        ):
-            reference_range = self._sideways_reference_range_pct(
-                regime_symbol, decision_time.date()
-            )
-        regime_label = classify_price_regime(
-            decision_closes,
-            sideways_range_pct=float(config.get("sideways_range_pct", 1.0)),
-            sideways_net_move_pct=float(
-                config.get("sideways_net_move_pct", 1.0)
-            ),
-            sideways_er_threshold=(
-                float(er_threshold) if er_threshold is not None else None
-            ),
-            sideways_range_multiple=float(
-                config.get("sideways_range_multiple", 0.6)
-            ),
-            sideways_reference_range_pct=reference_range,
-            symbol=regime_symbol,
-            sideways_overrides=sideways_overrides,
-        )
                     ema_reentry_context.get("vwap")
                     if ema_reentry_context
                     else None
@@ -14740,7 +15084,6 @@ class KiteTradingBot:
                         run_up_measurement.fail_open_cause
                     )
 
-                "regime_label": regime_label,
                     if veto_status == "failed_open":
                         logger.info(
                             "[%s] run_up_veto_v2 failed open; cause=%s",
@@ -16481,6 +16824,7 @@ class KiteTradingBot:
                     self._run_premarket_context_if_due(
                         datetime.now(PREMARKET_IST)
                     )
+                    self._check_underlying_feed_watchdog()
                     now_monotonic = time.monotonic()
                     self._process_telegram_commands(read_only_only=True)
                     if now_monotonic - self._last_telemetry_at >= 60.0:

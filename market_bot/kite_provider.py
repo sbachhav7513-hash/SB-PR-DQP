@@ -130,6 +130,7 @@ class KiteMarketStream:
         self.capture_only_tokens: List[int] = []
         self.capture_subscription_skipped: List[Dict[str, Any]] = []
         self.capture_subscription_started_at: Dict[int, datetime] = {}
+        self.selected_atm_strikes: Dict[str, tuple[float, float]] = {}
 
     def refresh_instrument_tokens(self) -> Dict[str, int]:
         """Resolve configured symbols against Kite's current instrument master."""
@@ -212,6 +213,190 @@ class KiteMarketStream:
         raise RuntimeError(
             f"No valid Kite instrument tokens are available for the configured symbols: {configured_symbols}"
         )
+
+    def options_needing_reselect(
+        self, spot_prices: Dict[str, float], hysteresis_steps: float = 0.75
+    ) -> List[str]:
+        """Underlyings whose live spot has moved far enough that the selected ATM strike is stale."""
+        stale = []
+        for underlying, (atm_strike, step) in self.selected_atm_strikes.items():
+            spot = float(spot_prices.get(underlying, 0) or 0)
+            if spot > 0 and step > 0 and abs(spot - atm_strike) > hysteresis_steps * step:
+                stale.append(underlying)
+        return stale
+
+    def reselect_options_for_underlying(self, underlying: str) -> Dict[str, int]:
+        """Refresh one underlying's option contracts while preserving other selections."""
+        underlying = str(underlying).upper()
+        configured_underlyings = list(self.config.options_underlyings)
+        if underlying not in {name.upper() for name in configured_underlyings}:
+            raise ValueError(f"{underlying} is not configured for option selection")
+
+        old_instrument_tokens = dict(self.config.instrument_tokens)
+        old_contract_specs = dict(self.contract_specs)
+        old_contract_symbols = dict(self.contract_symbols)
+        old_contract_exchanges = dict(self.contract_exchanges)
+        old_contract_expiries = dict(self.contract_expiries)
+        old_contract_tick_sizes = dict(self.contract_tick_sizes)
+        old_capture_contracts_by_token = dict(self.capture_contracts_by_token)
+        old_capture_contracts_by_symbol = dict(self.capture_contracts_by_symbol)
+        old_capture_opposites_by_token = dict(self.capture_opposites_by_token)
+        old_capture_subscription_skipped = list(self.capture_subscription_skipped)
+        old_capture_only_tokens = list(self.capture_only_tokens)
+        old_capture_subscription_started_at = dict(
+            self.capture_subscription_started_at
+        )
+        old_selected_atm_strikes = dict(self.selected_atm_strikes)
+
+        def belongs_to_underlying(symbol: str) -> bool:
+            return symbol.upper().startswith(f"{underlying}_")
+
+        try:
+            self.config.options_underlyings = [underlying]
+            selected = self._select_current_options()
+        except Exception:
+            self.config.instrument_tokens = old_instrument_tokens
+            self.contract_specs = old_contract_specs
+            self.contract_symbols = old_contract_symbols
+            self.contract_exchanges = old_contract_exchanges
+            self.contract_expiries = old_contract_expiries
+            self.contract_tick_sizes = old_contract_tick_sizes
+            self.capture_contracts_by_token = old_capture_contracts_by_token
+            self.capture_contracts_by_symbol = old_capture_contracts_by_symbol
+            self.capture_opposites_by_token = old_capture_opposites_by_token
+            self.capture_subscription_skipped = old_capture_subscription_skipped
+            self.capture_only_tokens = old_capture_only_tokens
+            self.capture_subscription_started_at = old_capture_subscription_started_at
+            self.selected_atm_strikes = old_selected_atm_strikes
+            raise
+        finally:
+            self.config.options_underlyings = configured_underlyings
+
+        new_contract_specs = dict(self.contract_specs)
+        new_contract_symbols = dict(self.contract_symbols)
+        new_contract_exchanges = dict(self.contract_exchanges)
+        new_contract_expiries = dict(self.contract_expiries)
+        new_contract_tick_sizes = dict(self.contract_tick_sizes)
+        new_capture_contracts_by_token = dict(self.capture_contracts_by_token)
+        new_capture_contracts_by_symbol = dict(self.capture_contracts_by_symbol)
+        new_capture_opposites_by_token = dict(self.capture_opposites_by_token)
+        new_capture_subscription_skipped = list(self.capture_subscription_skipped)
+
+        self.config.instrument_tokens = {
+            **{
+                symbol: token
+                for symbol, token in old_instrument_tokens.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **selected,
+        }
+        self.contract_specs = {
+            **{
+                symbol: value
+                for symbol, value in old_contract_specs.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **new_contract_specs,
+        }
+        self.contract_symbols = {
+            **{
+                symbol: value
+                for symbol, value in old_contract_symbols.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **new_contract_symbols,
+        }
+        self.contract_exchanges = {
+            **{
+                symbol: value
+                for symbol, value in old_contract_exchanges.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **new_contract_exchanges,
+        }
+        self.contract_expiries = {
+            **{
+                symbol: value
+                for symbol, value in old_contract_expiries.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **new_contract_expiries,
+        }
+        self.contract_tick_sizes = {
+            **{
+                symbol: value
+                for symbol, value in old_contract_tick_sizes.items()
+                if not belongs_to_underlying(symbol)
+            },
+            **new_contract_tick_sizes,
+        }
+        self.capture_contracts_by_token = {
+            **{
+                token: metadata
+                for token, metadata in old_capture_contracts_by_token.items()
+                if str(metadata.get("underlying", "")).upper() != underlying
+            },
+            **new_capture_contracts_by_token,
+        }
+        self.capture_contracts_by_symbol = {
+            **{
+                symbol: metadata
+                for symbol, metadata in old_capture_contracts_by_symbol.items()
+                if str(metadata.get("underlying", "")).upper() != underlying
+            },
+            **new_capture_contracts_by_symbol,
+        }
+        self.capture_opposites_by_token = {
+            **{
+                token: metadata
+                for token, metadata in old_capture_opposites_by_token.items()
+                if str(metadata.get("underlying", "")).upper() != underlying
+            },
+            **new_capture_opposites_by_token,
+        }
+
+        trading_tokens = set(self.config.instrument_tokens.values())
+        extras = [
+            token
+            for token in self.capture_contracts_by_token
+            if token not in trading_tokens
+        ]
+        available_slots = max(
+            0, MAX_KITE_TOKENS_PER_CONNECTION - len(trading_tokens)
+        )
+        permitted_extra_count = min(
+            len(extras), MAX_CAPTURE_ONLY_SUBSCRIPTIONS, available_slots
+        )
+        skipped_tokens = extras[permitted_extra_count:]
+        skipped_contracts = [
+            item
+            for item in old_capture_subscription_skipped
+            if not str(item.get("contract_id", "")).split(":")[-1].upper().startswith(
+                underlying
+            )
+        ] + new_capture_subscription_skipped
+        for token in skipped_tokens:
+            metadata = self.capture_contracts_by_token.pop(token)
+            self.capture_opposites_by_token.pop(token, None)
+            skipped_contracts.append(
+                {
+                    "contract_id": metadata["contract_id"],
+                    "reason": (
+                        "websocket_token_limit"
+                        if permitted_extra_count >= available_slots
+                        else "capture_extra_subscription_cap"
+                    ),
+                }
+            )
+        self.capture_only_tokens = extras[:permitted_extra_count]
+        self.capture_subscription_skipped = skipped_contracts
+        used_tokens = trading_tokens | set(self.capture_only_tokens)
+        self.capture_subscription_started_at = {
+            token: timestamp
+            for token, timestamp in old_capture_subscription_started_at.items()
+            if token in used_tokens
+        }
+        return dict(self.config.instrument_tokens)
 
     def _select_current_futures(self) -> Dict[str, int]:
         today = date.today()
@@ -529,6 +714,7 @@ class KiteMarketStream:
                     default=1,
                 )
             atm_strike = round(underlying_price / step) * step
+            self.selected_atm_strikes[underlying] = (atm_strike, step)
             max_distance_pct = max(float(self.config.option_max_strike_distance_pct), 0.0)
             matching = [
                 row

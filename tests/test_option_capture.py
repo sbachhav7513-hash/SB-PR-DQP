@@ -1,3 +1,4 @@
+import csv
 import json
 import time
 from datetime import datetime, timedelta
@@ -26,6 +27,57 @@ def _contract(token, leg):
         "resolved_at": "2026-10-28T09:00:00+05:30",
         "subscription_started_at": "2026-10-28T09:00:01+05:30",
     }
+
+
+def test_sideways_reference_uses_five_prior_sessions(tmp_path):
+    bot = object.__new__(KiteTradingBot)
+    bot.paper_trading_dir = str(tmp_path)
+    session_days = [
+        "2026-11-09",
+        "2026-11-11",
+        "2026-11-12",
+        "2026-11-13",
+        "2026-11-16",
+        "2026-11-17",
+    ]
+    steps = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+    expected_daily_ranges = []
+    for session_day, step in zip(session_days, steps):
+        day_dir = tmp_path / "underlying_candles" / session_day
+        day_dir.mkdir(parents=True)
+        path = day_dir / "NIFTY.candles.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=("symbol", "candle_start_time", "close")
+            )
+            writer.writeheader()
+            closes = [100.0 + index * step for index in range(11)]
+            for index, close in enumerate(closes):
+                writer.writerow(
+                    {
+                        "symbol": "NIFTY",
+                        "candle_start_time": (
+                            datetime.fromisoformat(
+                                f"{session_day}T09:15:00+05:30"
+                            )
+                            + timedelta(minutes=index)
+                        ).isoformat(),
+                        "close": close,
+                    }
+                )
+        expected_daily_ranges.append(
+            sum(
+                (max(closes[index - 9:index]) - min(closes[index - 9:index]))
+                / closes[index]
+                * 100.0
+                for index in range(9, len(closes))
+            )
+            / 2
+        )
+
+    reference = bot._sideways_reference_range_pct("NIFTY", datetime(2026, 11, 18).date())
+
+    assert abs(reference - sum(expected_daily_ranges[-5:]) / 5) < 1e-12
 
 
 def test_rejected_signal_captures_both_legs_through_market_close_without_fill(tmp_path):
@@ -93,6 +145,48 @@ def test_rejected_signal_captures_both_legs_through_market_close_without_fill(tm
     assert report["contracts_captured_count"] == 2
     assert (tmp_path / "2026-10-28" / "capture_report.txt").exists()
     assert list((tmp_path / "2026-10-28").glob("*.candles.csv.gz"))
+
+
+def test_direct_contract_registration_captures_candles_without_a_signal(tmp_path):
+    day = datetime.now(IST).date()
+    session_open = datetime.combine(day, datetime.min.time(), IST).replace(
+        hour=9, minute=15
+    )
+    contract = _contract(101, "CE")
+    writer = OptionCaptureWriter(
+        tmp_path,
+        config_hash="cfg",
+        git_sha="sha",
+        contracts_by_token={},
+        auto_start=False,
+    )
+    writer._run_timers = lambda _now: None
+    writer.start()
+
+    assert writer.register_contract(
+        contract, registered_at=session_open - timedelta(minutes=1)
+    )
+    writer.record_tick(Tick(101, session_open, 100.0))
+    writer.record_tick(Tick(101, session_open + timedelta(minutes=1), 101.0))
+    assert writer.flush()
+    writer._write_daily_report(day.isoformat())
+    writer.close()
+
+    report = json.loads(
+        (tmp_path / day.isoformat() / "capture_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["signals"] == 0
+    assert report["contracts_captured"] == [contract["contract_id"]]
+    candles = load_option_capture(
+        tmp_path, day.isoformat(), {"contract_id": contract["contract_id"]}
+    )["candles"]
+    assert candles
+    assert candles[0]["candle_start_time"].startswith(
+        f"{day.isoformat()}T09:15:"
+    )
+    assert candles[0]["close"] == "100.0"
 
 
 def test_capture_queue_full_drops_without_waiting(tmp_path):

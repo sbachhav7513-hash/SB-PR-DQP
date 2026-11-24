@@ -97,10 +97,220 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.capture_contracts_by_symbol["NIFTY_CE"][
         "underlying_price_at_selection"
     ] == 25010.0
+    assert stream.selected_atm_strikes == {"NIFTY": (25000, 50.0)}
     assert stream.capture_opposites_by_token[200]["contract_id"] == (
         "NFO:NIFTY26SEP25000PE"
     )
     assert stream.capture_only_tokens == []
+
+
+def test_options_needing_reselect_uses_hysteresis_in_strike_steps():
+    stream = object.__new__(KiteMarketStream)
+    stream.selected_atm_strikes = {
+        "NIFTY": (25000.0, 50.0),
+        "BANKNIFTY": (55000.0, 100.0),
+        "INVALID": (100.0, 0.0),
+    }
+
+    assert stream.options_needing_reselect(
+        {
+            "NIFTY": 25037.5,
+            "BANKNIFTY": 55075.01,
+            "INVALID": 200.0,
+            "MISSING": 100.0,
+        }
+    ) == ["BANKNIFTY"]
+    assert stream.options_needing_reselect({"NIFTY": 24962.49}) == ["NIFTY"]
+
+
+def test_reselect_options_for_underlying_preserves_other_underlyings():
+    kite = Mock()
+    today = date.today()
+    instruments = []
+    for underlying, strikes, first_token in (
+        ("NIFTY", (25000, 25050), 200),
+        ("BANKNIFTY", (55000, 55100), 300),
+    ):
+        token = first_token
+        for strike in strikes:
+            for leg in ("CE", "PE"):
+                instruments.append(
+                    {
+                        "name": underlying,
+                        "tradingsymbol": f"{underlying}{today:%d}{strike}{leg}",
+                        "instrument_type": leg,
+                        "expiry": today + timedelta(days=7),
+                        "strike": strike,
+                        "instrument_token": token,
+                        "lot_size": 65,
+                    }
+                )
+                token += 1
+    kite.instruments.return_value = instruments
+    spot_prices = {"100": 25010.0, "101": 55010.0}
+
+    def ltp(tokens):
+        if all(token in spot_prices for token in tokens):
+            return {token: {"last_price": spot_prices[token]} for token in tokens}
+        return {token: {"last_price": 100.0} for token in tokens}
+
+    kite.ltp.side_effect = ltp
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100, "BANKNIFTY": 101},
+                options_underlyings=["NIFTY", "BANKNIFTY"],
+                option_strike_step={"NIFTY": 50, "BANKNIFTY": 100},
+            )
+        )
+    stream.refresh_instrument_tokens()
+    spot_prices["100"] = 25070.0
+
+    resolved = stream.reselect_options_for_underlying("NIFTY")
+
+    assert resolved["NIFTY_CE"] == 202
+    assert resolved["NIFTY_PE"] == 203
+    assert resolved["BANKNIFTY_CE"] == 300
+    assert resolved["BANKNIFTY_PE"] == 301
+    assert stream.selected_atm_strikes == {
+        "NIFTY": (25050.0, 50.0),
+        "BANKNIFTY": (55000.0, 100.0),
+    }
+    assert set(stream.capture_contracts_by_token) == {202, 203, 300, 301}
+
+
+def test_reselection_is_skipped_when_underlying_has_position_or_pending_entry():
+    bot = object.__new__(KiteTradingBot)
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.active_positions = {"NIFTY_CE": {}}
+    bot._pending_entries = {}
+
+    assert bot._has_position_or_pending_entry_for_underlying("NIFTY")
+
+    bot.intraday_manager.active_positions = {}
+    bot._pending_entries = {
+        ("NIFTY_CE", "CE"): {"underlying": "NIFTY", "symbol": "NIFTY_CE"}
+    }
+    assert bot._has_position_or_pending_entry_for_underlying("NIFTY")
+    assert not bot._has_position_or_pending_entry_for_underlying("BANKNIFTY")
+
+
+def test_reselection_updates_subscriptions_and_clears_option_quote_state():
+    bot = object.__new__(KiteTradingBot)
+    old_contracts = {
+        200: {
+            "instrument_token": 200,
+            "contract_id": "NFO:NIFTY26SEP25000CE",
+            "underlying": "NIFTY",
+        },
+        201: {
+            "instrument_token": 201,
+            "contract_id": "NFO:NIFTY26SEP25000PE",
+            "underlying": "NIFTY",
+        },
+    }
+    new_contracts = {
+        202: {
+            "instrument_token": 202,
+            "contract_id": "NFO:NIFTY26SEP25050CE",
+            "underlying": "NIFTY",
+        },
+        203: {
+            "instrument_token": 203,
+            "contract_id": "NFO:NIFTY26SEP25050PE",
+            "underlying": "NIFTY",
+        },
+    }
+    stream = Mock()
+    stream.capture_contracts_by_token = old_contracts
+    stream.capture_only_tokens = []
+    stream.capture_subscription_started_at = {}
+    stream.contract_specs = {"NIFTY_CE": {"lot_size": 65}}
+    stream.is_connected = True
+    stream.ticker.MODE_FULL = 3
+
+    def reselect(_underlying):
+        stream.capture_contracts_by_token = new_contracts
+        return {"NIFTY": 100, "NIFTY_CE": 202, "NIFTY_PE": 203}
+
+    stream.reselect_options_for_underlying.side_effect = reselect
+    bot.kite_stream = stream
+    bot.config = {
+        "trading_mode": "intraday_options",
+        "options_underlyings": ["NIFTY"],
+        "instrument_tokens": {"NIFTY": 100, "NIFTY_CE": 200, "NIFTY_PE": 201},
+    }
+    bot.latest_prices = {"NIFTY_CE": 120.0, "NIFTY_PE": 110.0}
+    bot.option_quote_cache = {"NIFTY_CE": {"last_price": 120.0}}
+    bot._last_quote_timestamps = {"NIFTY_CE": datetime.now()}
+    bot._option_tick_diagnostics = {200: {"last_tick_time": "old"}}
+    bot._option_gate_context = {}
+    bot._pending_entries = {}
+    bot.simulation_mode = False
+    bot._last_option_reselect_minute = None
+    bot.intraday_manager = Mock()
+    bot.intraday_manager.active_positions = {}
+    bot.option_capture_writer = Mock()
+    bot._seed_reselected_option_bars = Mock()
+    stream.options_needing_reselect.return_value = ["NIFTY"]
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).replace(
+        hour=10, minute=0, second=5, microsecond=0
+    )
+
+    bot.latest_prices["NIFTY"] = 25070.0
+    bot._reselect_option_contracts_if_needed(timestamp)
+    bot._reselect_option_contracts_if_needed(timestamp)
+
+    assert bot.config["instrument_tokens"]["NIFTY_CE"] == 202
+    assert bot.symbol_map == {100: "NIFTY", 202: "NIFTY_CE", 203: "NIFTY_PE"}
+    assert "NIFTY_CE" not in bot.latest_prices
+    assert "NIFTY_CE" not in bot.option_quote_cache
+    assert "NIFTY_CE" not in bot._last_quote_timestamps
+    assert 200 not in bot._option_tick_diagnostics
+    stream.options_needing_reselect.assert_called_once_with({"NIFTY": 25070.0})
+    stream.ticker.subscribe.assert_called_once_with([202, 203])
+    stream.ticker.set_mode.assert_called_once_with(3, [202, 203])
+    stream.ticker.unsubscribe.assert_called_once_with([200, 201])
+    assert bot.option_capture_writer.register_contract.call_count == 2
+    assert bot._seed_reselected_option_bars.call_count == 2
+
+
+def test_nifty_feed_watchdog_alerts_at_60s_and_resubscribes_once_at_180s():
+    bot = object.__new__(KiteTradingBot)
+    bot.simulation_mode = False
+    bot.symbol_map = {100: "NIFTY"}
+    bot.kite_stream = Mock()
+    bot.kite_stream.config.instrument_tokens = {"NIFTY": 100, "NIFTY_CE": 200}
+    bot.kite_stream.capture_only_tokens = [201]
+    bot.kite_stream.is_connected = True
+    bot.kite_stream.ticker.MODE_FULL = 3
+    bot.telegram_notifier = Mock()
+    bot.telegram_notifier.send_message.return_value = True
+    bot._nifty_feed_watchdog_date = None
+    bot._last_nifty_tick_monotonic = None
+    bot._nifty_feed_stale_alerted = False
+    bot._nifty_feed_resubscribe_attempted = False
+    now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
+
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1000.0)
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1059.0)
+    bot.telegram_notifier.send_message.assert_not_called()
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1060.0)
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1179.0)
+    bot.kite_stream.ticker.subscribe.assert_not_called()
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1180.0)
+    bot._check_underlying_feed_watchdog(now, monotonic_now=1181.0)
+
+    bot.telegram_notifier.send_message.assert_called_once()
+    bot.kite_stream.ticker.subscribe.assert_called_once_with([100, 200, 201])
+    bot.kite_stream.ticker.set_mode.assert_called_once_with(3, [100, 200, 201])
 
 
 def test_untradable_opposite_option_is_subscribed_for_capture_only():

@@ -61,6 +61,31 @@ def _recorded_nifty_session():
     ]
 
 
+@pytest.mark.parametrize(
+    ("symbol", "expected"),
+    [
+        ("NIFTY", 0.0022),
+        ("NIFTY_25000_CE", 0.0022),
+        ("BANKNIFTY", 0.003),
+        ("BANKNIFTY_50000_PE", 0.003),
+        ("RELIANCE", 0.005),
+    ],
+)
+def test_minimum_trend_strength_uses_index_overrides_and_stock_default(
+    symbol, expected
+):
+    bot = object.__new__(KiteTradingBot)
+    bot.config = {
+        "min_trend_strength": 0.005,
+        "min_trend_strength_overrides": {
+            "NIFTY": 0.0022,
+            "BANKNIFTY": 0.003,
+        },
+    }
+
+    assert bot._minimum_trend_strength(symbol) == expected
+
+
 def test_scorer_logging_toggle_preserves_scores_and_signals_on_recorded_session():
     bars = _recorded_nifty_session()
     assert bars, "Recorded NIFTY session is required for the equivalence test"

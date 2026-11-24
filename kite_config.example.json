@@ -171,6 +171,10 @@
     "BANKNIFTY": false
   },
   "min_trend_strength": 0.005,
+  "min_trend_strength_overrides": {
+    "NIFTY": 0.0022,
+    "BANKNIFTY": 0.003
+  },
   "avoid_option_expiry_day": true,
   "option_quote_max_age_seconds": 60,
   "stale_quote_candle_fallback": true,
