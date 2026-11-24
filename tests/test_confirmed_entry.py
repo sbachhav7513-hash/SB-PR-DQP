@@ -825,6 +825,7 @@ def test_entry_telemetry_and_signal_id_are_shared_across_decision_records(
         if item.get("confirmation_event") == "confirmed_trade"
     )
     assert bar_decision["signal_id"] == confirmation["signal_id"] == captured_id
+    assert bar_decision["regime_label"] == "UNKNOWN"
     assert trade_opened["signal_id"] == captured_id
     for record in (confirmation, trade_opened):
         assert record["atr_pct"] == 0.043

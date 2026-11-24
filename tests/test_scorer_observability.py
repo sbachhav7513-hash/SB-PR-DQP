@@ -79,6 +79,9 @@ def test_scorer_logging_toggle_preserves_scores_and_signals_on_recorded_session(
             "sideways_net_move_pct": float(
                 config.get("sideways_net_move_pct", 1.0)
             ),
+            "regime_hard_filter_overrides": config.get(
+                "regime_hard_filter_overrides"
+            ),
             "min_trend_strength": float(config.get("min_trend_strength", 0.02)),
             "trend_momentum_bonus_threshold": (
                 float(config["trend_momentum_bonus_threshold"])
@@ -115,8 +118,8 @@ def test_scorer_logging_toggle_preserves_scores_and_signals_on_recorded_session(
 
 def test_archived_nov_12_13_scorer_replay_matches_baseline_row_for_row():
     expected_hashes = {
-        "12": "11831503d8e884204f2fa22eb10b6b0eb52a6dae76fb95937642b8c997d8433f",
-        "13": "ad7e2724c7fc2c66b93ae46628ddb817fbfedc9191236447beea25d330c9cec0",
+        "12": "1f3a91f63e9262322c843a0f65035d49e65475347cb116e5ec796c221be20de3",
+        "13": "d855ba7009d77b14450091517706fe8c1fb4b93efb5216e4564ec4288e3fda0e",
     }
     config = json.loads((ROOT / "kite_config.json").read_text(encoding="utf-8"))
     expected_rows = {"12": 3609, "13": 3589}
@@ -762,7 +765,9 @@ def test_completed_underlying_bar_logs_both_directions_without_scorer_logging(
     )
     bot.decision_journal = SimpleNamespace(paper_recorder=None)
 
-    monkeypatch.setattr(kite_main, "score_observation", lambda *_args: observation)
+    monkeypatch.setattr(
+        kite_main, "score_observation", lambda *_args, **_kwargs: observation
+    )
     monkeypatch.setattr(kite_main, "aggregate_ohlcv_bars", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         kite_main,

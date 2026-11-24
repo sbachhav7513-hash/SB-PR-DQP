@@ -3,6 +3,7 @@ Zerodha Kite Connect based trading bot with live market streaming.
 Uses real-time ticks aggregated into bars, with intraday futures optimization.
 """
 
+import csv
 import json
 import logging
 import math
@@ -2961,6 +2962,7 @@ class KiteTradingBot:
             self.paper_trading_dir = self.config.get(
                 "paper_trading_dir", "paper_trading_data"
             )
+        self._sideways_reference_range_cache = {}
         self.premarket_context_store = PremarketContextStore(
             Path(self.paper_trading_dir) / "premarket"
         )
@@ -6086,7 +6088,30 @@ class KiteTradingBot:
                 raise ValueError("completed scorer history is empty")
 
             started = time.thread_time()
-            observation = score_observation(symbol, history, self.config)
+            sideways_symbol = symbol.upper()
+            sideways_overrides = self.config.get("sideways_overrides", {})
+            er_threshold = (
+                self.config.get("sideways_er_threshold")
+                if self.paper_trading_enabled
+                else None
+            )
+            latest_timestamp = self._journal_datetime(bar.timestamp)
+            sideways_reference_range_pct = None
+            if (
+                er_threshold is not None
+                and sideways_symbol not in sideways_overrides
+                and latest_timestamp is not None
+            ):
+                sideways_reference_range_pct = self._sideways_reference_range_pct(
+                    sideways_symbol, latest_timestamp.date()
+                )
+            observation = score_observation(
+                symbol,
+                history,
+                self.config,
+                sideways_reference_range_pct=sideways_reference_range_pct,
+                sideways_symbol=sideways_symbol,
+            )
             inputs = {
                 name: observation[name]
                 for name in (
@@ -6363,13 +6388,23 @@ class KiteTradingBot:
         return pending.pop((symbol.upper(), timestamp.isoformat()), {})
 
     def _capture_scorer_context(
-        self, symbol: str, history: list[dict], market_score
+        self,
+        symbol: str,
+        history: list[dict],
+        market_score,
+        sideways_reference_range_pct: Optional[float] = None,
+        sideways_symbol: Optional[str] = None,
     ) -> None:
         if not self._scorer_input_logging_enabled() or not history:
             return
         try:
             history = scorer_history(history)
-            inputs = scorer_inputs(history, self.config)
+            inputs = scorer_inputs(
+                history,
+                self.config,
+                sideways_reference_range_pct=sideways_reference_range_pct,
+                sideways_symbol=sideways_symbol or symbol,
+            )
             inputs["tier"] = self._tier_label(symbol)
             inputs["india_vix"] = self._india_vix_value()
             components = score_components(
@@ -8937,6 +8972,62 @@ class KiteTradingBot:
                 writer.record_underlying_bar(symbol, bar)
             self._record_completed_scorer_bar(symbol, bar)
         if symbol.endswith(("_CE", "_PE")):
+    def _sideways_reference_range_pct(
+        self, symbol: str, current_day: date
+    ) -> Optional[float]:
+        """Average daily 9-bar range from the five most recent prior sessions."""
+        symbol = symbol.upper()
+        cache = getattr(self, "_sideways_reference_range_cache", None)
+        if cache is None:
+            cache = {}
+            self._sideways_reference_range_cache = cache
+        cache_key = (symbol, current_day)
+        if cache_key in cache:
+            return cache[cache_key]
+
+        candle_root = Path(self.paper_trading_dir) / "underlying_candles"
+        prior_files = []
+        for day_dir in candle_root.iterdir() if candle_root.exists() else []:
+            if not day_dir.is_dir():
+                continue
+            try:
+                session_day = date.fromisoformat(day_dir.name)
+            except ValueError:
+                continue
+            if session_day < current_day:
+                candle_file = day_dir / f"{symbol}.candles.csv"
+                if candle_file.is_file():
+                    prior_files.append((session_day, candle_file))
+        prior_files.sort(key=lambda item: item[0])
+
+        daily_average_ranges = []
+        for _, candle_file in prior_files[-5:]:
+            session_closes = []
+            with candle_file.open("r", encoding="utf-8", newline="") as source:
+                for row in csv.DictReader(source):
+                    timestamp = datetime.fromisoformat(row["candle_start_time"])
+                    if timestamp.tzinfo is not None:
+                        timestamp = timestamp.astimezone(IST)
+                    if not time_type(9, 15) <= timestamp.time().replace(tzinfo=None) <= time_type(15, 30):
+                        continue
+                    session_closes.append(float(row["close"]))
+            ranges = [
+                (max(session_closes[index - 9:index]) - min(session_closes[index - 9:index]))
+                / max(session_closes[index], 1e-9)
+                * 100.0
+                for index in range(9, len(session_closes))
+            ]
+            if ranges:
+                daily_average_ranges.append(math.fsum(ranges) / len(ranges))
+
+        average_range = (
+            math.fsum(daily_average_ranges) / len(daily_average_ranges)
+            if daily_average_ranges
+            else None
+        )
+        cache[cache_key] = average_range
+        return average_range
+
             self._confirm_option_trailing_close(symbol, bar)
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
             contexts = getattr(self, "_signal_change_attributions", None)
@@ -9112,7 +9203,13 @@ class KiteTradingBot:
             logger.exception("[%s] Strategy evaluation failed", symbol)
             self._record_decision(symbol, bar, bars, None, "ERROR", "strategy_error")
             return
-        self._capture_scorer_context(symbol, history, market_score)
+        self._capture_scorer_context(
+            symbol,
+            history,
+            market_score,
+            sideways_reference_range_pct=sideways_reference_range_pct,
+            sideways_symbol=sideways_symbol,
+        )
         news_context = self.news_monitor.snapshot() if self.news_monitor else None
         if news_context:
             filtered_signal, news_reason = apply_news_filter(
@@ -9374,6 +9471,27 @@ class KiteTradingBot:
         active_positions = getattr(self.intraday_manager, "active_positions", None)
         if (
             self._options_enabled()
+            sideways_symbol = (
+                symbol.rsplit("_", 1)[0].upper() if "_" in symbol else symbol.upper()
+            )
+            sideways_overrides = self.config.get("sideways_overrides", {})
+            sideways_er_threshold = (
+                self.config.get("sideways_er_threshold")
+                if getattr(self, "paper_trading_enabled", False)
+                else None
+            )
+            sideways_reference_range_pct = None
+            if (
+                sideways_er_threshold is not None
+                and sideways_symbol not in sideways_overrides
+            ):
+                latest_timestamp = signal_bars[-1].timestamp
+                sideways_reference_range_pct = self._sideways_reference_range_pct(
+                    sideways_symbol,
+                    latest_timestamp.astimezone(IST).date()
+                    if latest_timestamp.tzinfo
+                    else latest_timestamp.date(),
+                )
             and symbol.endswith(("_CE", "_PE"))
             and isinstance(active_positions, dict)
             and symbol in active_positions
@@ -9389,6 +9507,20 @@ class KiteTradingBot:
                         self.accuracy_filters.min_score_floor,
                     )
                 )
+                sideways_er_threshold=(
+                    float(sideways_er_threshold)
+                    if sideways_er_threshold is not None
+                    else None
+                ),
+                sideways_range_multiple=float(
+                    self.config.get("sideways_range_multiple", 0.6)
+                ),
+                sideways_reference_range_pct=sideways_reference_range_pct,
+                sideways_overrides=sideways_overrides,
+                sideways_symbol=sideways_symbol,
+                regime_hard_filter_overrides=self.config.get(
+                    "regime_hard_filter_overrides"
+                ),
                 self._check_option_signal_health(
                     symbol,
                     market_score.signal,
@@ -14354,6 +14486,60 @@ class KiteTradingBot:
                     else None
                 ),
                 "reentry_vwap": (
+        regime_symbol = self._underlying_symbol(symbol)
+        decision_history = [
+            item.to_dict() if hasattr(item, "to_dict") else item
+            for item in bars
+        ]
+        if symbol.endswith(("_CE", "_PE")):
+            underlying_token = (
+                getattr(self, "config", {})
+                .get("instrument_tokens", {})
+                .get(regime_symbol)
+            )
+            builder = getattr(self, "bar_builder", None)
+            if underlying_token is not None and builder is not None:
+                underlying_bars = builder.get_bars(underlying_token, limit=100)
+                if underlying_bars:
+                    decision_history = [item.to_dict() for item in underlying_bars]
+        decision_closes = [
+            float(item["close"])
+            for item in decision_history
+            if isinstance(item, dict) and item.get("close") is not None
+        ]
+        config = getattr(self, "config", {}) or {}
+        sideways_overrides = config.get("sideways_overrides", {})
+        er_threshold = (
+            config.get("sideways_er_threshold")
+            if getattr(self, "paper_trading_enabled", False)
+            else None
+        )
+        decision_time = self._journal_datetime(bar.timestamp)
+        reference_range = None
+        if (
+            er_threshold is not None
+            and regime_symbol not in sideways_overrides
+            and decision_time is not None
+        ):
+            reference_range = self._sideways_reference_range_pct(
+                regime_symbol, decision_time.date()
+            )
+        regime_label = classify_price_regime(
+            decision_closes,
+            sideways_range_pct=float(config.get("sideways_range_pct", 1.0)),
+            sideways_net_move_pct=float(
+                config.get("sideways_net_move_pct", 1.0)
+            ),
+            sideways_er_threshold=(
+                float(er_threshold) if er_threshold is not None else None
+            ),
+            sideways_range_multiple=float(
+                config.get("sideways_range_multiple", 0.6)
+            ),
+            sideways_reference_range_pct=reference_range,
+            symbol=regime_symbol,
+            sideways_overrides=sideways_overrides,
+        )
                     ema_reentry_context.get("vwap")
                     if ema_reentry_context
                     else None
@@ -14554,6 +14740,7 @@ class KiteTradingBot:
                         run_up_measurement.fail_open_cause
                     )
 
+                "regime_label": regime_label,
                     if veto_status == "failed_open":
                         logger.info(
                             "[%s] run_up_veto_v2 failed open; cause=%s",

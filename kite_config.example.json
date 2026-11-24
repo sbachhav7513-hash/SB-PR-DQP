@@ -134,6 +134,42 @@
   "use_market_context": true,
   "sideways_range_pct": 0.3,
   "sideways_net_move_pct": 0.25,
+  "sideways_er_threshold": 0.25,
+  "sideways_range_multiple": 0.6,
+  "sideways_overrides": {
+    "RELIANCE": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "HDFCBANK": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "ICICIBANK": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "SBIN": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "INFY": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "TCS": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    },
+    "LT": {
+      "range_pct": 0.3,
+      "net_move_pct": 0.25
+    }
+  },
+  "regime_hard_filter_overrides": {
+    "NIFTY": false,
+    "BANKNIFTY": false
+  },
   "min_trend_strength": 0.005,
   "avoid_option_expiry_day": true,
   "option_quote_max_age_seconds": 60,

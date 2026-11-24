@@ -58,7 +58,10 @@ def score_components(reasons: List[str]) -> Dict[str, int]:
 
 
 def scorer_inputs(
-    history: List[Dict[str, Any]], config: Dict[str, Any]
+    history: List[Dict[str, Any]],
+    config: Dict[str, Any],
+    sideways_reference_range_pct: Optional[float] = None,
+    sideways_symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     history = scorer_history(history)
     closes = _finite_closes(history)
@@ -105,6 +108,17 @@ def scorer_inputs(
             sideways_net_move_pct=float(
                 config.get("sideways_net_move_pct", 1.0)
             ),
+            sideways_er_threshold=(
+                float(config["sideways_er_threshold"])
+                if config.get("sideways_er_threshold") is not None
+                else None
+            ),
+            sideways_range_multiple=float(
+                config.get("sideways_range_multiple", 0.6)
+            ),
+            sideways_reference_range_pct=sideways_reference_range_pct,
+            symbol=sideways_symbol,
+            sideways_overrides=config.get("sideways_overrides"),
         ),
         "regime_range_pct": regime_range_pct,
         "regime_20_bar_move_pct": net_move_pct,
@@ -128,9 +142,16 @@ def score_observation(
     ticker: str,
     history: List[Dict[str, Any]],
     config: Dict[str, Any],
+    sideways_reference_range_pct: Optional[float] = None,
+    sideways_symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compute read-only scorer telemetry without changing TradingScore."""
-    inputs = scorer_inputs(history, config)
+    inputs = scorer_inputs(
+        history,
+        config,
+        sideways_reference_range_pct=sideways_reference_range_pct,
+        sideways_symbol=sideways_symbol or ticker,
+    )
     score = score_market(
         ticker,
         history,
@@ -141,6 +162,20 @@ def score_observation(
         min_adx=float(config.get("min_adx", 18.0)),
         sideways_range_pct=float(config.get("sideways_range_pct", 1.0)),
         sideways_net_move_pct=float(config.get("sideways_net_move_pct", 1.0)),
+        sideways_er_threshold=(
+            float(config["sideways_er_threshold"])
+            if config.get("sideways_er_threshold") is not None
+            else None
+        ),
+        sideways_range_multiple=float(
+            config.get("sideways_range_multiple", 0.6)
+        ),
+        sideways_reference_range_pct=sideways_reference_range_pct,
+        sideways_overrides=config.get("sideways_overrides"),
+        sideways_symbol=sideways_symbol or ticker,
+        regime_hard_filter_overrides=config.get(
+            "regime_hard_filter_overrides"
+        ),
         min_trend_strength=float(config.get("min_trend_strength", 0.02)),
         trend_momentum_bonus_threshold=(
             float(config["trend_momentum_bonus_threshold"])

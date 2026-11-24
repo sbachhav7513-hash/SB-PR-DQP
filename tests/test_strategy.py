@@ -123,6 +123,83 @@ def test_close_only_regime_classifier_identifies_sideways_market():
     assert "20-bar move" in result.reasons[0]
 
 
+def test_efficiency_regime_uses_reference_range_and_symbol_override():
+    sideways_closes = [100.0 + (index % 2) * 0.1 for index in range(30)]
+    trending_closes = [100.0 + index * 0.1 for index in range(30)]
+    rule = {
+        "sideways_er_threshold": 0.25,
+        "sideways_range_multiple": 0.6,
+        "sideways_reference_range_pct": 0.2,
+    }
+
+    assert classify_price_regime(
+        sideways_closes, symbol="NIFTY", **rule
+    ) == "SIDEWAYS"
+    assert classify_price_regime(
+        trending_closes, symbol="NIFTY", **rule
+    ) == "TRENDING"
+    assert classify_price_regime(
+        sideways_closes,
+        symbol="RELIANCE",
+        sideways_overrides={"RELIANCE": {"range_pct": 0.3, "net_move_pct": 0.25}},
+        sideways_er_threshold=0.25,
+        sideways_range_multiple=0.6,
+        sideways_reference_range_pct=10.0,
+    ) == "SIDEWAYS"
+
+
+def test_regime_hard_filter_can_be_disabled_per_index_only():
+    sideways_history = [
+        {"close": 100.0 + (index % 2) * 0.1} for index in range(40)
+    ]
+    extended_closes = [100.0 + index * 0.1 for index in range(39)] + [105.0]
+    extended_history = [{"close": close} for close in extended_closes]
+    overrides = {"NIFTY": False, "BANKNIFTY": False}
+
+    nifty_sideways = score_market(
+        "NIFTY",
+        sideways_history,
+        min_adx=0,
+        sideways_range_pct=0.3,
+        sideways_net_move_pct=0.25,
+        regime_hard_filter_overrides=overrides,
+    )
+    stock_sideways = score_market(
+        "RELIANCE",
+        sideways_history,
+        min_adx=0,
+        sideways_range_pct=0.3,
+        sideways_net_move_pct=0.25,
+        regime_hard_filter_overrides=overrides,
+    )
+    nifty_extended = score_market(
+        "NIFTY",
+        extended_history,
+        min_adx=0,
+        sideways_range_pct=0.3,
+        sideways_net_move_pct=0.25,
+        regime_hard_filter_overrides=overrides,
+    )
+
+    assert not any("Sideways regime" in reason for reason in nifty_sideways.reasons)
+    assert "Sideways regime" in stock_sideways.reasons[0]
+    assert not any("Extended move" in reason for reason in nifty_extended.reasons)
+
+
+def test_minimum_history_override_is_opt_in_for_exploration():
+    history = [
+        {"close": 100.0 + index * 0.1} for index in range(25)
+    ]
+
+    default_result = score_market("NIFTY", history, min_adx=0)
+    exploration_result = score_market(
+        "NIFTY", history, min_adx=0, minimum_history_bars=21
+    )
+
+    assert default_result.reasons == ["Not enough data"]
+    assert exploration_result.reasons != ["Not enough data"]
+
+
 def test_aggregate_ohlcv_bars_ignores_partial_or_gapped_buckets():
     timezone = ZoneInfo("Asia/Kolkata")
     start = datetime(2026, 10, 23, 9, 15, tzinfo=timezone)

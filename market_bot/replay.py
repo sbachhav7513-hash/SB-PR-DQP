@@ -282,6 +282,7 @@ def run_replay(
     slippage_bps_per_side: float = 0.0,
     signal_fn: Optional[Callable[[str, List[Dict]], TradingScore]] = None,
     volume_confirmation_candles: Optional[List[Dict]] = None,
+    sideways_reference_range_pct: Optional[float] = None,
 ) -> BacktestResult:
     """Replay the strategy and shared accuracy filters without broker access."""
     config = normalize_strategy_config(config)
@@ -332,6 +333,19 @@ def run_replay(
             min_adx=float(config.get("min_adx", 18.0)),
             sideways_range_pct=float(config.get("sideways_range_pct", 1.0)),
             sideways_net_move_pct=float(config.get("sideways_net_move_pct", 1.0)),
+            sideways_er_threshold=(
+                float(config["sideways_er_threshold"])
+                if config.get("sideways_er_threshold") is not None
+                else None
+            ),
+            sideways_range_multiple=float(
+                config.get("sideways_range_multiple", 0.6)
+            ),
+            sideways_reference_range_pct=sideways_reference_range_pct,
+            sideways_overrides=config.get("sideways_overrides"),
+            regime_hard_filter_overrides=config.get(
+                "regime_hard_filter_overrides"
+            ),
             min_trend_strength=float(config.get("min_trend_strength", 0.02)),
             trend_momentum_bonus_threshold=float(
                 config.get("trend_momentum_bonus_threshold", 0.02)

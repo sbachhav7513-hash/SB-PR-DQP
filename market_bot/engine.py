@@ -669,10 +669,19 @@ def classify_price_regime(
     closes: List[float],
     sideways_range_pct: float = 1.0,
     sideways_net_move_pct: float = 1.0,
+    sideways_er_threshold: Optional[float] = None,
+    sideways_range_multiple: float = 0.6,
+    sideways_reference_range_pct: Optional[float] = None,
+    symbol: Optional[str] = None,
+    sideways_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> str:
     """Classify close-only data for entry filtering."""
     if len(closes) < 21:
         return "UNKNOWN"
+
+    override = None
+    if symbol is not None and sideways_overrides:
+        override = sideways_overrides.get(symbol.upper())
 
     previous_window = closes[-21:-1]
     recent_window = closes[-10:-1]
@@ -680,7 +689,45 @@ def classify_price_regime(
         (max(recent_window) - min(recent_window)) / max(closes[-1], 1e-9) * 100.0
     )
     net_move_pct = abs(closes[-1] - closes[-20]) / max(closes[-20], 1e-9) * 100.0
-    if (
+    if override is not None:
+        range_threshold = float(override["range_pct"])
+        net_move_threshold = float(override["net_move_pct"])
+        if recent_range_pct < range_threshold and net_move_pct < net_move_threshold:
+            return "SIDEWAYS"
+    elif sideways_er_threshold is not None:
+        if (
+            not math.isfinite(sideways_er_threshold)
+            or sideways_er_threshold < 0
+            or not math.isfinite(sideways_range_multiple)
+            or sideways_range_multiple < 0
+        ):
+            raise ValueError("Sideways ER and range thresholds must be finite and non-negative")
+        if sideways_reference_range_pct is None:
+            if (
+                recent_range_pct < sideways_range_pct
+                and net_move_pct < sideways_net_move_pct
+            ):
+                return "SIDEWAYS"
+        else:
+            if (
+                not math.isfinite(sideways_reference_range_pct)
+                or sideways_reference_range_pct < 0
+            ):
+                raise ValueError("Sideways reference range must be finite and non-negative")
+            movement = sum(
+                abs(closes[index] - closes[index - 1])
+                for index in range(len(closes) - 20, len(closes))
+            )
+            efficiency_ratio = (
+                abs(closes[-1] - closes[-20]) / movement if movement else 0.0
+            )
+            if (
+                efficiency_ratio < sideways_er_threshold
+                and recent_range_pct
+                < sideways_range_multiple * sideways_reference_range_pct
+            ):
+                return "SIDEWAYS"
+    elif (
         recent_range_pct < sideways_range_pct
         and net_move_pct < sideways_net_move_pct
     ):
@@ -712,6 +759,13 @@ def score_market(
     min_adx: float = 18.0,
     sideways_range_pct: float = 1.0,
     sideways_net_move_pct: float = 1.0,
+    sideways_er_threshold: Optional[float] = None,
+    sideways_range_multiple: float = 0.6,
+    sideways_reference_range_pct: Optional[float] = None,
+    sideways_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+    sideways_symbol: Optional[str] = None,
+    regime_hard_filter_overrides: Optional[Dict[str, bool]] = None,
+    minimum_history_bars: int = 30,
     min_trend_strength: float = 0.02,
     trend_momentum_bonus_threshold: Optional[float] = None,
     signal_proximity_pct: float = 0.005,
@@ -732,7 +786,9 @@ def score_market(
     if trend_momentum_bonus_threshold is None:
         trend_momentum_bonus_threshold = min_trend_strength
     closes = [item["close"] for item in history if "close" in item]
-    if len(closes) < max(ema_slow + 1, rsi_period + 1, 30):
+    if minimum_history_bars < 1:
+        raise ValueError("minimum_history_bars must be positive")
+    if len(closes) < max(ema_slow + 1, rsi_period + 1, minimum_history_bars):
         return TradingScore(ticker=ticker, score=0, signal="HOLD", reasons=["Not enough data"])
 
     session_state = session_state or market_session_state(history)
@@ -787,6 +843,11 @@ def score_market(
         closes,
         sideways_range_pct=sideways_range_pct,
         sideways_net_move_pct=sideways_net_move_pct,
+        sideways_er_threshold=sideways_er_threshold,
+        sideways_range_multiple=sideways_range_multiple,
+        sideways_reference_range_pct=sideways_reference_range_pct,
+        symbol=sideways_symbol or ticker,
+        sideways_overrides=sideways_overrides,
     )
     regime_recent_window = closes[-10:-1]
     regime_range_pct = (
@@ -796,6 +857,10 @@ def score_market(
     )
     regime_net_move_pct = (
         abs(price - closes[-20]) / max(closes[-20], 1e-9) * 100.0
+    )
+    regime_symbol = (sideways_symbol or ticker).upper()
+    regime_hard_filter = bool(
+        (regime_hard_filter_overrides or {}).get(regime_symbol, True)
     )
     complete_ohlcv = len(history) == len(closes) and all(
         all(key in bar for key in ("open", "high", "low", "close", "volume"))
@@ -811,14 +876,36 @@ def score_market(
         )
     )
 
-    sideways_rejected = regime == "SIDEWAYS" and not compression_breakout
-    sideways_reason = (
-        "Sideways regime: "
-        f"recent range {regime_range_pct:.3f}% < {sideways_range_pct:.3f}% "
-        "and "
-        f"20-bar move {regime_net_move_pct:.3f}% "
-        f"< {sideways_net_move_pct:.3f}%"
+    sideways_rejected = (
+        regime_hard_filter
+        and regime == "SIDEWAYS"
+        and not compression_breakout
     )
+    if regime_symbol in (sideways_overrides or {}):
+        sideways_reason = (
+            "Sideways regime: "
+            f"recent range {regime_range_pct:.3f}% < "
+            f"{sideways_overrides[regime_symbol]['range_pct']:.3f}% "
+            "and "
+            f"20-bar move {regime_net_move_pct:.3f}% "
+            f"< {sideways_overrides[regime_symbol]['net_move_pct']:.3f}%"
+        )
+    elif (
+        sideways_er_threshold is not None
+        and sideways_reference_range_pct is not None
+    ):
+        sideways_reason = (
+            "Sideways regime: efficiency ratio and normalized range are below "
+            "their configured thresholds"
+        )
+    else:
+        sideways_reason = (
+            "Sideways regime: "
+            f"recent range {regime_range_pct:.3f}% < {sideways_range_pct:.3f}% "
+            "and "
+            f"20-bar move {regime_net_move_pct:.3f}% "
+            f"< {sideways_net_move_pct:.3f}%"
+        )
     if sideways_rejected:
         return TradingScore(
             ticker=ticker,
@@ -827,7 +914,7 @@ def score_market(
             reasons=[sideways_reason],
         )
 
-    if regime == "EXTENDED":
+    if regime_hard_filter and regime == "EXTENDED":
         return TradingScore(
             ticker=ticker,
             score=0,
