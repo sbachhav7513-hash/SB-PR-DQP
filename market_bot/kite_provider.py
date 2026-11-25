@@ -794,6 +794,33 @@ class KiteMarketStream:
                 capture_contracts_by_token[opposite_token] = opposite_metadata
                 capture_opposites_by_token[token] = opposite_metadata
 
+        for underlying in ("NIFTY", "BANKNIFTY"):
+            if underlying not in selected_expiries:
+                continue
+            underlying_price = float(
+                underlying_prices[
+                    str(underlying_tokens.get(underlying, ""))
+                ].get("last_price", 0)
+            )
+            chain_rows = sorted(
+                (
+                    row
+                    for row in candidates
+                    if str(row.get("name", "")).upper() == underlying
+                ),
+                key=lambda row: (
+                    abs(float(row["strike"]) - underlying_price),
+                    str(row["instrument_type"]),
+                    str(row["tradingsymbol"]),
+                ),
+            )
+            for row in chain_rows:
+                token = int(row["instrument_token"])
+                capture_contracts_by_token.setdefault(
+                    token,
+                    self._option_capture_metadata(row, underlying_price),
+                )
+
         option_tokens = [str(int(row["instrument_token"])) for row in selected.values()]
         quotes = self.kite.ltp(option_tokens)
         volume_quotes: Dict[str, Dict] = {}

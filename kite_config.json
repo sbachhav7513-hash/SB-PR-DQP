@@ -88,6 +88,8 @@
   "account_size": 100000,
   "risk_per_trade_pct": 1.0,
   "max_risk_per_trade": 1000.0,
+  "paper_entry_slippage_pct": 0.4,
+  "paper_exit_slippage_pct": 1.0,
   "max_capital_per_trade_pct": 20.0,
   "banknifty_max_capital_per_trade_pct": 30.0,
   "max_open_risk_pct": 4.0,

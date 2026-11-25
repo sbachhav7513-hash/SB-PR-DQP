@@ -31,6 +31,28 @@ DECISION_FLUSH_INTERVAL_SECONDS = 60.0
 REJECTED_SIGNAL_UPDATE_QUEUE_SIZE = 10_000
 DECISION_WRITERS: weakref.WeakSet = weakref.WeakSet()
 DECISION_WRITERS_LOCK = threading.Lock()
+OPTION_TRADE_LOG_FIELDS = {
+    "option_symbol",
+    "type",
+    "strike",
+    "expiry",
+    "dte_at_entry",
+    "entry_bid",
+    "entry_ask",
+    "entry_mid",
+    "exit_bid",
+    "exit_ask",
+    "exit_mid",
+    "fees",
+    "fees_rupees",
+    "net_pnl",
+    "entry_slippage_pct",
+    "exit_slippage_pct",
+    "entry_slippage_rupees",
+    "exit_slippage_rupees",
+    "estimated_slippage_rupees",
+    "net_pnl_after_slippage",
+}
 
 
 def normalize_decision_outcome(value: Any) -> str:
@@ -169,7 +191,10 @@ class PaperTradingRecorder:
         "trade_id", "telegram_trade_id", "timestamp", "config_hash", "git_sha", "git_dirty",
         "ticker", "trading_symbol",
         "contract_id",
+        "option_symbol", "type", "strike", "expiry", "dte_at_entry",
         "action", "quantity", "entry",
+        "entry_bid", "entry_ask", "entry_mid",
+        "exit_bid", "exit_ask", "exit_mid",
         "exit_price", "stop_loss", "take_profit", "status", "pnl", "pnl_points",
         "pnl_rupees", "duration_seconds", "reason", "score", "exit_source", "exit_reason",
         "risk_modifications", "closed_at", "updated_at",
@@ -274,6 +299,12 @@ class PaperTradingRecorder:
         "fee_model_status",
         "after_cost_pnl",
         "net_pnl",
+        "entry_slippage_pct",
+        "exit_slippage_pct",
+        "entry_slippage_rupees",
+        "exit_slippage_rupees",
+        "estimated_slippage_rupees",
+        "net_pnl_after_slippage",
         "signal_id",
         "signal_time",
         "signal_close",
@@ -2243,6 +2274,107 @@ class PaperShadowExitJournal:
 class TradeJournal:
     PAPER_MARK_INTERVAL_SECONDS = 60
 
+    @staticmethod
+    def _validate_logging_schema() -> None:
+        missing = OPTION_TRADE_LOG_FIELDS.difference(
+            PaperTradingRecorder.TRADE_COLUMNS
+        )
+        missing.update(
+            OPTION_TRADE_LOG_FIELDS.difference(
+                TradeJournal._normalize_trade_logging_fields({})
+            )
+        )
+        if missing:
+            raise RuntimeError(
+                "Trade logging schema is missing required fields: "
+                + ", ".join(sorted(missing))
+            )
+
+    @staticmethod
+    def _mid_price(bid: Any, ask: Any) -> Optional[float]:
+        try:
+            bid_value = float(bid)
+            ask_value = float(ask)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not math.isfinite(bid_value)
+            or not math.isfinite(ask_value)
+            or bid_value <= 0
+            or ask_value < bid_value
+        ):
+            return None
+        return (bid_value + ask_value) / 2.0
+
+    @classmethod
+    def _normalize_trade_logging_fields(
+        cls, entry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        values = {
+            "option_symbol": None,
+            "type": None,
+            "strike": None,
+            "expiry": None,
+            "dte_at_entry": None,
+            "entry_bid": None,
+            "entry_ask": None,
+            "entry_mid": None,
+            "exit_bid": None,
+            "exit_ask": None,
+            "exit_mid": None,
+            "fees": None,
+            "fees_rupees": None,
+            "net_pnl": None,
+            "entry_slippage_pct": None,
+            "exit_slippage_pct": None,
+            "entry_slippage_rupees": None,
+            "exit_slippage_rupees": None,
+            "estimated_slippage_rupees": None,
+            "net_pnl_after_slippage": None,
+        }
+        values.update({key: entry[key] for key in values if key in entry})
+
+        ticker = str(entry.get("ticker") or entry.get("symbol") or "")
+        option_type = str(values["type"] or "").upper()
+        if not option_type and ticker.upper().endswith(("_CE", "_PE")):
+            option_type = ticker.rsplit("_", 1)[-1].upper()
+        if option_type in {"CE", "PE"}:
+            values["type"] = option_type
+            if not values["option_symbol"]:
+                option_symbol = entry.get("trading_symbol")
+                contract_id = str(entry.get("contract_id") or "")
+                if not option_symbol and ":" in contract_id:
+                    option_symbol = contract_id.rsplit(":", 1)[-1]
+                values["option_symbol"] = option_symbol or ticker
+
+        if values["entry_bid"] is None:
+            values["entry_bid"] = entry.get(
+                "entry_quote_bid",
+                entry.get("paper_entry_bid", entry.get("fill_bid")),
+            )
+        if values["entry_ask"] is None:
+            values["entry_ask"] = entry.get(
+                "entry_quote_ask",
+                entry.get("paper_entry_ask", entry.get("fill_ask")),
+            )
+        if values["entry_mid"] is None:
+            values["entry_mid"] = cls._mid_price(
+                values["entry_bid"], values["entry_ask"]
+            )
+        if values["exit_bid"] is None:
+            values["exit_bid"] = entry.get(
+                "exit_quote_bid", entry.get("paper_exit_bid")
+            )
+        if values["exit_ask"] is None:
+            values["exit_ask"] = entry.get(
+                "exit_quote_ask", entry.get("paper_exit_ask")
+            )
+        if values["exit_mid"] is None:
+            values["exit_mid"] = cls._mid_price(
+                values["exit_bid"], values["exit_ask"]
+            )
+        return values
+
     def __init__(
         self,
         path: str = "trades.jsonl",
@@ -2251,6 +2383,7 @@ class TradeJournal:
         git_sha: Optional[str] = None,
         git_dirty: Optional[bool] = None,
     ) -> None:
+        self._validate_logging_schema()
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.config_hash = config_hash
@@ -2295,6 +2428,13 @@ class TradeJournal:
 
     def log_trade(self, payload: Dict[str, Any]) -> int:
         entry = dict(payload)
+        entry.update(self._normalize_trade_logging_fields(entry))
+        missing_fields = OPTION_TRADE_LOG_FIELDS.difference(entry)
+        if missing_fields:
+            raise RuntimeError(
+                "Trade record is missing required logging fields: "
+                + ", ".join(sorted(missing_fields))
+            )
         entry["tier"] = _journal_tier(entry.get("ticker"), entry.get("tier"))
         entry.setdefault("contract_id", "")
         self._stamp_trade_identity(entry)

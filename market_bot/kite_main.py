@@ -2933,6 +2933,8 @@ class KiteTradingBot:
         if self.entry_mode not in {"immediate", "confirmed"}:
             raise ValueError("entry_mode must be immediate or confirmed")
         self.config.setdefault("capture_all_evaluated_contracts", True)
+        self.config.setdefault("paper_entry_slippage_pct", 0.4)
+        self.config.setdefault("paper_exit_slippage_pct", 1.0)
         self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.config.setdefault("entry_feature_logging_v2", True)
         self.config.setdefault("scorer_input_logging_v1", True)
@@ -2954,6 +2956,21 @@ class KiteTradingBot:
             self.config, self.mode, simulation_mode=self.simulation_mode
         )
         self.config_hash = strategy_config_hash(self.config)
+        for slippage_key in (
+            "paper_entry_slippage_pct",
+            "paper_exit_slippage_pct",
+        ):
+            try:
+                slippage_pct = float(self.config[slippage_key])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"{slippage_key} must be finite and non-negative"
+                ) from exc
+            if not math.isfinite(slippage_pct) or slippage_pct < 0:
+                raise ValueError(
+                    f"{slippage_key} must be finite and non-negative"
+                )
+            self.config[slippage_key] = slippage_pct
         self.git_identity = log_startup_identity(
             self.config_hash,
             stock_take_profit_v2=(
@@ -3085,6 +3102,7 @@ class KiteTradingBot:
                 on_connection_change=self._on_connection_change,
             )
             self.config["instrument_tokens"] = self.kite_stream.refresh_instrument_tokens()
+        self._validate_option_trade_logging_metadata()
         self.option_capture_writer = OptionCaptureWriter(
             Path(self.paper_trading_dir) / "option_candles",
             config_hash=self.config_hash,
@@ -3421,6 +3439,19 @@ class KiteTradingBot:
                 "entry_fill_source": "simulation",
                 "simulation": True,
             }
+        )
+        alert.update(
+            self._option_trade_log_fields(
+                symbol,
+                entry_time=datetime.now(IST),
+                entry_price=entry_price,
+                quantity=quantity,
+            )
+        )
+        alert.update(
+            self._paper_entry_slippage_fields(
+                symbol, entry_price, quantity
+            )
         )
         trade_id = self.trade_journal.log_trade(alert)
         alert["trade_id"] = trade_id
@@ -5013,6 +5044,196 @@ class KiteTradingBot:
             else {}
         )
         return dict(metadata)
+
+    def _validate_option_trade_logging_metadata(self) -> None:
+        if self.simulation_mode or not self._options_enabled():
+            return
+        missing_contracts = []
+        stream = self.kite_stream
+        for symbol in self.config.get("instrument_tokens", {}):
+            if not str(symbol).upper().endswith(("_CE", "_PE")):
+                continue
+            metadata = self._option_contract_metadata(symbol)
+            option_symbol = (
+                getattr(stream, "contract_symbols", {}).get(symbol)
+                or metadata.get("tradingsymbol")
+            )
+            contract_id = (
+                metadata.get("contract_id") or self._contract_id(symbol)
+            )
+            expiry = (
+                metadata.get("expiry")
+                or getattr(stream, "contract_expiries", {}).get(symbol)
+            )
+            option_type = str(
+                metadata.get("leg") or str(symbol).rsplit("_", 1)[-1]
+            ).upper()
+            if (
+                option_symbol
+                and option_type in {"CE", "PE"}
+                and not str(option_symbol).upper().endswith(option_type)
+            ):
+                option_symbol = None
+            try:
+                strike = float(metadata.get("strike"))
+            except (TypeError, ValueError, OverflowError):
+                strike = float("nan")
+            if not math.isfinite(strike) or strike <= 0:
+                strike = None
+            try:
+                if isinstance(expiry, datetime):
+                    expiry = expiry.date()
+                elif not isinstance(expiry, date):
+                    expiry = date.fromisoformat(str(expiry)[:10])
+            except (TypeError, ValueError):
+                expiry = None
+            absent = [
+                name
+                for name, value in (
+                    ("option_symbol", option_symbol),
+                    ("type", option_type if option_type in {"CE", "PE"} else None),
+                    ("strike", strike),
+                    ("expiry", expiry),
+                    ("contract_id", contract_id),
+                )
+                if value is None or value == ""
+            ]
+            if absent:
+                missing_contracts.append(f"{symbol} ({', '.join(absent)})")
+        if missing_contracts:
+            raise RuntimeError(
+                "Option trade logging metadata is incomplete at startup: "
+                + "; ".join(missing_contracts)
+            )
+
+    def _option_trade_log_fields(
+        self,
+        symbol: str,
+        quote_metrics: Optional[Dict[str, Any]] = None,
+        *,
+        entry_time: Optional[datetime] = None,
+        entry_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if (
+            getattr(self, "config", {}).get("trading_mode")
+            not in {"intraday_options", "intraday_both"}
+            or not str(symbol).upper().endswith(("_CE", "_PE"))
+        ):
+            return {}
+
+        stream = getattr(self, "kite_stream", None)
+        metadata = self._option_contract_metadata(symbol)
+        option_type = str(
+            metadata.get("leg") or str(symbol).rsplit("_", 1)[-1]
+        ).upper()
+        option_symbol = (
+            getattr(stream, "contract_symbols", {}).get(symbol)
+            or metadata.get("tradingsymbol")
+        )
+        contract_id = metadata.get("contract_id") or self._contract_id(symbol)
+        if not option_symbol:
+            option_symbol = symbol
+        if not contract_id and getattr(self, "simulation_mode", False):
+            contract_id = symbol
+
+        expiry = (
+            metadata.get("expiry")
+            or getattr(stream, "contract_expiries", {}).get(symbol)
+        )
+        if isinstance(expiry, datetime):
+            expiry_date = expiry.date()
+        elif isinstance(expiry, date):
+            expiry_date = expiry
+        elif expiry:
+            try:
+                expiry_date = date.fromisoformat(str(expiry)[:10])
+            except ValueError:
+                logger.error(
+                    "[%s] Could not parse expiry for trade logging: %r",
+                    symbol,
+                    expiry,
+                )
+                expiry_date = None
+        else:
+            expiry_date = None
+
+        local_entry_time = entry_time or datetime.now(IST)
+        if local_entry_time.tzinfo is None:
+            local_entry_time = local_entry_time.replace(tzinfo=IST)
+        else:
+            local_entry_time = local_entry_time.astimezone(IST)
+        expiry_text = expiry_date.isoformat() if expiry_date else None
+        bid = (quote_metrics or {}).get("bid")
+        ask = (quote_metrics or {}).get("ask")
+        mid = None
+        try:
+            bid_value = float(bid)
+            ask_value = float(ask)
+            if (
+                math.isfinite(bid_value)
+                and math.isfinite(ask_value)
+                and bid_value > 0
+                and ask_value >= bid_value
+            ):
+                mid = (bid_value + ask_value) / 2.0
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+        return {
+            "contract_id": contract_id,
+            "trading_symbol": option_symbol,
+            "option_symbol": option_symbol,
+            "type": option_type,
+            "strike": metadata.get("strike"),
+            "expiry": expiry_text,
+            "dte_at_entry": (
+                (expiry_date - local_entry_time.date()).days
+                if expiry_date is not None
+                else None
+            ),
+            "entry_bid": bid,
+            "entry_ask": ask,
+            "entry_mid": mid,
+            **self._paper_entry_slippage_fields(
+                symbol, entry_price, quantity
+            ),
+        }
+
+    def _paper_entry_slippage_fields(
+        self,
+        symbol: str,
+        entry_price: Optional[float],
+        quantity: Optional[int],
+    ) -> Dict[str, Any]:
+        if not getattr(self, "paper_trading_enabled", False) or getattr(
+            self, "live_orders_enabled", False
+        ):
+            return {}
+        entry_pct = float(self.config.get("paper_entry_slippage_pct", 0.4))
+        exit_pct = float(self.config.get("paper_exit_slippage_pct", 1.0))
+        manager = getattr(self, "intraday_manager", None)
+        multiplier = (
+            float(
+                getattr(manager, "contract_specs", {})
+                .get(symbol, {})
+                .get("multiplier", 1.0)
+            )
+            if manager is not None
+            else 1.0
+        )
+        entry_slippage = (
+            abs(float(entry_price) * int(quantity) * multiplier)
+            * entry_pct
+            / 100.0
+            if entry_price is not None and quantity is not None
+            else None
+        )
+        return {
+            "entry_slippage_pct": entry_pct,
+            "exit_slippage_pct": exit_pct,
+            "entry_slippage_rupees": entry_slippage,
+        }
 
     @staticmethod
     def _option_signal_id(symbol: str, signal_time: datetime) -> str:
@@ -12749,6 +12970,17 @@ class KiteTradingBot:
                     {
                         "ticker": symbol,
                         "contract_id": self._contract_id(symbol),
+                        **self._option_trade_log_fields(
+                            symbol,
+                            entry_time=datetime.now(IST),
+                            entry_price=position["entry_price"],
+                            quantity=position["quantity"],
+                        ),
+                        **self._paper_entry_slippage_fields(
+                            symbol,
+                            position["entry_price"],
+                            position["quantity"],
+                        ),
                         "action": position["direction"],
                         "entry": position["entry_price"],
                         "stop_loss": position["stop_loss"],
@@ -13102,6 +13334,51 @@ class KiteTradingBot:
                 fee_trade, getattr(self, "config", None)
             )
         fees_rupees = fee_record["total_fees"] if fee_record else None
+        slippage_enabled = bool(
+            getattr(self, "paper_trading_enabled", False)
+            and not getattr(self, "live_orders_enabled", False)
+        )
+        entry_slippage_pct = (
+            float(self.config.get("paper_entry_slippage_pct", 0.4))
+            if slippage_enabled
+            else None
+        )
+        exit_slippage_pct = (
+            float(self.config.get("paper_exit_slippage_pct", 1.0))
+            if slippage_enabled
+            else None
+        )
+        slippage_multiplier = float(
+            self.intraday_manager.contract_specs.get(symbol, {}).get(
+                "multiplier", 1.0
+            )
+        )
+        entry_price_for_slippage = float(
+            (trade or {}).get(
+                "entry", (position or {}).get("entry_price", 0.0)
+            )
+            or 0.0
+        )
+        entry_slippage_rupees = (
+            abs(entry_price_for_slippage * entry_quantity * slippage_multiplier)
+            * entry_slippage_pct
+            / 100.0
+            if entry_slippage_pct is not None
+            else None
+        )
+        exit_slippage_rupees = (
+            abs(weighted_exit_price * entry_quantity * slippage_multiplier)
+            * exit_slippage_pct
+            / 100.0
+            if exit_slippage_pct is not None
+            else None
+        )
+        estimated_slippage_rupees = (
+            entry_slippage_rupees + exit_slippage_rupees
+            if entry_slippage_rupees is not None
+            and exit_slippage_rupees is not None
+            else None
+        )
         cost_fields = {
             "gross_pnl_rupees": float(pnl) if pnl is not None else None,
             "fees": fee_record,
@@ -13115,6 +13392,21 @@ class KiteTradingBot:
             "net_pnl": (
                 round(float(pnl) - fees_rupees, 2)
                 if pnl is not None and fees_rupees is not None
+                else None
+            ),
+            "entry_slippage_pct": entry_slippage_pct,
+            "exit_slippage_pct": exit_slippage_pct,
+            "entry_slippage_rupees": entry_slippage_rupees,
+            "exit_slippage_rupees": exit_slippage_rupees,
+            "estimated_slippage_rupees": estimated_slippage_rupees,
+            "net_pnl_after_slippage": (
+                round(
+                    float(pnl)
+                    - float(fees_rupees or 0.0)
+                    - float(estimated_slippage_rupees),
+                    2,
+                )
+                if pnl is not None and estimated_slippage_rupees is not None
                 else None
             ),
         }
@@ -13240,6 +13532,15 @@ class KiteTradingBot:
                 "exit_quote_ltp": quote_metrics["ltp"],
                 "exit_quote_bid": quote_metrics["bid"],
                 "exit_quote_ask": quote_metrics["ask"],
+                "exit_bid": quote_metrics["bid"],
+                "exit_ask": quote_metrics["ask"],
+                "exit_mid": (
+                    (quote_metrics["bid"] + quote_metrics["ask"]) / 2.0
+                    if quote_metrics["bid"] is not None
+                    and quote_metrics["ask"] is not None
+                    and quote_metrics["ask"] >= quote_metrics["bid"]
+                    else None
+                ),
                 "exit_quote_timestamp": (
                     quote_metrics["timestamp"].isoformat()
                     if quote_metrics["timestamp"] is not None
@@ -15925,6 +16226,15 @@ class KiteTradingBot:
                 alert["run_up_veto_v2_status"] = run_up_measurement.status
             entry_timestamp = datetime.now(IST)
             alert["entry_time"] = entry_timestamp.isoformat(timespec="seconds")
+            alert.update(
+                self._option_trade_log_fields(
+                    symbol,
+                    entry_quote_metrics,
+                    entry_time=entry_timestamp,
+                    entry_price=float(price),
+                    quantity=int(quantity),
+                )
+            )
             signal_timestamp = self._journal_datetime(alert.get("signal_time"))
             if signal_timestamp is not None:
                 alert["signal_to_entry_delay_seconds"] = max(
@@ -15956,6 +16266,11 @@ class KiteTradingBot:
                 order_times[alert["signal_uid"]] = alert["order_time"]
             self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, entry_timestamp
+            )
+            alert.update(
+                self._paper_entry_slippage_fields(
+                    symbol, float(price), int(quantity)
+                )
             )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id
@@ -16366,6 +16681,15 @@ class KiteTradingBot:
             alert["entry_time"] = sell_entry_timestamp.isoformat(
                 timespec="seconds"
             )
+            alert.update(
+                self._option_trade_log_fields(
+                    symbol,
+                    sell_entry_quote_metrics,
+                    entry_time=sell_entry_timestamp,
+                    entry_price=float(price),
+                    quantity=int(quantity),
+                )
+            )
             signal_timestamp = self._journal_datetime(alert.get("signal_time"))
             if signal_timestamp is not None:
                 alert["signal_to_entry_delay_seconds"] = max(
@@ -16460,6 +16784,11 @@ class KiteTradingBot:
                 order_times[alert["signal_uid"]] = alert["order_time"]
             self._finalize_entry_feature_snapshot_fail_open(
                 alert, symbol, sell_entry_timestamp
+            )
+            alert.update(
+                self._paper_entry_slippage_fields(
+                    symbol, float(price), int(quantity)
+                )
             )
             telegram_trade_id = self.trade_journal.log_trade(alert)
             alert["telegram_trade_id"] = telegram_trade_id

@@ -88,6 +88,8 @@
   "paper_shadow_fee_per_order": 0.0,
   "paper_shadow_fee_bps_per_side": 0.0,
   "paper_shadow_slippage_bps_per_side": 0.0,
+  "paper_entry_slippage_pct": 0.4,
+  "paper_exit_slippage_pct": 1.0,
   "allow_trend_continuation": true,
   "option_min_candle_body_ratio": 0.60,
   "live_orders_confirmed": false,

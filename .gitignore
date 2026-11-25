@@ -49,6 +49,8 @@ sim/
 .scratch_lock_analysis/
 tmp/
 paper_trading_data/option_candles/2026-11-24/
+fresh_study/
+
 # Testing
 .pytest_cache/
 .coverage

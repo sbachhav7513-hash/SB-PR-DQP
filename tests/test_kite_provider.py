@@ -59,6 +59,24 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
             "instrument_token": 201,
             "lot_size": 65,
         },
+        {
+            "name": "NIFTY",
+            "tradingsymbol": "NIFTY26SEP25100CE",
+            "instrument_type": "CE",
+            "expiry": today + timedelta(days=7),
+            "strike": 25100,
+            "instrument_token": 202,
+            "lot_size": 65,
+        },
+        {
+            "name": "NIFTY",
+            "tradingsymbol": "NIFTY26SEP25100PE",
+            "instrument_type": "PE",
+            "expiry": today + timedelta(days=7),
+            "strike": 25100,
+            "instrument_token": 203,
+            "lot_size": 65,
+        },
     ]
     kite.ltp.return_value = {
         "100": {"last_price": 25010.0},
@@ -101,7 +119,9 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.capture_opposites_by_token[200]["contract_id"] == (
         "NFO:NIFTY26SEP25000PE"
     )
-    assert stream.capture_only_tokens == []
+    assert set(stream.capture_only_tokens) == {202, 203}
+    assert stream.capture_contracts_by_token[202]["strike"] == 25100
+    assert stream.capture_contracts_by_token[203]["leg"] == "PE"
 
 
 def test_options_needing_reselect_uses_hysteresis_in_strike_steps():
@@ -181,7 +201,9 @@ def test_reselect_options_for_underlying_preserves_other_underlyings():
         "NIFTY": (25050.0, 50.0),
         "BANKNIFTY": (55000.0, 100.0),
     }
-    assert set(stream.capture_contracts_by_token) == {202, 203, 300, 301}
+    assert set(stream.capture_contracts_by_token) == {
+        200, 201, 202, 203, 300, 301, 302, 303
+    }
 
 
 def test_reselection_is_skipped_when_underlying_has_position_or_pending_entry():
