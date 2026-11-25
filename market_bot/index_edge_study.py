@@ -79,23 +79,24 @@ def _bar_measurements(candles: List[Dict]) -> List[Dict]:
             if reference <= 0:
                 continue
             move = bar["close"] - reference
+            future_closes = {
+                horizon: closes_by_time.get(
+                    bar["time"] + timedelta(minutes=horizon)
+                )
+                for horizon in HORIZONS
+            }
             measurements.append(
                 {
                     "day": session_date,
                     "time": bar["time"],
+                    "spot": bar["close"],
                     "strength": abs(move) / reference,
                     "direction": 1 if move > 0 else -1 if move < 0 else 0,
+                    "future": future_closes,
                     "forward": {
                         horizon: (
-                            closes_by_time.get(
-                                bar["time"] + timedelta(minutes=horizon)
-                            )
-                            / bar["close"]
-                            - 1
-                            if closes_by_time.get(
-                                bar["time"] + timedelta(minutes=horizon)
-                            )
-                            is not None
+                            future_closes[horizon] / bar["close"] - 1
+                            if future_closes[horizon] is not None
                             else None
                         )
                         for horizon in HORIZONS

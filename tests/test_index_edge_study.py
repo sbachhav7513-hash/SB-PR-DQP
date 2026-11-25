@@ -43,6 +43,7 @@ def test_study_splits_days_and_reports_threshold_sweep():
 
     assert len(result["train_days"]) == 7
     assert len(result["oos_days"]) == 3
+    assert result["train"][0][15]["n"] == result["train"][0][30]["n"]
     assert [row["percentile"] for row in result["train"]] == [
         50, 60, 70, 80, 90, 95
     ]
