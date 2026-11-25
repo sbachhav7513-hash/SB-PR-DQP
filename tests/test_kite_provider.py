@@ -280,6 +280,40 @@ def test_reselection_updates_subscriptions_and_clears_option_quote_state():
     assert bot._seed_reselected_option_bars.call_count == 2
 
 
+def test_tick_handler_reselects_option_contracts():
+    bot = object.__new__(KiteTradingBot)
+    bot._process_telegram_commands = Mock()
+    bot.symbol_map = {100: "NIFTY"}
+    bot._capture_nifty_range_tick = Mock()
+    bot._is_market_session_timestamp = Mock(return_value=False)
+    bot.latest_prices = {}
+    bot._last_quote_timestamps = {}
+    bot.option_quote_cache = {}
+    bot._reselect_option_contracts_if_needed = Mock()
+    bot._update_paper_shadow_runner = Mock()
+    bot.intraday_manager = Mock(active_positions={})
+    bot.simulation_mode = True
+    bot.paper_trading_enabled = False
+    bot._check_position_exit = Mock()
+    bot._expire_pending_confirmed_entries = Mock()
+    bot.bar_builder = Mock()
+    timestamp = datetime.now(ZoneInfo("Asia/Kolkata"))
+    tick = Mock(
+        instrument_token=100,
+        timestamp=timestamp,
+        last_price=25070.0,
+        volume=10,
+        bid=0,
+        ask=0,
+        oi=None,
+        iv=None,
+    )
+
+    bot._on_tick_serialized(tick)
+
+    bot._reselect_option_contracts_if_needed.assert_called_once_with(timestamp)
+
+
 def test_nifty_feed_watchdog_alerts_at_60s_and_resubscribes_once_at_180s():
     bot = object.__new__(KiteTradingBot)
     bot.simulation_mode = False

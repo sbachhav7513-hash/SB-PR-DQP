@@ -11581,7 +11581,7 @@ class KiteTradingBot:
             "timestamp": tick.timestamp,
         }
         try:
-            self._reselect_options_if_needed(tick.timestamp)
+            self._reselect_option_contracts_if_needed(tick.timestamp)
         except Exception:
             logger.exception("Could not re-select stale option contracts")
         self._update_paper_shadow_runner(symbol, tick)
