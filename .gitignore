@@ -49,7 +49,10 @@ sim/
 .scratch_lock_analysis/
 tmp/
 paper_trading_data/option_candles/2026-11-24/
-fresh_study/
+fresh_study/*
+!fresh_study/independent_option_lab/
+!fresh_study/independent_option_lab/**
+fresh_study/independent_option_lab/__pycache__/
 
 # Testing
 .pytest_cache/

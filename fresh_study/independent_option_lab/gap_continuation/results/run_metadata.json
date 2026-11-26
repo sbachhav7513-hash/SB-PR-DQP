@@ -1,0 +1,57 @@
+{
+  "config": {
+    "strategy_name": "overnight_gap_continuation",
+    "orders_enabled": false,
+    "symbols": [
+      "NIFTY",
+      "BANKNIFTY"
+    ],
+    "daily_atr_lookback_sessions": 20,
+    "gap_atr_min": 0.25,
+    "gap_atr_max_exclusive": 0.75,
+    "entry_confirmation_minutes": 5,
+    "confirmation_minutes_sensitivity": [
+      5,
+      15,
+      30
+    ],
+    "minimum_confirmation_to_gap_ratio": 0.0,
+    "confirmation_ratio_sensitivity": [
+      0.0,
+      0.2,
+      0.5,
+      0.75
+    ],
+    "underlying_stop_atr": 0.25,
+    "underlying_target_r": 1.5,
+    "max_holding_minutes": 120,
+    "option_stop_pct": 5.0,
+    "option_targets_pct": [
+      5.0,
+      10.0
+    ],
+    "trailing_exit": {
+      "activate_after_profit_pct": 5.0,
+      "trail_distance_pct": 3.0,
+      "final_profit_cap_pct": 10.0
+    },
+    "fee_scenarios_per_side_pct": [
+      0.0,
+      0.25,
+      0.5
+    ],
+    "research_periods": {
+      "training_end_year": 2024,
+      "reported_validation_year": 2025,
+      "recent_year": 2026,
+      "option_start_date": "2026-10-14",
+      "option_end_date": "2026-11-25"
+    }
+  },
+  "skipped_option_entries": {},
+  "underlying_trade_rows_including_filter_sensitivities": 6293,
+  "option_candidate_count": 56,
+  "option_trade_rows_including_fees_and_exit_policies": 234,
+  "option_confirmation_sensitivity_rows": 54,
+  "disclaimer": "Offline historical research only. No orders are created. Underlying proxy returns are not option returns."
+}

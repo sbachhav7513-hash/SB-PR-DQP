@@ -1,0 +1,88 @@
+{
+  "config": {
+    "purpose": "offline_research_only",
+    "orders_enabled": false,
+    "underlying_proxy": {
+      "symbols": [
+        "NIFTY",
+        "BANKNIFTY"
+      ],
+      "target_return_pct": 0.2,
+      "stop_return_pct": 0.1,
+      "max_holding_bars": 60,
+      "historical_training_end_year": 2024,
+      "historical_validation_year": 2025
+    },
+    "candidate_entries": [
+      {
+        "name": "orb5_breakout",
+        "opening_range_minutes": 5,
+        "setup": "breakout",
+        "require_opening_range_and_recent_momentum_alignment": false
+      },
+      {
+        "name": "orb5_aligned",
+        "opening_range_minutes": 5,
+        "setup": "breakout",
+        "require_opening_range_and_recent_momentum_alignment": true
+      },
+      {
+        "name": "orb15_aligned",
+        "opening_range_minutes": 15,
+        "setup": "breakout",
+        "require_opening_range_and_recent_momentum_alignment": true
+      },
+      {
+        "name": "orb30_breakout",
+        "opening_range_minutes": 30,
+        "setup": "breakout",
+        "require_opening_range_and_recent_momentum_alignment": false
+      },
+      {
+        "name": "orb5_retest",
+        "opening_range_minutes": 5,
+        "setup": "retest",
+        "retest_window_bars": 10
+      },
+      {
+        "name": "orb15_failed",
+        "opening_range_minutes": 15,
+        "setup": "failed_breakout_reversal",
+        "failure_window_bars": 10
+      }
+    ],
+    "option_holdout": {
+      "start_date": "2026-10-27",
+      "end_date": "2026-11-25",
+      "entries_to_replay": [
+        "orb5_breakout",
+        "orb5_retest",
+        "orb15_failed"
+      ],
+      "option_stop_loss_pct": 5.0,
+      "option_profit_targets_pct": [
+        5.0,
+        10.0
+      ],
+      "trailing_exit": {
+        "activate_after_profit_pct": 5.0,
+        "trail_distance_pct": 3.0,
+        "final_profit_cap_pct": 10.0
+      },
+      "fee_scenarios_per_side_pct": [
+        0.0,
+        0.25,
+        0.5
+      ],
+      "max_entry_minute_after_open": 120,
+      "max_retest_or_failure_window_bars": 10,
+      "contract_selection": "nearest listed expiry not before session date, then nearest strike to prior-session underlying close",
+      "entry_fill": "next minute option candle open",
+      "ambiguous_candle_order": "protective stop and confirmed underlying invalidation before target; intrabar execution remains unknowable"
+    }
+  },
+  "skipped_option_entries": {},
+  "underlying_proxy_trade_count": 26448,
+  "option_replay_trade_rows_including_fee_scenarios_and_policies": 3816,
+  "disclaimer": "Offline historical research only. No orders are created. Underlying proxy returns are not option returns."
+}
