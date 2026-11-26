@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-25T15:30:20+05:30,NFO:TCS26DEC2500PE,TCS,PE,2500.0,2026-12-29,76.5,76.05,76.65,2026-11-25T15:30:13+05:30,7.729622,026069a913012d49f8ba510abae31fffd4761d50e45cf1a7bb241f9b6701cde8,e84fbf537040a8d098ca4f72bbde6d1b41bff934,True

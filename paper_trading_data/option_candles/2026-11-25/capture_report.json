@@ -1,0 +1,879 @@
+{
+  "candle_gaps_per_contract": {
+    "NFO:BANKNIFTY26DEC62600CE": 374,
+    "NFO:BANKNIFTY26DEC62600PE": 374,
+    "NFO:BANKNIFTY26DEC63300CE": 124,
+    "NFO:BANKNIFTY26DEC63300PE": 124,
+    "NFO:BANKNIFTY26DEC63400CE": 339,
+    "NFO:BANKNIFTY26DEC63400PE": 339,
+    "NFO:BANKNIFTY26DEC63500CE": 275,
+    "NFO:BANKNIFTY26DEC63500PE": 275,
+    "NFO:BANKNIFTY26DEC63600CE": 311,
+    "NFO:BANKNIFTY26DEC63600PE": 311,
+    "NFO:BANKNIFTY26DEC63700CE": 303,
+    "NFO:BANKNIFTY26DEC63700PE": 303,
+    "NFO:BANKNIFTY26DEC63800CE": 321,
+    "NFO:BANKNIFTY26DEC63800PE": 321,
+    "NFO:BANKNIFTY26DEC63900CE": 311,
+    "NFO:BANKNIFTY26DEC63900PE": 311,
+    "NFO:BANKNIFTY26DEC64000CE": 222,
+    "NFO:BANKNIFTY26DEC64000PE": 222,
+    "NFO:BANKNIFTY26DEC64100CE": 204,
+    "NFO:BANKNIFTY26DEC64100PE": 204,
+    "NFO:HDFCBANK26DEC820CE": 374,
+    "NFO:HDFCBANK26DEC820PE": 374,
+    "NFO:HDFCBANK26DEC840CE": 97,
+    "NFO:HDFCBANK26DEC840PE": 97,
+    "NFO:HDFCBANK26DEC850CE": 169,
+    "NFO:HDFCBANK26DEC850PE": 169,
+    "NFO:ICICIBANK26DEC1590CE": 374,
+    "NFO:ICICIBANK26DEC1590PE": 374,
+    "NFO:ICICIBANK26DEC1630CE": 283,
+    "NFO:ICICIBANK26DEC1630PE": 283,
+    "NFO:ICICIBANK26DEC1640CE": 173,
+    "NFO:ICICIBANK26DEC1640PE": 174,
+    "NFO:ICICIBANK26DEC1650CE": 198,
+    "NFO:ICICIBANK26DEC1650PE": 198,
+    "NFO:INFY26DEC1100CE": 374,
+    "NFO:INFY26DEC1100PE": 374,
+    "NFO:INFY26DEC1120CE": 56,
+    "NFO:INFY26DEC1120PE": 56,
+    "NFO:INFY26DEC1134CE": 108,
+    "NFO:INFY26DEC1134PE": 108,
+    "NFO:INFY26DEC1140CE": 237,
+    "NFO:INFY26DEC1140PE": 237,
+    "NFO:INFY26DEC1154CE": 343,
+    "NFO:INFY26DEC1154PE": 343,
+    "NFO:LT26DEC4100CE": 375,
+    "NFO:LT26DEC4100PE": 375,
+    "NFO:LT26DEC4150CE": 18,
+    "NFO:LT26DEC4150PE": 18,
+    "NFO:LT26DEC4200CE": 209,
+    "NFO:LT26DEC4200PE": 209,
+    "NFO:NIFTY26D0125350CE": 374,
+    "NFO:NIFTY26D0125350PE": 374,
+    "NFO:NIFTY26D0125650CE": 358,
+    "NFO:NIFTY26D0125650PE": 358,
+    "NFO:NIFTY26D0125700CE": 312,
+    "NFO:NIFTY26D0125700PE": 312,
+    "NFO:NIFTY26D0125750CE": 236,
+    "NFO:NIFTY26D0125750PE": 236,
+    "NFO:NIFTY26D0125800CE": 286,
+    "NFO:NIFTY26D0125800PE": 286,
+    "NFO:NIFTY26D0125850CE": 263,
+    "NFO:NIFTY26D0125850PE": 263,
+    "NFO:NIFTY26D0125900CE": 202,
+    "NFO:NIFTY26D0125900PE": 202,
+    "NFO:NIFTY26D0125950CE": 224,
+    "NFO:NIFTY26D0125950PE": 224,
+    "NFO:RELIANCE26DEC1350CE": 374,
+    "NFO:RELIANCE26DEC1350PE": 374,
+    "NFO:RELIANCE26DEC1360CE": 371,
+    "NFO:RELIANCE26DEC1360PE": 371,
+    "NFO:RELIANCE26DEC1370CE": 176,
+    "NFO:RELIANCE26DEC1370PE": 176,
+    "NFO:RELIANCE26DEC1380CE": 233,
+    "NFO:RELIANCE26DEC1380PE": 233,
+    "NFO:RELIANCE26DEC1390CE": 307,
+    "NFO:RELIANCE26DEC1390PE": 307,
+    "NFO:SBIN26DEC1130CE": 367,
+    "NFO:SBIN26DEC1130PE": 367,
+    "NFO:SBIN26DEC1140CE": 60,
+    "NFO:SBIN26DEC1140PE": 60,
+    "NFO:SBIN26DEC1150CE": 169,
+    "NFO:SBIN26DEC1150PE": 168,
+    "NFO:TCS26DEC2460CE": 374,
+    "NFO:TCS26DEC2460PE": 374,
+    "NFO:TCS26DEC2500CE": 101,
+    "NFO:TCS26DEC2500PE": 101,
+    "NFO:TCS26DEC2520CE": 266,
+    "NFO:TCS26DEC2520PE": 266
+  },
+  "contract_capture_timing": {
+    "NFO:BANKNIFTY26DEC62600CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:38+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:BANKNIFTY26DEC62600PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:38+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63300CE": {
+      "first_candle_time": "2026-11-25T13:08:00+05:30",
+      "first_tick_time": "2026-11-25T13:08:06+05:30",
+      "registration_time": "2026-11-25T13:08:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63300PE": {
+      "first_candle_time": "2026-11-25T13:08:00+05:30",
+      "first_tick_time": "2026-11-25T13:08:06+05:30",
+      "registration_time": "2026-11-25T13:08:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63400CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63400PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:20+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63500CE": {
+      "first_candle_time": "2026-11-25T09:47:00+05:30",
+      "first_tick_time": "2026-11-25T09:47:08+05:30",
+      "registration_time": "2026-11-25T09:47:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63500PE": {
+      "first_candle_time": "2026-11-25T09:47:00+05:30",
+      "first_tick_time": "2026-11-25T09:47:08+05:30",
+      "registration_time": "2026-11-25T09:47:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63600CE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:17+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63600PE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:17+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63700CE": {
+      "first_candle_time": "2026-11-25T09:17:00+05:30",
+      "first_tick_time": "2026-11-25T09:17:04+05:30",
+      "registration_time": "2026-11-25T09:17:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63700PE": {
+      "first_candle_time": "2026-11-25T09:17:00+05:30",
+      "first_tick_time": "2026-11-25T09:17:04+05:30",
+      "registration_time": "2026-11-25T09:17:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63800CE": {
+      "first_candle_time": "2026-11-25T09:18:00+05:30",
+      "first_tick_time": "2026-11-25T09:18:08+05:30",
+      "registration_time": "2026-11-25T09:18:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63800PE": {
+      "first_candle_time": "2026-11-25T09:18:00+05:30",
+      "first_tick_time": "2026-11-25T09:18:08+05:30",
+      "registration_time": "2026-11-25T09:18:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63900CE": {
+      "first_candle_time": "2026-11-25T09:22:00+05:30",
+      "first_tick_time": "2026-11-25T09:22:02+05:30",
+      "registration_time": "2026-11-25T09:22:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC63900PE": {
+      "first_candle_time": "2026-11-25T09:22:00+05:30",
+      "first_tick_time": "2026-11-25T09:22:01+05:30",
+      "registration_time": "2026-11-25T09:22:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC64000CE": {
+      "first_candle_time": "2026-11-25T11:02:00+05:30",
+      "first_tick_time": "2026-11-25T11:02:06+05:30",
+      "registration_time": "2026-11-25T11:02:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC64000PE": {
+      "first_candle_time": "2026-11-25T11:02:00+05:30",
+      "first_tick_time": "2026-11-25T11:02:06+05:30",
+      "registration_time": "2026-11-25T11:02:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC64100CE": {
+      "first_candle_time": "2026-11-25T11:45:00+05:30",
+      "first_tick_time": "2026-11-25T11:45:11+05:30",
+      "registration_time": "2026-11-25T11:45:00+05:30"
+    },
+    "NFO:BANKNIFTY26DEC64100PE": {
+      "first_candle_time": "2026-11-25T11:45:00+05:30",
+      "first_tick_time": "2026-11-25T11:45:10+05:30",
+      "registration_time": "2026-11-25T11:45:00+05:30"
+    },
+    "NFO:HDFCBANK26DEC820CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:08:21+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:HDFCBANK26DEC820PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:08:21+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:HDFCBANK26DEC840CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:HDFCBANK26DEC840PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:HDFCBANK26DEC850CE": {
+      "first_candle_time": "2026-11-25T11:02:00+05:30",
+      "first_tick_time": "2026-11-25T11:02:05+05:30",
+      "registration_time": "2026-11-25T11:02:00+05:30"
+    },
+    "NFO:HDFCBANK26DEC850PE": {
+      "first_candle_time": "2026-11-25T11:02:00+05:30",
+      "first_tick_time": "2026-11-25T11:02:05+05:30",
+      "registration_time": "2026-11-25T11:02:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1590CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:09+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:ICICIBANK26DEC1590PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:09+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:ICICIBANK26DEC1630CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:20+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1630PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:03+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1640CE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:17+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1640PE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:16+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1650CE": {
+      "first_candle_time": "2026-11-25T10:41:00+05:30",
+      "first_tick_time": "2026-11-25T10:41:03+05:30",
+      "registration_time": "2026-11-25T10:41:00+05:30"
+    },
+    "NFO:ICICIBANK26DEC1650PE": {
+      "first_candle_time": "2026-11-25T10:41:00+05:30",
+      "first_tick_time": "2026-11-25T10:41:03+05:30",
+      "registration_time": "2026-11-25T10:41:00+05:30"
+    },
+    "NFO:INFY26DEC1100CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:15+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:INFY26DEC1100PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:15+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:INFY26DEC1120CE": {
+      "first_candle_time": "2026-11-25T12:43:00+05:30",
+      "first_tick_time": "2026-11-25T12:43:05+05:30",
+      "registration_time": "2026-11-25T12:43:00+05:30"
+    },
+    "NFO:INFY26DEC1120PE": {
+      "first_candle_time": "2026-11-25T12:43:00+05:30",
+      "first_tick_time": "2026-11-25T12:43:05+05:30",
+      "registration_time": "2026-11-25T12:43:00+05:30"
+    },
+    "NFO:INFY26DEC1134CE": {
+      "first_candle_time": "2026-11-25T11:39:00+05:30",
+      "first_tick_time": "2026-11-25T11:39:11+05:30",
+      "registration_time": "2026-11-25T11:39:00+05:30"
+    },
+    "NFO:INFY26DEC1134PE": {
+      "first_candle_time": "2026-11-25T11:39:00+05:30",
+      "first_tick_time": "2026-11-25T11:39:11+05:30",
+      "registration_time": "2026-11-25T11:39:00+05:30"
+    },
+    "NFO:INFY26DEC1140CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:20+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:INFY26DEC1140PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:17+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:INFY26DEC1154CE": {
+      "first_candle_time": "2026-11-25T09:38:00+05:30",
+      "first_tick_time": "2026-11-25T09:38:05+05:30",
+      "registration_time": "2026-11-25T09:38:00+05:30"
+    },
+    "NFO:INFY26DEC1154PE": {
+      "first_candle_time": "2026-11-25T09:38:00+05:30",
+      "first_tick_time": "2026-11-25T09:38:05+05:30",
+      "registration_time": "2026-11-25T09:38:00+05:30"
+    },
+    "NFO:LT26DEC4100CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:06:43+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:LT26DEC4100PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:06:43+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:LT26DEC4150CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:LT26DEC4150PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:10+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:LT26DEC4200CE": {
+      "first_candle_time": "2026-11-25T11:41:00+05:30",
+      "first_tick_time": "2026-11-25T11:41:06+05:30",
+      "registration_time": "2026-11-25T11:41:00+05:30"
+    },
+    "NFO:LT26DEC4200PE": {
+      "first_candle_time": "2026-11-25T11:41:00+05:30",
+      "first_tick_time": "2026-11-25T11:41:06+05:30",
+      "registration_time": "2026-11-25T11:41:00+05:30"
+    },
+    "NFO:NIFTY26D0125350CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:04+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:NIFTY26D0125350PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:03:04+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:NIFTY26D0125650CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:NIFTY26D0125650PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:NIFTY26D0125700CE": {
+      "first_candle_time": "2026-11-25T09:26:00+05:30",
+      "first_tick_time": "2026-11-25T09:26:10+05:30",
+      "registration_time": "2026-11-25T09:26:00+05:30"
+    },
+    "NFO:NIFTY26D0125700PE": {
+      "first_candle_time": "2026-11-25T09:26:00+05:30",
+      "first_tick_time": "2026-11-25T09:26:10+05:30",
+      "registration_time": "2026-11-25T09:26:00+05:30"
+    },
+    "NFO:NIFTY26D0125750CE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:16+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:NIFTY26D0125750PE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:16+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:NIFTY26D0125800CE": {
+      "first_candle_time": "2026-11-25T09:34:00+05:30",
+      "first_tick_time": "2026-11-25T09:34:07+05:30",
+      "registration_time": "2026-11-25T09:34:00+05:30"
+    },
+    "NFO:NIFTY26D0125800PE": {
+      "first_candle_time": "2026-11-25T09:34:00+05:30",
+      "first_tick_time": "2026-11-25T09:34:07+05:30",
+      "registration_time": "2026-11-25T09:34:00+05:30"
+    },
+    "NFO:NIFTY26D0125850CE": {
+      "first_candle_time": "2026-11-25T10:40:00+05:30",
+      "first_tick_time": "2026-11-25T10:40:07+05:30",
+      "registration_time": "2026-11-25T10:40:00+05:30"
+    },
+    "NFO:NIFTY26D0125850PE": {
+      "first_candle_time": "2026-11-25T10:40:00+05:30",
+      "first_tick_time": "2026-11-25T10:40:07+05:30",
+      "registration_time": "2026-11-25T10:40:00+05:30"
+    },
+    "NFO:NIFTY26D0125900CE": {
+      "first_candle_time": "2026-11-25T11:01:00+05:30",
+      "first_tick_time": "2026-11-25T11:01:03+05:30",
+      "registration_time": "2026-11-25T11:01:00+05:30"
+    },
+    "NFO:NIFTY26D0125900PE": {
+      "first_candle_time": "2026-11-25T11:01:00+05:30",
+      "first_tick_time": "2026-11-25T11:01:03+05:30",
+      "registration_time": "2026-11-25T11:01:00+05:30"
+    },
+    "NFO:NIFTY26D0125950CE": {
+      "first_candle_time": "2026-11-25T11:18:00+05:30",
+      "first_tick_time": "2026-11-25T11:18:08+05:30",
+      "registration_time": "2026-11-25T11:18:00+05:30"
+    },
+    "NFO:NIFTY26D0125950PE": {
+      "first_candle_time": "2026-11-25T11:18:00+05:30",
+      "first_tick_time": "2026-11-25T11:18:08+05:30",
+      "registration_time": "2026-11-25T11:18:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1350CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:53+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:RELIANCE26DEC1350PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:53+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:RELIANCE26DEC1360CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1360PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1370CE": {
+      "first_candle_time": "2026-11-25T09:18:00+05:30",
+      "first_tick_time": "2026-11-25T09:18:08+05:30",
+      "registration_time": "2026-11-25T09:18:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1370PE": {
+      "first_candle_time": "2026-11-25T09:18:00+05:30",
+      "first_tick_time": "2026-11-25T09:18:09+05:30",
+      "registration_time": "2026-11-25T09:18:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1380CE": {
+      "first_candle_time": "2026-11-25T09:27:00+05:30",
+      "first_tick_time": "2026-11-25T09:27:05+05:30",
+      "registration_time": "2026-11-25T09:27:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1380PE": {
+      "first_candle_time": "2026-11-25T09:27:00+05:30",
+      "first_tick_time": "2026-11-25T09:27:05+05:30",
+      "registration_time": "2026-11-25T09:27:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1390CE": {
+      "first_candle_time": "2026-11-25T09:29:00+05:30",
+      "first_tick_time": "2026-11-25T09:29:06+05:30",
+      "registration_time": "2026-11-25T09:29:00+05:30"
+    },
+    "NFO:RELIANCE26DEC1390PE": {
+      "first_candle_time": "2026-11-25T09:29:00+05:30",
+      "first_tick_time": "2026-11-25T09:29:06+05:30",
+      "registration_time": "2026-11-25T09:29:00+05:30"
+    },
+    "NFO:SBIN26DEC1130CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:06:56+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:SBIN26DEC1130PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:06:56+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:SBIN26DEC1140CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:SBIN26DEC1140PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:20+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:SBIN26DEC1150CE": {
+      "first_candle_time": "2026-11-25T11:45:00+05:30",
+      "first_tick_time": "2026-11-25T11:45:11+05:30",
+      "registration_time": "2026-11-25T11:45:00+05:30"
+    },
+    "NFO:SBIN26DEC1150PE": {
+      "first_candle_time": "2026-11-25T11:45:00+05:30",
+      "first_tick_time": "2026-11-25T11:45:10+05:30",
+      "registration_time": "2026-11-25T11:45:00+05:30"
+    },
+    "NFO:TCS26DEC2460CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:48+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:TCS26DEC2460PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:04:48+05:30",
+      "registration_time": "2026-11-25T08:59:37+05:30"
+    },
+    "NFO:TCS26DEC2500CE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:16+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:TCS26DEC2500PE": {
+      "first_candle_time": "2026-11-25T09:16:00+05:30",
+      "first_tick_time": "2026-11-25T09:16:16+05:30",
+      "registration_time": "2026-11-25T09:16:00+05:30"
+    },
+    "NFO:TCS26DEC2520CE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    },
+    "NFO:TCS26DEC2520PE": {
+      "first_candle_time": "2026-11-25T09:15:00+05:30",
+      "first_tick_time": "2026-11-25T09:15:21+05:30",
+      "registration_time": "2026-11-25T09:15:00+05:30"
+    }
+  },
+  "contracts_captured": [
+    "NFO:BANKNIFTY26DEC62600CE",
+    "NFO:BANKNIFTY26DEC62600PE",
+    "NFO:BANKNIFTY26DEC63300CE",
+    "NFO:BANKNIFTY26DEC63300PE",
+    "NFO:BANKNIFTY26DEC63400CE",
+    "NFO:BANKNIFTY26DEC63400PE",
+    "NFO:BANKNIFTY26DEC63500CE",
+    "NFO:BANKNIFTY26DEC63500PE",
+    "NFO:BANKNIFTY26DEC63600CE",
+    "NFO:BANKNIFTY26DEC63600PE",
+    "NFO:BANKNIFTY26DEC63700CE",
+    "NFO:BANKNIFTY26DEC63700PE",
+    "NFO:BANKNIFTY26DEC63800CE",
+    "NFO:BANKNIFTY26DEC63800PE",
+    "NFO:BANKNIFTY26DEC63900CE",
+    "NFO:BANKNIFTY26DEC63900PE",
+    "NFO:BANKNIFTY26DEC64000CE",
+    "NFO:BANKNIFTY26DEC64000PE",
+    "NFO:BANKNIFTY26DEC64100CE",
+    "NFO:BANKNIFTY26DEC64100PE",
+    "NFO:HDFCBANK26DEC820CE",
+    "NFO:HDFCBANK26DEC820PE",
+    "NFO:HDFCBANK26DEC840CE",
+    "NFO:HDFCBANK26DEC840PE",
+    "NFO:HDFCBANK26DEC850CE",
+    "NFO:HDFCBANK26DEC850PE",
+    "NFO:ICICIBANK26DEC1590CE",
+    "NFO:ICICIBANK26DEC1590PE",
+    "NFO:ICICIBANK26DEC1630CE",
+    "NFO:ICICIBANK26DEC1630PE",
+    "NFO:ICICIBANK26DEC1640CE",
+    "NFO:ICICIBANK26DEC1640PE",
+    "NFO:ICICIBANK26DEC1650CE",
+    "NFO:ICICIBANK26DEC1650PE",
+    "NFO:INFY26DEC1100CE",
+    "NFO:INFY26DEC1100PE",
+    "NFO:INFY26DEC1120CE",
+    "NFO:INFY26DEC1120PE",
+    "NFO:INFY26DEC1134CE",
+    "NFO:INFY26DEC1134PE",
+    "NFO:INFY26DEC1140CE",
+    "NFO:INFY26DEC1140PE",
+    "NFO:INFY26DEC1154CE",
+    "NFO:INFY26DEC1154PE",
+    "NFO:LT26DEC4100CE",
+    "NFO:LT26DEC4100PE",
+    "NFO:LT26DEC4150CE",
+    "NFO:LT26DEC4150PE",
+    "NFO:LT26DEC4200CE",
+    "NFO:LT26DEC4200PE",
+    "NFO:NIFTY26D0125350CE",
+    "NFO:NIFTY26D0125350PE",
+    "NFO:NIFTY26D0125650CE",
+    "NFO:NIFTY26D0125650PE",
+    "NFO:NIFTY26D0125700CE",
+    "NFO:NIFTY26D0125700PE",
+    "NFO:NIFTY26D0125750CE",
+    "NFO:NIFTY26D0125750PE",
+    "NFO:NIFTY26D0125800CE",
+    "NFO:NIFTY26D0125800PE",
+    "NFO:NIFTY26D0125850CE",
+    "NFO:NIFTY26D0125850PE",
+    "NFO:NIFTY26D0125900CE",
+    "NFO:NIFTY26D0125900PE",
+    "NFO:NIFTY26D0125950CE",
+    "NFO:NIFTY26D0125950PE",
+    "NFO:RELIANCE26DEC1350CE",
+    "NFO:RELIANCE26DEC1350PE",
+    "NFO:RELIANCE26DEC1360CE",
+    "NFO:RELIANCE26DEC1360PE",
+    "NFO:RELIANCE26DEC1370CE",
+    "NFO:RELIANCE26DEC1370PE",
+    "NFO:RELIANCE26DEC1380CE",
+    "NFO:RELIANCE26DEC1380PE",
+    "NFO:RELIANCE26DEC1390CE",
+    "NFO:RELIANCE26DEC1390PE",
+    "NFO:SBIN26DEC1130CE",
+    "NFO:SBIN26DEC1130PE",
+    "NFO:SBIN26DEC1140CE",
+    "NFO:SBIN26DEC1140PE",
+    "NFO:SBIN26DEC1150CE",
+    "NFO:SBIN26DEC1150PE",
+    "NFO:TCS26DEC2460CE",
+    "NFO:TCS26DEC2460PE",
+    "NFO:TCS26DEC2500CE",
+    "NFO:TCS26DEC2500PE",
+    "NFO:TCS26DEC2520CE",
+    "NFO:TCS26DEC2520PE"
+  ],
+  "contracts_captured_count": 88,
+  "contracts_skipped": [],
+  "contracts_skipped_count": 0,
+  "date": "2026-11-25",
+  "dropped_rows": 0,
+  "match_rate": 1.0,
+  "signals": 217,
+  "signals_with_60_minutes_forward_candles": 211,
+  "signals_with_resolved_contract_id": 217,
+  "subscription_start_delays": [
+    {
+      "contract_id": "NFO:SBIN26DEC1130CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:SBIN26DEC1130PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125650CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125650PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63400CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63400PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63600CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63600PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26DEC1640CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:ICICIBANK26DEC1640PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63700CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63700PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63800CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63800PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63900CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63900PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125700CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125700PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125800CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125800PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1154CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1154PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63500CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63500PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125850CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125850PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125900CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125900PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC64000CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC64000PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:HDFCBANK26DEC850CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:HDFCBANK26DEC850PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125950CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:NIFTY26D0125950PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1134CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1134PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC64100CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC64100PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1120CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:INFY26DEC1120PE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63300CE",
+      "seconds": 0.0
+    },
+    {
+      "contract_id": "NFO:BANKNIFTY26DEC63300PE",
+      "seconds": 0.0
+    }
+  ],
+  "tick_gaps_over_30_seconds_per_contract": {
+    "NFO:BANKNIFTY26DEC62600CE": 3,
+    "NFO:BANKNIFTY26DEC62600PE": 3,
+    "NFO:BANKNIFTY26DEC63400CE": 4,
+    "NFO:BANKNIFTY26DEC63400PE": 4,
+    "NFO:BANKNIFTY26DEC63500CE": 7,
+    "NFO:BANKNIFTY26DEC63500PE": 7,
+    "NFO:BANKNIFTY26DEC63600CE": 10,
+    "NFO:BANKNIFTY26DEC63600PE": 10,
+    "NFO:BANKNIFTY26DEC63700CE": 12,
+    "NFO:BANKNIFTY26DEC63700PE": 12,
+    "NFO:BANKNIFTY26DEC63800CE": 7,
+    "NFO:BANKNIFTY26DEC63800PE": 7,
+    "NFO:BANKNIFTY26DEC63900CE": 5,
+    "NFO:BANKNIFTY26DEC63900PE": 5,
+    "NFO:BANKNIFTY26DEC64000CE": 2,
+    "NFO:BANKNIFTY26DEC64000PE": 2,
+    "NFO:HDFCBANK26DEC820CE": 3,
+    "NFO:HDFCBANK26DEC820PE": 3,
+    "NFO:HDFCBANK26DEC840CE": 1,
+    "NFO:HDFCBANK26DEC840PE": 1,
+    "NFO:ICICIBANK26DEC1590CE": 3,
+    "NFO:ICICIBANK26DEC1590PE": 3,
+    "NFO:ICICIBANK26DEC1630CE": 5,
+    "NFO:ICICIBANK26DEC1630PE": 4,
+    "NFO:ICICIBANK26DEC1640CE": 7,
+    "NFO:ICICIBANK26DEC1640PE": 9,
+    "NFO:ICICIBANK26DEC1650PE": 1,
+    "NFO:INFY26DEC1100CE": 4,
+    "NFO:INFY26DEC1100PE": 4,
+    "NFO:INFY26DEC1120CE": 8,
+    "NFO:INFY26DEC1120PE": 8,
+    "NFO:INFY26DEC1134CE": 10,
+    "NFO:INFY26DEC1134PE": 13,
+    "NFO:INFY26DEC1140CE": 2,
+    "NFO:INFY26DEC1140PE": 2,
+    "NFO:LT26DEC4100CE": 2,
+    "NFO:LT26DEC4100PE": 2,
+    "NFO:LT26DEC4150CE": 14,
+    "NFO:LT26DEC4150PE": 3,
+    "NFO:LT26DEC4200PE": 1,
+    "NFO:NIFTY26D0125350CE": 4,
+    "NFO:NIFTY26D0125350PE": 2,
+    "NFO:NIFTY26D0125650CE": 1,
+    "NFO:NIFTY26D0125650PE": 1,
+    "NFO:NIFTY26D0125700CE": 3,
+    "NFO:NIFTY26D0125700PE": 3,
+    "NFO:NIFTY26D0125750CE": 6,
+    "NFO:NIFTY26D0125750PE": 6,
+    "NFO:NIFTY26D0125800CE": 4,
+    "NFO:NIFTY26D0125800PE": 4,
+    "NFO:NIFTY26D0125850CE": 1,
+    "NFO:NIFTY26D0125850PE": 1,
+    "NFO:NIFTY26D0125900CE": 2,
+    "NFO:NIFTY26D0125900PE": 2,
+    "NFO:NIFTY26D0125950CE": 1,
+    "NFO:NIFTY26D0125950PE": 1,
+    "NFO:RELIANCE26DEC1350CE": 2,
+    "NFO:RELIANCE26DEC1350PE": 2,
+    "NFO:RELIANCE26DEC1370CE": 8,
+    "NFO:RELIANCE26DEC1370PE": 21,
+    "NFO:RELIANCE26DEC1380CE": 5,
+    "NFO:RELIANCE26DEC1380PE": 12,
+    "NFO:RELIANCE26DEC1390CE": 2,
+    "NFO:RELIANCE26DEC1390PE": 7,
+    "NFO:SBIN26DEC1130CE": 3,
+    "NFO:SBIN26DEC1130PE": 3,
+    "NFO:SBIN26DEC1140CE": 2,
+    "NFO:SBIN26DEC1140PE": 11,
+    "NFO:TCS26DEC2460CE": 3,
+    "NFO:TCS26DEC2460PE": 3,
+    "NFO:TCS26DEC2500CE": 26,
+    "NFO:TCS26DEC2500PE": 48,
+    "NFO:TCS26DEC2520CE": 36,
+    "NFO:TCS26DEC2520PE": 43
+  }
+}

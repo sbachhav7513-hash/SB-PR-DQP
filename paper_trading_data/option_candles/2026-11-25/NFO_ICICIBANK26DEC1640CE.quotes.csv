@@ -1,0 +1,2 @@
+time,contract_id,underlying,leg,strike,expiry,ltp,bid,ask,last_tick_time,quote_age_seconds,config_hash,git_sha,capture_all_evaluated_contracts
+2026-11-25T15:30:07+05:30,NFO:ICICIBANK26DEC1640CE,ICICIBANK,CE,1640.0,2026-12-29,44.3,44.05,44.4,2026-11-25T15:30:05+05:30,2.074484,026069a913012d49f8ba510abae31fffd4761d50e45cf1a7bb241f9b6701cde8,e84fbf537040a8d098ca4f72bbde6d1b41bff934,True
