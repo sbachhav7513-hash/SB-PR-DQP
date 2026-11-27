@@ -1,0 +1,2284 @@
+{
+  "date": "2026-11-26",
+  "version": "premarket_context_v1",
+  "snapshots": {
+    "0845": {
+      "version": "premarket_context_v1",
+      "stage": "0845",
+      "captured_at": "2026-11-26T08:57:44+05:30",
+      "underlyings": {
+        "BANKNIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 62204.1,
+              "high": 62363.75,
+              "low": 61765.45,
+              "close": 62038.65,
+              "range_pct": 0.9618337054953017
+            },
+            {
+              "date": "2026-11-19",
+              "open": 62081.3,
+              "high": 63063.0,
+              "low": 61951.1,
+              "close": 63063.0,
+              "range_pct": 1.7910385252886156
+            },
+            {
+              "date": "2026-11-20",
+              "open": 62656.65,
+              "high": 64680.8,
+              "low": 62598.55,
+              "close": 64635.2,
+              "range_pct": 3.3232705546817454
+            },
+            {
+              "date": "2026-11-23",
+              "open": 65012.05,
+              "high": 65193.4,
+              "low": 62546.2,
+              "close": 62585.35,
+              "range_pct": 4.071860524318191
+            },
+            {
+              "date": "2026-11-25",
+              "open": 63408.6,
+              "high": 64133.8,
+              "low": 63247.9,
+              "close": 63703.25,
+              "range_pct": 1.397129096053219
+            }
+          ],
+          "average_range_pct_3_sessions": 2.930753391684385,
+          "average_range_pct_5_sessions": 2.3090264811674146,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 63703.25,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 64133.8,
+            "low": 63247.9,
+            "close": 63703.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.6713308738917745,
+            "low": 0.7199448519239351,
+            "close": 0.0
+          },
+          "five_session_return_pct": 2.410050141389397,
+          "relative_strength_vs_nifty_5d_pct_points": 0.4509731703174813
+        },
+        "HDFCBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 813.9,
+              "high": 816.5,
+              "low": 804.2,
+              "close": 808.15,
+              "range_pct": 1.5112421673424197
+            },
+            {
+              "date": "2026-11-19",
+              "open": 807.2,
+              "high": 822.0,
+              "low": 804.2,
+              "close": 821.8,
+              "range_pct": 2.205153617443007
+            },
+            {
+              "date": "2026-11-20",
+              "open": 815.5,
+              "high": 850.35,
+              "low": 815.5,
+              "close": 846.0,
+              "range_pct": 4.2734518700183965
+            },
+            {
+              "date": "2026-11-23",
+              "open": 855.0,
+              "high": 859.7,
+              "low": 814.05,
+              "close": 817.8,
+              "range_pct": 5.339181286549718
+            },
+            {
+              "date": "2026-11-25",
+              "open": 833.1,
+              "high": 850.5,
+              "low": 831.55,
+              "close": 846.2,
+              "range_pct": 2.274636898331538
+            }
+          ],
+          "average_range_pct_3_sessions": 3.9624233516332175,
+          "average_range_pct_5_sessions": 3.120733167937016,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 846.2,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 850.5,
+            "low": 831.55,
+            "close": 846.2
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.5055849500293892,
+            "low": 1.7617701882027648,
+            "close": 0.0
+          },
+          "five_session_return_pct": 3.9685465044845936,
+          "relative_strength_vs_nifty_5d_pct_points": 2.0094695334126778
+        },
+        "ICICIBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1600.0,
+              "high": 1610.1,
+              "low": 1591.0,
+              "close": 1601.3,
+              "range_pct": 1.1937499999999943
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1601.0,
+              "high": 1608.9,
+              "low": 1585.7,
+              "close": 1608.9,
+              "range_pct": 1.44909431605247
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1602.0,
+              "high": 1645.0,
+              "low": 1600.9,
+              "close": 1640.0,
+              "range_pct": 2.7528089887640395
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1639.0,
+              "high": 1644.8,
+              "low": 1585.5,
+              "close": 1585.5,
+              "range_pct": 3.6180597925564344
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1617.0,
+              "high": 1650.0,
+              "low": 1617.0,
+              "close": 1640.0,
+              "range_pct": 2.0408163265306123
+            }
+          ],
+          "average_range_pct_3_sessions": 2.803895035950362,
+          "average_range_pct_5_sessions": 2.2109058847807104,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 1640.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1650.0,
+            "low": 1617.0,
+            "close": 1640.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.6060606060606061,
+            "low": 1.4223871366728509,
+            "close": 0.0
+          },
+          "five_session_return_pct": 2.499999999999991,
+          "relative_strength_vs_nifty_5d_pct_points": 0.5409230289280753
+        },
+        "INFY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1120.0,
+              "high": 1127.8,
+              "low": 1106.6,
+              "close": 1108.8,
+              "range_pct": 1.8928571428571468
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1096.3,
+              "high": 1097.0,
+              "low": 1072.6,
+              "close": 1091.9,
+              "range_pct": 2.2256681565265066
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1087.0,
+              "high": 1118.8,
+              "low": 1081.7,
+              "close": 1098.0,
+              "range_pct": 3.4130634774608932
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1114.1,
+              "high": 1132.4,
+              "low": 1100.0,
+              "close": 1103.4,
+              "range_pct": 2.908177003859626
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1141.8,
+              "high": 1151.9,
+              "low": 1122.4,
+              "close": 1130.0,
+              "range_pct": 2.583639866876861
+            }
+          ],
+          "average_range_pct_3_sessions": 2.968293449399127,
+          "average_range_pct_5_sessions": 2.604681129516207,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 1130.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1151.9,
+            "low": 1122.4,
+            "close": 1130.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.901206701970665,
+            "low": 0.6771204561653519,
+            "close": 0.0
+          },
+          "five_session_return_pct": 0.8928571428571397,
+          "relative_strength_vs_nifty_5d_pct_points": -1.0662198282147761
+        },
+        "LT": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 4155.0,
+              "high": 4190.0,
+              "low": 4126.1,
+              "close": 4159.0,
+              "range_pct": 1.5379061371841067
+            },
+            {
+              "date": "2026-11-19",
+              "open": 4158.0,
+              "high": 4212.0,
+              "low": 4112.0,
+              "close": 4211.0,
+              "range_pct": 2.405002405002405
+            },
+            {
+              "date": "2026-11-20",
+              "open": 4153.9,
+              "high": 4210.1,
+              "low": 4129.1,
+              "close": 4209.1,
+              "range_pct": 1.949974722549893
+            },
+            {
+              "date": "2026-11-23",
+              "open": 4215.0,
+              "high": 4232.0,
+              "low": 4099.9,
+              "close": 4099.9,
+              "range_pct": 3.134045077105584
+            },
+            {
+              "date": "2026-11-25",
+              "open": 4169.8,
+              "high": 4189.0,
+              "low": 4127.3,
+              "close": 4156.0,
+              "range_pct": 1.4796872751690684
+            }
+          ],
+          "average_range_pct_3_sessions": 2.1879023582748487,
+          "average_range_pct_5_sessions": 2.1013231234022114,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 4156.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 4189.0,
+            "low": 4127.3,
+            "close": 4156.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.7877775125328241,
+            "low": 0.6953698543842176,
+            "close": 0.0
+          },
+          "five_session_return_pct": 0.024067388688320257,
+          "relative_strength_vs_nifty_5d_pct_points": -1.9350095823835955
+        },
+        "NIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 25323.15,
+              "high": 25390.8,
+              "low": 25141.8,
+              "close": 25227.95,
+              "range_pct": 0.9832899935434573
+            },
+            {
+              "date": "2026-11-19",
+              "open": 25186.8,
+              "high": 25514.3,
+              "low": 25104.8,
+              "close": 25514.3,
+              "range_pct": 1.6258516365715376
+            },
+            {
+              "date": "2026-11-20",
+              "open": 25368.0,
+              "high": 25808.8,
+              "low": 25345.2,
+              "close": 25800.6,
+              "range_pct": 1.8274992116051663
+            },
+            {
+              "date": "2026-11-23",
+              "open": 25929.15,
+              "high": 25992.6,
+              "low": 25343.85,
+              "close": 25349.65,
+              "range_pct": 2.502010285720897
+            },
+            {
+              "date": "2026-11-25",
+              "open": 25658.35,
+              "high": 25951.65,
+              "low": 25619.0,
+              "close": 25819.25,
+              "range_pct": 1.2964590474445998
+            }
+          ],
+          "average_range_pct_3_sessions": 1.8753228482568876,
+          "average_range_pct_5_sessions": 1.6470220349771316,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 25819.25,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 25951.65,
+            "low": 25619.0,
+            "close": 25819.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.5101795068907042,
+            "low": 0.7816464342870526,
+            "close": 0.0
+          },
+          "five_session_return_pct": 1.9590769710719158,
+          "relative_strength_vs_nifty_5d_pct_points": 0.0
+        },
+        "RELIANCE": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1370.0,
+              "high": 1376.5,
+              "low": 1354.0,
+              "close": 1363.0,
+              "range_pct": 1.6423357664233578
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1361.9,
+              "high": 1382.5,
+              "low": 1349.7,
+              "close": 1375.6,
+              "range_pct": 2.4084000293707284
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1369.0,
+              "high": 1383.0,
+              "low": 1356.1,
+              "close": 1377.5,
+              "range_pct": 1.9649379108838634
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1381.0,
+              "high": 1390.0,
+              "low": 1346.9,
+              "close": 1351.0,
+              "range_pct": 3.1209268645908694
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1359.8,
+              "high": 1394.2,
+              "low": 1357.0,
+              "close": 1373.9,
+              "range_pct": 2.735696425944995
+            }
+          ],
+          "average_range_pct_3_sessions": 2.6071870671399093,
+          "average_range_pct_5_sessions": 2.3744593994427627,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 1373.9,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1394.2,
+            "low": 1357.0,
+            "close": 1373.9
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.4560321331229344,
+            "low": 1.2453942520265358,
+            "close": 0.0
+          },
+          "five_session_return_pct": 0.2846715328467253,
+          "relative_strength_vs_nifty_5d_pct_points": -1.6744054382251905
+        },
+        "SBIN": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1109.25,
+              "high": 1142.65,
+              "low": 1105.7,
+              "close": 1135.0,
+              "range_pct": 3.3310795582600896
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1148.0,
+              "high": 1160.2,
+              "low": 1141.0,
+              "close": 1156.0,
+              "range_pct": 1.6724738675958226
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1150.0,
+              "high": 1174.9,
+              "low": 1144.0,
+              "close": 1165.1,
+              "range_pct": 2.6869565217391385
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1178.55,
+              "high": 1181.6,
+              "low": 1127.9,
+              "close": 1132.65,
+              "range_pct": 4.556446480845091
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1142.0,
+              "high": 1153.8,
+              "low": 1132.0,
+              "close": 1138.15,
+              "range_pct": 1.9089316987740765
+            }
+          ],
+          "average_range_pct_3_sessions": 3.0507782337861022,
+          "average_range_pct_5_sessions": 2.8311776254428436,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 1138.15,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1153.8,
+            "low": 1132.0,
+            "close": 1138.15
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.356387588836875,
+            "low": 0.5432862190812802,
+            "close": 0.0
+          },
+          "five_session_return_pct": 2.605363984674347,
+          "relative_strength_vs_nifty_5d_pct_points": 0.6462870136024312
+        },
+        "TCS": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 2382.5,
+              "high": 2408.0,
+              "low": 2379.5,
+              "close": 2379.5,
+              "range_pct": 1.1962224554039873
+            },
+            {
+              "date": "2026-11-19",
+              "open": 2367.0,
+              "high": 2385.6,
+              "low": 2327.7,
+              "close": 2342.7,
+              "range_pct": 2.4461343472750356
+            },
+            {
+              "date": "2026-11-20",
+              "open": 2325.0,
+              "high": 2414.8,
+              "low": 2317.0,
+              "close": 2376.2,
+              "range_pct": 4.206451612903233
+            },
+            {
+              "date": "2026-11-23",
+              "open": 2420.0,
+              "high": 2501.9,
+              "low": 2401.0,
+              "close": 2460.0,
+              "range_pct": 4.1694214876033096
+            },
+            {
+              "date": "2026-11-25",
+              "open": 2510.0,
+              "high": 2534.0,
+              "low": 2487.0,
+              "close": 2517.3,
+              "range_pct": 1.8725099601593624
+            }
+          ],
+          "average_range_pct_3_sessions": 3.4161276868886348,
+          "average_range_pct_5_sessions": 2.7781479726689855,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": null,
+          "gap_vs_prior_close_pct": null,
+          "reference_price": 2517.3,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 2534.0,
+            "low": 2487.0,
+            "close": 2517.3
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.6590370955011767,
+            "low": 1.2183353437877034,
+            "close": 0.0
+          },
+          "five_session_return_pct": 5.6579223504722,
+          "relative_strength_vs_nifty_5d_pct_points": 3.698845379400284
+        }
+      },
+      "india_vix": {
+        "prior_close": 17.67,
+        "change_1d_points": -0.029999999999997584,
+        "change_1d_pct": -0.16949152542371504
+      }
+    },
+    "0920": {
+      "version": "premarket_context_v1",
+      "stage": "0920",
+      "captured_at": "2026-11-26T09:20:00+05:30",
+      "underlyings": {
+        "BANKNIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 62204.1,
+              "high": 62363.75,
+              "low": 61765.45,
+              "close": 62038.65,
+              "range_pct": 0.9618337054953017
+            },
+            {
+              "date": "2026-11-19",
+              "open": 62081.3,
+              "high": 63063.0,
+              "low": 61951.1,
+              "close": 63063.0,
+              "range_pct": 1.7910385252886156
+            },
+            {
+              "date": "2026-11-20",
+              "open": 62656.65,
+              "high": 64680.8,
+              "low": 62598.55,
+              "close": 64635.2,
+              "range_pct": 3.3232705546817454
+            },
+            {
+              "date": "2026-11-23",
+              "open": 65012.05,
+              "high": 65193.4,
+              "low": 62546.2,
+              "close": 62585.35,
+              "range_pct": 4.071860524318191
+            },
+            {
+              "date": "2026-11-25",
+              "open": 63408.6,
+              "high": 64133.8,
+              "low": 63247.9,
+              "close": 63703.25,
+              "range_pct": 1.397129096053219
+            }
+          ],
+          "average_range_pct_3_sessions": 2.930753391684385,
+          "average_range_pct_5_sessions": 2.3090264811674146,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 63869.05,
+          "gap_vs_prior_close_pct": 0.26026929552260825,
+          "reference_price": 63788.1,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 64133.8,
+            "low": 63247.9,
+            "close": 63703.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.5390293417823431,
+            "low": 0.8540995036989324,
+            "close": 0.13319571607413838
+          },
+          "five_session_return_pct": 2.410050141389397,
+          "relative_strength_vs_nifty_5d_pct_points": 0.4509731703174813
+        },
+        "HDFCBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 813.9,
+              "high": 816.5,
+              "low": 804.2,
+              "close": 808.15,
+              "range_pct": 1.5112421673424197
+            },
+            {
+              "date": "2026-11-19",
+              "open": 807.2,
+              "high": 822.0,
+              "low": 804.2,
+              "close": 821.8,
+              "range_pct": 2.205153617443007
+            },
+            {
+              "date": "2026-11-20",
+              "open": 815.5,
+              "high": 850.35,
+              "low": 815.5,
+              "close": 846.0,
+              "range_pct": 4.2734518700183965
+            },
+            {
+              "date": "2026-11-23",
+              "open": 855.0,
+              "high": 859.7,
+              "low": 814.05,
+              "close": 817.8,
+              "range_pct": 5.339181286549718
+            },
+            {
+              "date": "2026-11-25",
+              "open": 833.1,
+              "high": 850.5,
+              "low": 831.55,
+              "close": 846.2,
+              "range_pct": 2.274636898331538
+            }
+          ],
+          "average_range_pct_3_sessions": 3.9624233516332175,
+          "average_range_pct_5_sessions": 3.120733167937016,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 849.45,
+          "gap_vs_prior_close_pct": 0.3840699598203656,
+          "reference_price": 853.65,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 850.5,
+            "low": 831.55,
+            "close": 846.2
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 0.3703703703703677,
+            "low": 2.657687451145454,
+            "close": 0.8804065232805401
+          },
+          "five_session_return_pct": 3.9685465044845936,
+          "relative_strength_vs_nifty_5d_pct_points": 2.0094695334126778
+        },
+        "ICICIBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1600.0,
+              "high": 1610.1,
+              "low": 1591.0,
+              "close": 1601.3,
+              "range_pct": 1.1937499999999943
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1601.0,
+              "high": 1608.9,
+              "low": 1585.7,
+              "close": 1608.9,
+              "range_pct": 1.44909431605247
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1602.0,
+              "high": 1645.0,
+              "low": 1600.9,
+              "close": 1640.0,
+              "range_pct": 2.7528089887640395
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1639.0,
+              "high": 1644.8,
+              "low": 1585.5,
+              "close": 1585.5,
+              "range_pct": 3.6180597925564344
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1617.0,
+              "high": 1650.0,
+              "low": 1617.0,
+              "close": 1640.0,
+              "range_pct": 2.0408163265306123
+            }
+          ],
+          "average_range_pct_3_sessions": 2.803895035950362,
+          "average_range_pct_5_sessions": 2.2109058847807104,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 1650.1,
+          "gap_vs_prior_close_pct": 0.6158536585365804,
+          "reference_price": 1635.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1650.0,
+            "low": 1617.0,
+            "close": 1640.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.9090909090909091,
+            "low": 1.1131725417439702,
+            "close": -0.3048780487804878
+          },
+          "five_session_return_pct": 2.499999999999991,
+          "relative_strength_vs_nifty_5d_pct_points": 0.5409230289280753
+        },
+        "INFY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1120.0,
+              "high": 1127.8,
+              "low": 1106.6,
+              "close": 1108.8,
+              "range_pct": 1.8928571428571468
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1096.3,
+              "high": 1097.0,
+              "low": 1072.6,
+              "close": 1091.9,
+              "range_pct": 2.2256681565265066
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1087.0,
+              "high": 1118.8,
+              "low": 1081.7,
+              "close": 1098.0,
+              "range_pct": 3.4130634774608932
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1114.1,
+              "high": 1132.4,
+              "low": 1100.0,
+              "close": 1103.4,
+              "range_pct": 2.908177003859626
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1141.8,
+              "high": 1151.9,
+              "low": 1122.4,
+              "close": 1130.0,
+              "range_pct": 2.583639866876861
+            }
+          ],
+          "average_range_pct_3_sessions": 2.968293449399127,
+          "average_range_pct_5_sessions": 2.604681129516207,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 1151.0,
+          "gap_vs_prior_close_pct": 1.8584070796460184,
+          "reference_price": 1161.1,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1151.9,
+            "low": 1122.4,
+            "close": 1130.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 0.7986804410104886,
+            "low": 3.447968638631487,
+            "close": 2.752212389380523
+          },
+          "five_session_return_pct": 0.8928571428571397,
+          "relative_strength_vs_nifty_5d_pct_points": -1.0662198282147761
+        },
+        "LT": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 4155.0,
+              "high": 4190.0,
+              "low": 4126.1,
+              "close": 4159.0,
+              "range_pct": 1.5379061371841067
+            },
+            {
+              "date": "2026-11-19",
+              "open": 4158.0,
+              "high": 4212.0,
+              "low": 4112.0,
+              "close": 4211.0,
+              "range_pct": 2.405002405002405
+            },
+            {
+              "date": "2026-11-20",
+              "open": 4153.9,
+              "high": 4210.1,
+              "low": 4129.1,
+              "close": 4209.1,
+              "range_pct": 1.949974722549893
+            },
+            {
+              "date": "2026-11-23",
+              "open": 4215.0,
+              "high": 4232.0,
+              "low": 4099.9,
+              "close": 4099.9,
+              "range_pct": 3.134045077105584
+            },
+            {
+              "date": "2026-11-25",
+              "open": 4169.8,
+              "high": 4189.0,
+              "low": 4127.3,
+              "close": 4156.0,
+              "range_pct": 1.4796872751690684
+            }
+          ],
+          "average_range_pct_3_sessions": 2.1879023582748487,
+          "average_range_pct_5_sessions": 2.1013231234022114,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 4155.0,
+          "gap_vs_prior_close_pct": -0.024061597690083758,
+          "reference_price": 4127.8,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 4189.0,
+            "low": 4127.3,
+            "close": 4156.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.4609692050608694,
+            "low": 0.012114457393453347,
+            "close": -0.6785370548604384
+          },
+          "five_session_return_pct": 0.024067388688320257,
+          "relative_strength_vs_nifty_5d_pct_points": -1.9350095823835955
+        },
+        "NIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 25323.15,
+              "high": 25390.8,
+              "low": 25141.8,
+              "close": 25227.95,
+              "range_pct": 0.9832899935434573
+            },
+            {
+              "date": "2026-11-19",
+              "open": 25186.8,
+              "high": 25514.3,
+              "low": 25104.8,
+              "close": 25514.3,
+              "range_pct": 1.6258516365715376
+            },
+            {
+              "date": "2026-11-20",
+              "open": 25368.0,
+              "high": 25808.8,
+              "low": 25345.2,
+              "close": 25800.6,
+              "range_pct": 1.8274992116051663
+            },
+            {
+              "date": "2026-11-23",
+              "open": 25929.15,
+              "high": 25992.6,
+              "low": 25343.85,
+              "close": 25349.65,
+              "range_pct": 2.502010285720897
+            },
+            {
+              "date": "2026-11-25",
+              "open": 25658.35,
+              "high": 25951.65,
+              "low": 25619.0,
+              "close": 25819.25,
+              "range_pct": 1.2964590474445998
+            }
+          ],
+          "average_range_pct_3_sessions": 1.8753228482568876,
+          "average_range_pct_5_sessions": 1.6470220349771316,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 25875.45,
+          "gap_vs_prior_close_pct": 0.21766705074701687,
+          "reference_price": 25819.9,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 25951.65,
+            "low": 25619.0,
+            "close": 25819.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.5076748491907065,
+            "low": 0.7841836137241949,
+            "close": 0.0025175014766170793
+          },
+          "five_session_return_pct": 1.9590769710719158,
+          "relative_strength_vs_nifty_5d_pct_points": 0.0
+        },
+        "RELIANCE": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1370.0,
+              "high": 1376.5,
+              "low": 1354.0,
+              "close": 1363.0,
+              "range_pct": 1.6423357664233578
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1361.9,
+              "high": 1382.5,
+              "low": 1349.7,
+              "close": 1375.6,
+              "range_pct": 2.4084000293707284
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1369.0,
+              "high": 1383.0,
+              "low": 1356.1,
+              "close": 1377.5,
+              "range_pct": 1.9649379108838634
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1381.0,
+              "high": 1390.0,
+              "low": 1346.9,
+              "close": 1351.0,
+              "range_pct": 3.1209268645908694
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1359.8,
+              "high": 1394.2,
+              "low": 1357.0,
+              "close": 1373.9,
+              "range_pct": 2.735696425944995
+            }
+          ],
+          "average_range_pct_3_sessions": 2.6071870671399093,
+          "average_range_pct_5_sessions": 2.3744593994427627,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 1371.1,
+          "gap_vs_prior_close_pct": -0.20379940315889966,
+          "reference_price": 1368.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1394.2,
+            "low": 1357.0,
+            "close": 1373.9
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.8792138860995584,
+            "low": 0.8106116433308769,
+            "close": -0.4294344566562407
+          },
+          "five_session_return_pct": 0.2846715328467253,
+          "relative_strength_vs_nifty_5d_pct_points": -1.6744054382251905
+        },
+        "SBIN": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1109.25,
+              "high": 1142.65,
+              "low": 1105.7,
+              "close": 1135.0,
+              "range_pct": 3.3310795582600896
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1148.0,
+              "high": 1160.2,
+              "low": 1141.0,
+              "close": 1156.0,
+              "range_pct": 1.6724738675958226
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1150.0,
+              "high": 1174.9,
+              "low": 1144.0,
+              "close": 1165.1,
+              "range_pct": 2.6869565217391385
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1178.55,
+              "high": 1181.6,
+              "low": 1127.9,
+              "close": 1132.65,
+              "range_pct": 4.556446480845091
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1142.0,
+              "high": 1153.8,
+              "low": 1132.0,
+              "close": 1138.15,
+              "range_pct": 1.9089316987740765
+            }
+          ],
+          "average_range_pct_3_sessions": 3.0507782337861022,
+          "average_range_pct_5_sessions": 2.8311776254428436,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 1139.25,
+          "gap_vs_prior_close_pct": 0.09664806923515012,
+          "reference_price": 1138.7,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1153.8,
+            "low": 1132.0,
+            "close": 1138.15
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.3087190154272759,
+            "low": 0.5918727915194387,
+            "close": 0.048324034617577165
+          },
+          "five_session_return_pct": 2.605363984674347,
+          "relative_strength_vs_nifty_5d_pct_points": 0.6462870136024312
+        },
+        "TCS": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 2382.5,
+              "high": 2408.0,
+              "low": 2379.5,
+              "close": 2379.5,
+              "range_pct": 1.1962224554039873
+            },
+            {
+              "date": "2026-11-19",
+              "open": 2367.0,
+              "high": 2385.6,
+              "low": 2327.7,
+              "close": 2342.7,
+              "range_pct": 2.4461343472750356
+            },
+            {
+              "date": "2026-11-20",
+              "open": 2325.0,
+              "high": 2414.8,
+              "low": 2317.0,
+              "close": 2376.2,
+              "range_pct": 4.206451612903233
+            },
+            {
+              "date": "2026-11-23",
+              "open": 2420.0,
+              "high": 2501.9,
+              "low": 2401.0,
+              "close": 2460.0,
+              "range_pct": 4.1694214876033096
+            },
+            {
+              "date": "2026-11-25",
+              "open": 2510.0,
+              "high": 2534.0,
+              "low": 2487.0,
+              "close": 2517.3,
+              "range_pct": 1.8725099601593624
+            }
+          ],
+          "average_range_pct_3_sessions": 3.4161276868886348,
+          "average_range_pct_5_sessions": 2.7781479726689855,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 2523.6,
+          "gap_vs_prior_close_pct": 0.25026814444046863,
+          "reference_price": 2567.2,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 2534.0,
+            "low": 2487.0,
+            "close": 2517.3
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 1.3101815311759992,
+            "low": 3.2247687977482835,
+            "close": 1.9822826043776918
+          },
+          "five_session_return_pct": 5.6579223504722,
+          "relative_strength_vs_nifty_5d_pct_points": 3.698845379400284
+        }
+      },
+      "india_vix": {
+        "prior_close": 17.67,
+        "change_1d_points": -0.029999999999997584,
+        "change_1d_pct": -0.16949152542371504
+      }
+    },
+    "1030": {
+      "version": "premarket_context_v1",
+      "stage": "1030",
+      "captured_at": "2026-11-26T10:30:00+05:30",
+      "underlyings": {
+        "BANKNIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 62204.1,
+              "high": 62363.75,
+              "low": 61765.45,
+              "close": 62038.65,
+              "range_pct": 0.9618337054953017
+            },
+            {
+              "date": "2026-11-19",
+              "open": 62081.3,
+              "high": 63063.0,
+              "low": 61951.1,
+              "close": 63063.0,
+              "range_pct": 1.7910385252886156
+            },
+            {
+              "date": "2026-11-20",
+              "open": 62656.65,
+              "high": 64680.8,
+              "low": 62598.55,
+              "close": 64635.2,
+              "range_pct": 3.3232705546817454
+            },
+            {
+              "date": "2026-11-23",
+              "open": 65012.05,
+              "high": 65193.4,
+              "low": 62546.2,
+              "close": 62585.35,
+              "range_pct": 4.071860524318191
+            },
+            {
+              "date": "2026-11-25",
+              "open": 63408.6,
+              "high": 64133.8,
+              "low": 63247.9,
+              "close": 63703.25,
+              "range_pct": 1.397129096053219
+            }
+          ],
+          "average_range_pct_3_sessions": 2.930753391684385,
+          "average_range_pct_5_sessions": 2.3090264811674146,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 63883.1,
+          "gap_vs_prior_close_pct": 0.2823246851612726,
+          "reference_price": 63975.85,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 64133.8,
+            "low": 63247.9,
+            "close": 63703.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.24628199171108583,
+            "low": 1.1509473041792644,
+            "close": 0.4279216523489752
+          },
+          "five_session_return_pct": 2.410050141389397,
+          "relative_strength_vs_nifty_5d_pct_points": 0.4509731703174813,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 0.8148477453348427,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 0.9618337054953017,
+              "2026-11-19": 1.0878477093746401,
+              "2026-11-20": 1.1061076517815678,
+              "2026-11-23": 3.005673563593215,
+              "2026-11-25": 1.0729617118182684
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.4468848684125986,
+            "ratio_to_5_session_average": 0.5631738662308534
+          }
+        },
+        "HDFCBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 813.9,
+              "high": 816.5,
+              "low": 804.2,
+              "close": 808.15,
+              "range_pct": 1.5112421673424197
+            },
+            {
+              "date": "2026-11-19",
+              "open": 807.2,
+              "high": 822.0,
+              "low": 804.2,
+              "close": 821.8,
+              "range_pct": 2.205153617443007
+            },
+            {
+              "date": "2026-11-20",
+              "open": 815.5,
+              "high": 850.35,
+              "low": 815.5,
+              "close": 846.0,
+              "range_pct": 4.2734518700183965
+            },
+            {
+              "date": "2026-11-23",
+              "open": 855.0,
+              "high": 859.7,
+              "low": 814.05,
+              "close": 817.8,
+              "range_pct": 5.339181286549718
+            },
+            {
+              "date": "2026-11-25",
+              "open": 833.1,
+              "high": 850.5,
+              "low": 831.55,
+              "close": 846.2,
+              "range_pct": 2.274636898331538
+            }
+          ],
+          "average_range_pct_3_sessions": 3.9624233516332175,
+          "average_range_pct_5_sessions": 3.120733167937016,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 849.1,
+          "gap_vs_prior_close_pct": 0.34270857953202505,
+          "reference_price": 864.75,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 850.5,
+            "low": 831.55,
+            "close": 846.2
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 1.6754850088183422,
+            "low": 3.992544044254711,
+            "close": 2.1921531552824334
+          },
+          "five_session_return_pct": 3.9685465044845936,
+          "relative_strength_vs_nifty_5d_pct_points": 2.0094695334126778,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 2.467318337062778,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 1.2040791251996503,
+              "2026-11-19": 0.96630327056491,
+              "2026-11-20": 1.98038013488657,
+              "2026-11-23": 3.5789473684210553,
+              "2026-11-25": 2.0825831232745196
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.9624586044693408,
+            "ratio_to_5_session_average": 1.2572587933542443
+          }
+        },
+        "ICICIBANK": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1600.0,
+              "high": 1610.1,
+              "low": 1591.0,
+              "close": 1601.3,
+              "range_pct": 1.1937499999999943
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1601.0,
+              "high": 1608.9,
+              "low": 1585.7,
+              "close": 1608.9,
+              "range_pct": 1.44909431605247
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1602.0,
+              "high": 1645.0,
+              "low": 1600.9,
+              "close": 1640.0,
+              "range_pct": 2.7528089887640395
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1639.0,
+              "high": 1644.8,
+              "low": 1585.5,
+              "close": 1585.5,
+              "range_pct": 3.6180597925564344
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1617.0,
+              "high": 1650.0,
+              "low": 1617.0,
+              "close": 1640.0,
+              "range_pct": 2.0408163265306123
+            }
+          ],
+          "average_range_pct_3_sessions": 2.803895035950362,
+          "average_range_pct_5_sessions": 2.2109058847807104,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 1650.1,
+          "gap_vs_prior_close_pct": 0.6158536585365804,
+          "reference_price": 1633.7,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1650.0,
+            "low": 1617.0,
+            "close": 1640.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.9878787878787851,
+            "low": 1.0327767470624643,
+            "close": -0.38414634146341187
+          },
+          "five_session_return_pct": 2.499999999999991,
+          "relative_strength_vs_nifty_5d_pct_points": 0.5409230289280753,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 1.6908066177807464,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 0.6937499999999943,
+              "2026-11-19": 1.1242973141786383,
+              "2026-11-20": 0.9675405742821472,
+              "2026-11-23": 2.233068944478335,
+              "2026-11-25": 1.8800247371675998
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.379736314021343,
+            "ratio_to_5_session_average": 1.2254563430694712
+          }
+        },
+        "INFY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1120.0,
+              "high": 1127.8,
+              "low": 1106.6,
+              "close": 1108.8,
+              "range_pct": 1.8928571428571468
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1096.3,
+              "high": 1097.0,
+              "low": 1072.6,
+              "close": 1091.9,
+              "range_pct": 2.2256681565265066
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1087.0,
+              "high": 1118.8,
+              "low": 1081.7,
+              "close": 1098.0,
+              "range_pct": 3.4130634774608932
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1114.1,
+              "high": 1132.4,
+              "low": 1100.0,
+              "close": 1103.4,
+              "range_pct": 2.908177003859626
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1141.8,
+              "high": 1151.9,
+              "low": 1122.4,
+              "close": 1130.0,
+              "range_pct": 2.583639866876861
+            }
+          ],
+          "average_range_pct_3_sessions": 2.968293449399127,
+          "average_range_pct_5_sessions": 2.604681129516207,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 1151.0,
+          "gap_vs_prior_close_pct": 1.8584070796460184,
+          "reference_price": 1165.5,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1151.9,
+            "low": 1122.4,
+            "close": 1130.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 1.1806580432329117,
+            "low": 3.8399857448324934,
+            "close": 3.1415929203539825
+          },
+          "five_session_return_pct": 0.8928571428571397,
+          "relative_strength_vs_nifty_5d_pct_points": -1.0662198282147761,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 1.7028670721112193,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 1.3214285714285674,
+              "2026-11-19": 2.0888442944449594,
+              "2026-11-20": 3.4130634774608932,
+              "2026-11-23": 2.3516739969482137,
+              "2026-11-25": 1.5939744263443727
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 2.1537969533254016,
+            "ratio_to_5_session_average": 0.7906349154603645
+          }
+        },
+        "LT": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 4155.0,
+              "high": 4190.0,
+              "low": 4126.1,
+              "close": 4159.0,
+              "range_pct": 1.5379061371841067
+            },
+            {
+              "date": "2026-11-19",
+              "open": 4158.0,
+              "high": 4212.0,
+              "low": 4112.0,
+              "close": 4211.0,
+              "range_pct": 2.405002405002405
+            },
+            {
+              "date": "2026-11-20",
+              "open": 4153.9,
+              "high": 4210.1,
+              "low": 4129.1,
+              "close": 4209.1,
+              "range_pct": 1.949974722549893
+            },
+            {
+              "date": "2026-11-23",
+              "open": 4215.0,
+              "high": 4232.0,
+              "low": 4099.9,
+              "close": 4099.9,
+              "range_pct": 3.134045077105584
+            },
+            {
+              "date": "2026-11-25",
+              "open": 4169.8,
+              "high": 4189.0,
+              "low": 4127.3,
+              "close": 4156.0,
+              "range_pct": 1.4796872751690684
+            }
+          ],
+          "average_range_pct_3_sessions": 2.1879023582748487,
+          "average_range_pct_5_sessions": 2.1013231234022114,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 4156.0,
+          "gap_vs_prior_close_pct": 0.0,
+          "reference_price": 4140.0,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 4189.0,
+            "low": 4127.3,
+            "close": 4156.0
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.169730245882072,
+            "low": 0.30770721779371063,
+            "close": -0.384985563041386
+          },
+          "five_session_return_pct": 0.024067388688320257,
+          "relative_strength_vs_nifty_5d_pct_points": -1.9350095823835955,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 1.2247353224254003,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 0.8832731648616081,
+              "2026-11-19": 1.1063011063011063,
+              "2026-11-20": 1.6370158164616386,
+              "2026-11-23": 1.7271648873072403,
+              "2026-11-25": 1.0192335363806417
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.2745977022624468,
+            "ratio_to_5_session_average": 0.9608799076378849
+          }
+        },
+        "NIFTY": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 25323.15,
+              "high": 25390.8,
+              "low": 25141.8,
+              "close": 25227.95,
+              "range_pct": 0.9832899935434573
+            },
+            {
+              "date": "2026-11-19",
+              "open": 25186.8,
+              "high": 25514.3,
+              "low": 25104.8,
+              "close": 25514.3,
+              "range_pct": 1.6258516365715376
+            },
+            {
+              "date": "2026-11-20",
+              "open": 25368.0,
+              "high": 25808.8,
+              "low": 25345.2,
+              "close": 25800.6,
+              "range_pct": 1.8274992116051663
+            },
+            {
+              "date": "2026-11-23",
+              "open": 25929.15,
+              "high": 25992.6,
+              "low": 25343.85,
+              "close": 25349.65,
+              "range_pct": 2.502010285720897
+            },
+            {
+              "date": "2026-11-25",
+              "open": 25658.35,
+              "high": 25951.65,
+              "low": 25619.0,
+              "close": 25819.25,
+              "range_pct": 1.2964590474445998
+            }
+          ],
+          "average_range_pct_3_sessions": 1.8753228482568876,
+          "average_range_pct_5_sessions": 1.6470220349771316,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 25873.2,
+          "gap_vs_prior_close_pct": 0.20895262255875569,
+          "reference_price": 25905.8,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 25951.65,
+            "low": 25619.0,
+            "close": 25819.25
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -0.17667470083791273,
+            "low": 1.1194816347242251,
+            "close": 0.3352150043087978
+          },
+          "five_session_return_pct": 1.9590769710719158,
+          "relative_strength_vs_nifty_5d_pct_points": 0.0,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 0.6738633025679025,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 0.728977240193256,
+              "2026-11-19": 0.8153080184858823,
+              "2026-11-20": 0.7822847682119234,
+              "2026-11-23": 1.6402388817219202,
+              "2026-11-25": 0.7744067720644575
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 0.9482431361354878,
+            "ratio_to_5_session_average": 0.7106440077322309
+          }
+        },
+        "RELIANCE": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1370.0,
+              "high": 1376.5,
+              "low": 1354.0,
+              "close": 1363.0,
+              "range_pct": 1.6423357664233578
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1361.9,
+              "high": 1382.5,
+              "low": 1349.7,
+              "close": 1375.6,
+              "range_pct": 2.4084000293707284
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1369.0,
+              "high": 1383.0,
+              "low": 1356.1,
+              "close": 1377.5,
+              "range_pct": 1.9649379108838634
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1381.0,
+              "high": 1390.0,
+              "low": 1346.9,
+              "close": 1351.0,
+              "range_pct": 3.1209268645908694
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1359.8,
+              "high": 1394.2,
+              "low": 1357.0,
+              "close": 1373.9,
+              "range_pct": 2.735696425944995
+            }
+          ],
+          "average_range_pct_3_sessions": 2.6071870671399093,
+          "average_range_pct_5_sessions": 2.3744593994427627,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 1371.1,
+          "gap_vs_prior_close_pct": -0.20379940315889966,
+          "reference_price": 1373.8,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1394.2,
+            "low": 1357.0,
+            "close": 1373.9
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.4632047052072938,
+            "low": 1.2380250552689722,
+            "close": -0.007278550112827456
+          },
+          "five_session_return_pct": 0.2846715328467253,
+          "relative_strength_vs_nifty_5d_pct_points": -1.6744054382251905,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 0.9846108963605864,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 1.3503649635036497,
+              "2026-11-19": 1.2482561127836111,
+              "2026-11-20": 0.9422936449963544,
+              "2026-11-23": 2.3171614771904414,
+              "2026-11-25": 2.735696425944995
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.7187545248838103,
+            "ratio_to_5_session_average": 0.5728630133655341
+          }
+        },
+        "SBIN": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 1109.25,
+              "high": 1142.65,
+              "low": 1105.7,
+              "close": 1135.0,
+              "range_pct": 3.3310795582600896
+            },
+            {
+              "date": "2026-11-19",
+              "open": 1148.0,
+              "high": 1160.2,
+              "low": 1141.0,
+              "close": 1156.0,
+              "range_pct": 1.6724738675958226
+            },
+            {
+              "date": "2026-11-20",
+              "open": 1150.0,
+              "high": 1174.9,
+              "low": 1144.0,
+              "close": 1165.1,
+              "range_pct": 2.6869565217391385
+            },
+            {
+              "date": "2026-11-23",
+              "open": 1178.55,
+              "high": 1181.6,
+              "low": 1127.9,
+              "close": 1132.65,
+              "range_pct": 4.556446480845091
+            },
+            {
+              "date": "2026-11-25",
+              "open": 1142.0,
+              "high": 1153.8,
+              "low": 1132.0,
+              "close": 1138.15,
+              "range_pct": 1.9089316987740765
+            }
+          ],
+          "average_range_pct_3_sessions": 3.0507782337861022,
+          "average_range_pct_5_sessions": 2.8311776254428436,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "DOWN"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "DOWN"
+            }
+          ],
+          "current_session_open": 1139.8,
+          "gap_vs_prior_close_pct": 0.1449721038527363,
+          "reference_price": 1141.1,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 1153.8,
+            "low": 1132.0,
+            "close": 1138.15
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": -1.1007106950944745,
+            "low": 0.803886925795045,
+            "close": 0.25919254931246477
+          },
+          "five_session_return_pct": 2.605363984674347,
+          "relative_strength_vs_nifty_5d_pct_points": 0.6462870136024312,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 1.0089489384102475,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 1.1945007888212755,
+              "2026-11-19": 1.0017421602787455,
+              "2026-11-20": 0.782608695652174,
+              "2026-11-23": 3.1055110092910705,
+              "2026-11-25": 1.3572679509632224
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 1.4883261210012975,
+            "ratio_to_5_session_average": 0.6779085068610228
+          }
+        },
+        "TCS": {
+          "data_status": "available",
+          "data_error": null,
+          "previous_sessions": [
+            {
+              "date": "2026-11-18",
+              "open": 2382.5,
+              "high": 2408.0,
+              "low": 2379.5,
+              "close": 2379.5,
+              "range_pct": 1.1962224554039873
+            },
+            {
+              "date": "2026-11-19",
+              "open": 2367.0,
+              "high": 2385.6,
+              "low": 2327.7,
+              "close": 2342.7,
+              "range_pct": 2.4461343472750356
+            },
+            {
+              "date": "2026-11-20",
+              "open": 2325.0,
+              "high": 2414.8,
+              "low": 2317.0,
+              "close": 2376.2,
+              "range_pct": 4.206451612903233
+            },
+            {
+              "date": "2026-11-23",
+              "open": 2420.0,
+              "high": 2501.9,
+              "low": 2401.0,
+              "close": 2460.0,
+              "range_pct": 4.1694214876033096
+            },
+            {
+              "date": "2026-11-25",
+              "open": 2510.0,
+              "high": 2534.0,
+              "low": 2487.0,
+              "close": 2517.3,
+              "range_pct": 1.8725099601593624
+            }
+          ],
+          "average_range_pct_3_sessions": 3.4161276868886348,
+          "average_range_pct_5_sessions": 2.7781479726689855,
+          "last_3_open_to_close_directions": [
+            {
+              "date": "2026-11-20",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-23",
+              "direction": "UP"
+            },
+            {
+              "date": "2026-11-25",
+              "direction": "UP"
+            }
+          ],
+          "current_session_open": 2523.6,
+          "gap_vs_prior_close_pct": 0.25026814444046863,
+          "reference_price": 2561.1,
+          "reference_price_source": "live",
+          "prior_day_levels": {
+            "high": 2534.0,
+            "low": 2487.0,
+            "close": 2517.3
+          },
+          "distance_from_prior_day_levels_pct": {
+            "high": 1.0694554064719775,
+            "low": 2.9794933655005997,
+            "close": 1.739959480395651
+          },
+          "five_session_return_pct": 5.6579223504722,
+          "relative_strength_vs_nifty_5d_pct_points": 3.698845379400284,
+          "live_range_1030": {
+            "window_start": "09:15",
+            "window_end": "10:30",
+            "live_range_pct": 2.631161832303063,
+            "prior_session_ranges_pct": {
+              "2026-11-18": 1.0912906610703044,
+              "2026-11-19": 2.205323193916342,
+              "2026-11-20": 4.0,
+              "2026-11-23": 4.1694214876033096,
+              "2026-11-25": 1.8725099601593624
+            },
+            "prior_sessions_available": 5,
+            "average_range_pct_5_sessions_same_window": 2.6677090605498637,
+            "ratio_to_5_session_average": 0.9863001446494816
+          }
+        }
+      },
+      "india_vix": {
+        "prior_close": 17.67,
+        "change_1d_points": -0.029999999999997584,
+        "change_1d_pct": -0.16949152542371504
+      }
+    }
+  },
+  "latest_snapshot": "1030"
+}
