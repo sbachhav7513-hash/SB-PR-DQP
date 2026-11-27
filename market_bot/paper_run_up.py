@@ -55,7 +55,7 @@ def prior_60m_option_move(
     if not closes:
         return OptionMoveMeasurement(None, "lookback_incomplete", "no_valid_closes")
 
-    latest = max(closes)
+    latest = cutoff.replace(second=0, microsecond=0)
     earliest = latest - timedelta(minutes=RUN_UP_LOOKBACK_MINUTES)
     expected_times = (
         earliest + timedelta(minutes=offset)

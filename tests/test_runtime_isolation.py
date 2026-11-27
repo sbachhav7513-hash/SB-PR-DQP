@@ -145,9 +145,9 @@ def test_run_up_veto_is_enabled_in_startup_log_by_default(caplog):
         flags = _log_runtime_flags({}, "PAPER")
 
     assert "run_up_veto_v2=True" in caplog.text
-    assert flags["run_up_lookback_backfill_v2"] is False
+    assert flags["run_up_lookback_backfill_v2"] is True
     assert flags["entry_5m_continuation_v1"] is False
-    assert "run_up_lookback_backfill_v2=False" in caplog.text
+    assert "run_up_lookback_backfill_v2=True" in caplog.text
     assert "entry_5m_continuation_v1=False" in caplog.text
 
 

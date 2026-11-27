@@ -127,7 +127,7 @@ PAPER_FLAG_DEFAULTS = {
     "same_side_cluster_limit_v1": False,
     "stock_tier_enabled_v1": True,
     "nifty_range_gate_v1": False,
-    "run_up_lookback_backfill_v2": False,
+    "run_up_lookback_backfill_v2": True,
     "entry_5m_continuation_v1": False,
 }
 PAPER_ONLY_EXPERIMENT_FLAGS = frozenset(
@@ -1213,6 +1213,11 @@ class KiteTradingBot:
             )
         )
         if token is None:
+            logger.warning(
+                "[%s] Run-up historical backfill failed open; "
+                "cause=unmapped_contract_token",
+                symbol,
+            )
             return (
                 "complete",
                 OptionMoveMeasurement(
@@ -1221,6 +1226,11 @@ class KiteTradingBot:
             )
         cutoff = self._journal_datetime(signal_time)
         if cutoff is None:
+            logger.warning(
+                "[%s] Run-up historical backfill failed open; "
+                "cause=invalid_signal_time",
+                symbol,
+            )
             return (
                 "complete",
                 OptionMoveMeasurement(
@@ -1228,6 +1238,11 @@ class KiteTradingBot:
                 ),
             )
         if cause == "session_history_incomplete":
+            logger.info(
+                "[%s] Run-up historical backfill skipped; "
+                "cause=session_history_incomplete",
+                symbol,
+            )
             return (
                 "complete",
                 OptionMoveMeasurement(
@@ -1349,6 +1364,11 @@ class KiteTradingBot:
             )
         measurement = prior_60m_option_move(bars, cutoff)
         if measurement.value_pct is None:
+            logger.warning(
+                "[%s] Run-up historical backfill failed open; "
+                "cause=historical_api_incomplete",
+                symbol,
+            )
             return (
                 "complete",
                 OptionMoveMeasurement(
@@ -7933,6 +7953,12 @@ class KiteTradingBot:
             "direction_rule": pending.get("direction_rule"),
             "run_up_veto_status": pending.get("run_up_veto_status"),
             "run_up_fail_open_cause": pending.get("run_up_fail_open_cause"),
+            "veto_lookback_incomplete": pending.get(
+                "veto_lookback_incomplete", False
+            ),
+            "option_contract_refresh_time": pending.get(
+                "option_contract_refresh_time"
+            ),
             "five_min_confirmation_time": (
                 pending["five_min_confirmation_time"].isoformat()
                 if pending.get("five_min_confirmation_time")
@@ -8228,6 +8254,9 @@ class KiteTradingBot:
             "lot_size": contract_metadata.get("lot_size"),
             "underlying_price_at_selection": contract_metadata.get(
                 "underlying_price_at_selection"
+            ),
+            "option_contract_refresh_time": contract_metadata.get(
+                "resolved_at"
             ),
             "signal_premium": quote_metrics["ltp"],
             "signal_bid": quote_metrics["bid"],
@@ -9206,6 +9235,9 @@ class KiteTradingBot:
             pending["run_up_fail_open_cause"] = metadata.get(
                 "run_up_fail_open_cause",
                 "entry_revalidation_failed_before_run_up_check",
+            )
+            pending["veto_lookback_incomplete"] = bool(
+                metadata.get("veto_lookback_incomplete", False)
             )
             if outcome != "trade_opened":
                 lowered = outcome.lower()
@@ -10347,6 +10379,23 @@ class KiteTradingBot:
                     if signal_time is not None:
                         self._reselect_options_at_signal(
                             underlying, signal_time
+                        )
+                        self._register_option_signal_capture(
+                            symbol,
+                            signal_time,
+                            signal=market_score.signal,
+                        )
+                        selected_metadata = self._option_contract_metadata(
+                            symbol, market_score.signal
+                        )
+                        logger.info(
+                            "[%s] Signal contract selected; signal_time=%s "
+                            "refresh_time=%s contract_id=%s",
+                            symbol,
+                            signal_time.isoformat(),
+                            selected_metadata.get("resolved_at"),
+                            selected_metadata.get("contract_id")
+                            or self._contract_id(symbol),
                         )
                     selected_token = (
                         self.config.get("instrument_tokens", {}) or {}
@@ -15520,6 +15569,9 @@ class KiteTradingBot:
                 "underlying_price_at_selection": contract_metadata.get(
                     "underlying_price_at_selection"
                 ),
+                "option_contract_refresh_time": contract_metadata.get(
+                    "resolved_at"
+                ),
                 "signal": signal,
                 "outcome": outcome,
                 "effective_min_trend_strength": self._minimum_trend_strength(symbol),
@@ -15839,6 +15891,9 @@ class KiteTradingBot:
                     entry_metadata["run_up_veto_status"] = veto_status
                     entry_metadata["run_up_fail_open_cause"] = (
                         run_up_measurement.fail_open_cause
+                    )
+                    entry_metadata["veto_lookback_incomplete"] = (
+                        move_pct is None
                     )
 
                     if veto_status == "failed_open":

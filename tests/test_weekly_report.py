@@ -351,6 +351,128 @@ def test_daily_review_reports_confirmed_entry_evaluation_metrics(tmp_path):
     assert "- After-cost P&L: 2.00" in review
 
 
+def test_daily_review_reports_index_signal_replayability_and_fail_open(tmp_path):
+    import csv
+
+    timezone = ZoneInfo("Asia/Kolkata")
+    target_time = datetime(2026, 9, 30, 10, 0, tzinfo=timezone)
+    target_date = target_time.date()
+    decisions = [
+        {
+            "timestamp": target_time.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "confirmed_trade",
+            "confirmation_result": "passed",
+            "signal_id": "nifty-ce",
+            "ticker": "NIFTY_CE",
+            "contract_id": "NFO:NIFTY26SEP25000CE",
+            "run_up_veto_status": "passed",
+        },
+        {
+            "timestamp": (target_time + timedelta(minutes=1)).isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "filter_failed_after_confirmation",
+            "confirmation_result": "passed",
+            "signal_id": "banknifty-pe",
+            "ticker": "BANKNIFTY_PE",
+            "contract_id": "NFO:BANKNIFTY26SEP55000PE",
+            "run_up_veto_status": "passed",
+        },
+        {
+            "timestamp": (target_time + timedelta(minutes=2)).isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "filter_failed_after_confirmation",
+            "confirmation_result": "passed",
+            "signal_id": "nifty-pe-fail-open",
+            "ticker": "NIFTY_PE",
+            "contract_id": "NFO:NIFTY26SEP25000PE",
+            "run_up_veto_status": "failed_open",
+            "run_up_fail_open_cause": "historical_api_incomplete",
+            "veto_lookback_incomplete": True,
+            "option_contract_refresh_time": target_time.isoformat(),
+        },
+        {
+            "timestamp": target_time.isoformat(),
+            "event": "entry_confirmation",
+            "confirmation_event": "confirmed_trade",
+            "confirmation_result": "passed",
+            "signal_id": "stock-ce",
+            "ticker": "TCS_CE",
+            "contract_id": "NFO:TCS26SEP3500CE",
+        },
+    ]
+    (tmp_path / "decision_log.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in decisions) + "\n",
+        encoding="utf-8",
+    )
+    capture_dir = (
+        tmp_path
+        / "paper"
+        / "option_candles"
+        / target_date.isoformat()
+    )
+    capture_dir.mkdir(parents=True)
+    with (
+        capture_dir / "NFO_NIFTY26SEP25000CE.quotes.csv"
+    ).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "time", "contract_id", "ltp", "bid", "ask",
+                "quote_age_seconds",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "time": target_time.isoformat(),
+                "contract_id": "NFO:NIFTY26SEP25000CE",
+                "ltp": "100.5",
+                "bid": "100",
+                "ask": "101",
+                "quote_age_seconds": "2",
+            }
+        )
+    with (
+        capture_dir / "NFO_BANKNIFTY26SEP55000PE.quotes.csv"
+    ).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "time", "contract_id", "ltp", "bid", "ask",
+                "quote_age_seconds",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "time": (target_time + timedelta(minutes=1)).isoformat(),
+                "contract_id": "NFO:BANKNIFTY26SEP55000PE",
+                "ltp": "100.5",
+                "bid": "100",
+                "ask": "101",
+                "quote_age_seconds": "6",
+            }
+        )
+
+    review_path = write_daily_review(
+        str(tmp_path),
+        paper_data_dir=str(tmp_path / "paper"),
+        target_date=target_date,
+    )
+
+    assert (
+        "- Confirmed index option signals: 3; replayable "
+        "(exact-contract quote within 5s of confirmation): 2; "
+        "run-up fail-open: 1"
+    ) in review_path.read_text(encoding="utf-8")
+    assert {
+        "contract_id",
+        "option_contract_refresh_time",
+        "veto_lookback_incomplete",
+    }.issubset(set(_daily_record_columns("decisions.parquet")))
+
+
 def test_daily_review_reports_nifty_range_gate_counts_and_entry_ranges(tmp_path):
     timezone = ZoneInfo("Asia/Kolkata")
     now = datetime.now(timezone).replace(microsecond=0)

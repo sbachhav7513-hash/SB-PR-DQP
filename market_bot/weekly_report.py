@@ -22,6 +22,7 @@ from .trade_journal import (
 from .stop_reentry_journal import FAILURE_BUCKETS, summarize_stop_events
 from .paper_recovery import RECOVERY_COLUMNS, build_recovery_record
 from .paper_exit_rollback import EXIT_FLAGS, evaluate_paper_exit_rollbacks
+from .option_capture import load_option_capture
 from .reporting_metrics import ReportingBudgetExceeded, ReportingStep
 
 
@@ -1461,6 +1462,10 @@ def _daily_record_columns(parquet_name: str) -> List[str]:
         "order_premium", "order_bid", "order_ask", "order_ltp",
         "cancellation_reason", "cancellation_sub_reason",
         "tier", "ticker", "signal_uid",
+        "contract_id", "confirmation_bid", "confirmation_ask",
+        "confirmation_ltp", "confirmation_quote_age_seconds",
+        "option_contract_refresh_time", "run_up_veto_status",
+        "run_up_fail_open_cause", "veto_lookback_incomplete",
         "nifty_range_gate_status", "nifty_range_gate_reason",
         "nifty_range_gate_min_pct", "nifty_range_so_far_pct",
         "nifty_range_gate_blocked", "nifty_range_gate_symbol",
@@ -1803,6 +1808,95 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(IST)
 
 
+def _confirmed_index_signal_replay_metrics(
+    decisions: List[Dict[str, Any]], paper_data_dir: Path, target_date: date
+) -> Dict[str, int]:
+    grouped: Dict[str, tuple[datetime | None, Dict[str, Any]]] = {}
+    for index, decision in enumerate(decisions):
+        ticker = str(decision.get("ticker") or "").upper()
+        if (
+            decision.get("event") != "entry_confirmation"
+            or decision.get("confirmation_result") != "passed"
+            or not ticker.endswith(("_CE", "_PE"))
+            or not ticker.startswith(("NIFTY_", "BANKNIFTY_"))
+        ):
+            continue
+        signal_key = str(
+            decision.get("signal_id")
+            or decision.get("signal_uid")
+            or f"{ticker}|{decision.get('signal_time') or decision.get('timestamp')}|{index}"
+        )
+        decision_time = _parse_datetime(decision.get("timestamp"))
+        previous = grouped.get(signal_key)
+        if previous is None or (
+            decision_time is not None
+            and (previous[0] is None or decision_time >= previous[0])
+        ):
+            grouped[signal_key] = (decision_time, decision)
+
+    signals = [item[1] for item in grouped.values()]
+    replayable = 0
+    fail_open = 0
+    capture_root = paper_data_dir / "option_candles"
+    quote_cache: Dict[str, List[Dict[str, str]]] = {}
+    for signal in signals:
+        incomplete = signal.get("veto_lookback_incomplete")
+        if (
+            incomplete is True
+            or str(incomplete or "").lower() in {"true", "1"}
+            or signal.get("run_up_veto_status") == "failed_open"
+        ):
+            fail_open += 1
+
+        contract_id = str(signal.get("contract_id") or "").strip()
+        event_time = _parse_datetime(signal.get("timestamp"))
+        if not contract_id or event_time is None:
+            continue
+        if contract_id not in quote_cache:
+            try:
+                captures = load_option_capture(
+                    capture_root, target_date, signal
+                )
+            except (OSError, csv.Error, EOFError) as error:
+                logger.warning(
+                    "Could not read exact-contract quote capture for signal %s: %s",
+                    signal.get("signal_id") or contract_id,
+                    type(error).__name__,
+                )
+                quote_cache[contract_id] = []
+            else:
+                quote_cache[contract_id] = captures["quotes"]
+        for quote in quote_cache[contract_id]:
+            quote_time = _parse_datetime(quote.get("time"))
+            if quote_time is None or abs(
+                (quote_time - event_time).total_seconds()
+            ) > 5.0:
+                continue
+            try:
+                quote_age = float(quote.get("quote_age_seconds", ""))
+                bid = float(quote.get("bid", ""))
+                ask = float(quote.get("ask", ""))
+                ltp = float(quote.get("ltp", ""))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                all(
+                    math.isfinite(value) and value > 0
+                    for value in (bid, ask, ltp)
+                )
+                and math.isfinite(quote_age)
+                and quote_age >= 0
+            ):
+                replayable += 1
+                break
+
+    return {
+        "confirmed": len(signals),
+        "replayable": replayable,
+        "fail_open": fail_open,
+    }
+
+
 def write_daily_review(
     data_dir: str = ".",
     paper_data_dir: str = "paper_trading_data",
@@ -1901,6 +1995,9 @@ def write_daily_review(
     breakeven = sum(1 for pnl in pnls if pnl == 0)
     ema_reentry = _ema_reentry_summary(trades, decisions)
     entry_confirmation = _entry_confirmation_metrics(trades, decisions)
+    index_signal_replay = _confirmed_index_signal_replay_metrics(
+        decisions, Path(paper_data_dir), target_date
+    )
     signal_counts: Dict[str, int] = defaultdict(int)
     outcome_counts: Dict[str, int] = defaultdict(int)
     rejection_counts: Dict[str, int] = defaultdict(int)
@@ -2228,6 +2325,11 @@ def write_daily_review(
         f"- Average delay: {entry_confirmation['average_delay_seconds']:.1f}s",
         "- Average premium change from signal to fill: "
         f"{entry_confirmation['average_premium_change_pct']:.3f}%",
+        "- Confirmed index option signals: "
+        f"{index_signal_replay['confirmed']}; replayable "
+        "(exact-contract quote within 5s of confirmation): "
+        f"{index_signal_replay['replayable']}; run-up fail-open: "
+        f"{index_signal_replay['fail_open']}",
         "",
         "## Run-up Veto Status Counts",
         *(

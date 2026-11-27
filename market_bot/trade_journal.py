@@ -475,6 +475,7 @@ class PaperTradingRecorder:
         "confirmation_quote_age_seconds", "order_premium", "order_bid",
         "order_ask", "order_ltp", "order_quote_age_seconds",
         "run_up_veto_status", "run_up_fail_open_cause",
+        "veto_lookback_incomplete", "option_contract_refresh_time",
         "five_min_confirmation_time", "five_min_confirmation_close",
         "five_min_candle_start", "five_min_candle_end",
         "five_min_candle_close", "five_min_continuation_status",

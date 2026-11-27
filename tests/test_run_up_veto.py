@@ -90,6 +90,18 @@ def test_prior_60m_move_marks_missing_minute_as_incomplete():
     assert measurement.fail_open_cause == "session_history_incomplete"
 
 
+def test_prior_60m_move_requires_a_close_at_the_signal_minute():
+    signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
+    bars = _bars(signal_time)
+    bars.pop()
+
+    measurement = prior_60m_option_move(bars, signal_time)
+
+    assert measurement.value_pct is None
+    assert measurement.status == "lookback_incomplete"
+    assert measurement.fail_open_cause == "missing_minute"
+
+
 def test_prior_60m_move_classifies_gap_after_session_warmup():
     signal_time = datetime(2026, 11, 16, 11, 0, tzinfo=IST)
     bars = _bars(signal_time)
@@ -161,16 +173,18 @@ def test_incomplete_lookback_fails_open_and_is_logged(caplog):
     bars = _bars(signal_time)
     bars.pop(20)
     bot = _entry_bot(bars=bars)
+    metadata = {"signal_time": signal_time}
 
     result = bot._handle_buy_signal(
         "NIFTY_CE",
         100.0,
         80,
-        entry_telemetry={"signal_time": signal_time},
+        confirmed_entry_metadata=metadata,
     )
 
     assert result == "position_size_zero"
     assert "run_up_veto_v2 failed open; cause=session_history_incomplete" in caplog.text
+    assert metadata["veto_lookback_incomplete"] is True
     assert "failed_open" == bot._last_run_up_entry_decision["NIFTY_CE"][
         "run_up_veto_status"
     ]
@@ -252,6 +266,86 @@ def test_historical_backfill_computes_the_same_61_close_measurement(monkeypatch)
     assert state == "complete"
     assert measurement.status == "complete"
     assert measurement.value_pct == pytest.approx(9.0)
+
+
+def test_backfill_vetoes_known_26_nov_run_up_case(monkeypatch):
+    from concurrent.futures import Future
+    import time
+
+    import market_bot.kite_main as kite_main
+
+    class InlineExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def submit(self, function):
+            future = Future()
+            try:
+                future.set_result(function())
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    signal_time = datetime(2026, 11, 26, 10, 32, tzinfo=IST)
+    partial_bars = _bars(signal_time, last_close=118.88)
+    partial_bars.pop(20)
+    rows = [
+        {
+            "time": signal_time - timedelta(minutes=60 - offset),
+            "open": 100.0,
+            "high": 120.0,
+            "low": 99.0,
+            "close": 100.0 + 18.88 * offset / 60,
+            "volume": 1,
+        }
+        for offset in range(61)
+    ]
+
+    class Provider:
+        def fetch_history(self, token, start, end, *, interval):
+            assert token == 123
+            assert start == signal_time - timedelta(minutes=60)
+            assert end == signal_time + timedelta(minutes=1)
+            assert interval == "minute"
+            return rows
+
+    monkeypatch.setattr(kite_main, "ThreadPoolExecutor", InlineExecutor)
+    bot = _entry_bot(bars=partial_bars)
+    bot._run_up_backfill_provider = Provider()
+    bot._run_up_backfill_last_request = time.monotonic() - 2
+
+    live_measurement = bot._run_up_veto_measurement(
+        "NIFTY_CE", signal_time
+    )
+    assert live_measurement.value_pct is None
+    assert live_measurement.fail_open_cause == "missing_minute"
+
+    state, backfilled = bot._poll_run_up_backfill(
+        "NIFTY_CE", signal_time, live_measurement.fail_open_cause
+    )
+    assert state == "complete"
+    assert backfilled.value_pct == pytest.approx(18.88)
+
+    metadata = {
+        "signal_time": signal_time,
+        "run_up_backfill_measurement": {
+            "value_pct": backfilled.value_pct,
+            "status": backfilled.status,
+            "fail_open_cause": backfilled.fail_open_cause,
+        },
+    }
+    result = bot._handle_buy_signal(
+        "NIFTY_CE",
+        100.0,
+        80,
+        confirmed_entry_metadata=metadata,
+    )
+
+    assert result == "run_up_veto_v2"
+    assert metadata["veto_lookback_incomplete"] is False
+    assert bot._signal_change_gate_evaluations["NIFTY_CE"][
+        "run_up_veto_v2"
+    ]["prior_60m_option_move_pct"] == pytest.approx(18.88)
 
 
 def test_historical_backfill_failure_is_logged_and_fails_open(monkeypatch, caplog):
