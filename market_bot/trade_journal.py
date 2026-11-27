@@ -51,6 +51,7 @@ OPTION_TRADE_LOG_FIELDS = {
     "entry_slippage_rupees",
     "exit_slippage_rupees",
     "estimated_slippage_rupees",
+    "entry_slippage_in_fill",
     "net_pnl_after_slippage",
 }
 
@@ -304,6 +305,7 @@ class PaperTradingRecorder:
         "entry_slippage_rupees",
         "exit_slippage_rupees",
         "estimated_slippage_rupees",
+        "entry_slippage_in_fill",
         "net_pnl_after_slippage",
         "signal_id",
         "signal_time",
@@ -493,7 +495,8 @@ class PaperTradingRecorder:
         "max_open_risk_amount", "open_risk_amount",
         "remaining_daily_risk_amount",
         "max_lots", "premium_cap", "lots_reduced_reason",
-        "capital_based_risk_v2",
+        "capital_based_risk_v2", "lot_exceeds_cap", "one_lot_cost",
+        "per_trade_cap", "entry_ask", "entry_slippage_pct",
     ]
     SCORER_BAR_COLUMNS = [
         "timestamp", "config_hash", "git_sha", "git_dirty", "ticker",
@@ -2330,6 +2333,7 @@ class TradeJournal:
             "entry_slippage_rupees": None,
             "exit_slippage_rupees": None,
             "estimated_slippage_rupees": None,
+            "entry_slippage_in_fill": None,
             "net_pnl_after_slippage": None,
         }
         values.update({key: entry[key] for key in values if key in entry})

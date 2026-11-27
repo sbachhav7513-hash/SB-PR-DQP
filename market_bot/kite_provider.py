@@ -794,27 +794,33 @@ class KiteMarketStream:
                 capture_contracts_by_token[opposite_token] = opposite_metadata
                 capture_opposites_by_token[token] = opposite_metadata
 
-        for underlying in ("NIFTY", "BANKNIFTY"):
-            if underlying not in selected_expiries:
-                continue
+        for underlying in selected_expiries:
             underlying_price = float(
                 underlying_prices[
                     str(underlying_tokens.get(underlying, ""))
                 ].get("last_price", 0)
             )
-            chain_rows = sorted(
+            atm_strike, step = self.selected_atm_strikes[underlying]
+            neighborhood = {
+                atm_strike + offset * step for offset in range(-2, 3)
+            }
+            nearby_rows = sorted(
                 (
                     row
                     for row in candidates
                     if str(row.get("name", "")).upper() == underlying
+                    and any(
+                        abs(float(row["strike"]) - strike) < 1e-9
+                        for strike in neighborhood
+                    )
                 ),
                 key=lambda row: (
-                    abs(float(row["strike"]) - underlying_price),
+                    abs(float(row["strike"]) - atm_strike),
                     str(row["instrument_type"]),
                     str(row["tradingsymbol"]),
                 ),
             )
-            for row in chain_rows:
+            for row in nearby_rows:
                 token = int(row["instrument_token"])
                 capture_contracts_by_token.setdefault(
                     token,
@@ -1394,6 +1400,10 @@ class KiteMarketStream:
         ]
         tokens = trading_tokens + capture_tokens
         if tokens:
+            logger.info(
+                "Kite WebSocket subscribe tokens=%s reason=connect_or_reconnect",
+                tokens,
+            )
             ws.subscribe(tokens)
             ws.set_mode(ws.MODE_FULL, tokens)
             subscribed_at = datetime.now(IST)

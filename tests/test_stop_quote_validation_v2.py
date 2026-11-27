@@ -21,6 +21,7 @@ def _bot(*, stop=27.135):
     )
     bot = object.__new__(KiteTradingBot)
     bot.config = {
+        "trading_mode": "intraday_options",
         "option_quote_validated_stops_enabled": True,
         "stop_quote_validation_v2": True,
         "stop_quote_bad_tick_drop_pct": 0.15,
@@ -29,6 +30,7 @@ def _bot(*, stop=27.135):
         "option_quote_max_age_seconds": 60,
         "partial_profit_v2": False,
     }
+    bot.mode = "PAPER"
     bot.paper_trading_enabled = True
     bot.live_orders_enabled = False
     bot.intraday_manager = manager
@@ -145,32 +147,117 @@ def test_stale_exit_quote_is_logged_and_does_not_close(caplog):
     assert "contract=INFY_CE" in caplog.text
 
 
-def test_entry_validity_keeps_ltp_within_spread_rule():
+def test_paper_entry_accepts_sane_ltp_outside_a_tight_two_sided_book():
     bot = _bot()
     now = datetime.now(IST)
     quote = {"timestamp": now, "bid": 26.85, "ask": 26.95, "last_price": 26.70}
 
-    assert bot._option_quote_metrics(quote)["valid"] is False
+    metrics = bot._option_quote_metrics(quote, now=now)
+
+    assert metrics["valid"] is False
+    assert metrics["entry_valid"] is True
+    assert metrics["spread_pct"] < 1.5
+    assert metrics["ltp_mid_deviation_pct"] < 1.0
     assert bot._option_exit_quote_metrics(quote)["exit_valid"] is True
 
 
-def test_entry_quote_outside_spread_has_distinct_reject_reason():
-    assert KiteTradingBot._invalid_entry_quote_reason(
+def test_november_25_confirmed_quotes_pass_new_paper_entry_gate():
+    bot = _bot()
+    cases = (
+        (10, 27, 4, 48.80, 49.05, 49.25, True),
+        (12, 43, 7, 36.50, 36.75, 36.45, False),
+        (13, 31, 1, 293.60, 294.25, 294.30, True),
+        (14, 13, 1, 274.00, 274.70, 273.90, True),
+    )
+
+    for hour, minute, age, bid, ask, ltp, should_pass in cases:
+        now = datetime(2026, 11, 25, hour, minute, 0, tzinfo=IST)
+        metrics = bot._option_quote_metrics(
+            {
+                "timestamp": now - timedelta(seconds=age),
+                "bid": bid,
+                "ask": ask,
+                "last_price": ltp,
+                "source": "live_tick",
+            },
+            now=now,
+        )
+
+        assert metrics["entry_valid"] is should_pass
+        assert metrics["two_sided"] is True
+        assert metrics["spread_pct"] <= 1.5
+        assert metrics["ltp_mid_deviation_pct"] <= 1.0
+        if not should_pass:
+            assert KiteTradingBot._invalid_entry_quote_reason(metrics) == (
+                "no_fresh_atm_quote"
+            )
+
+
+def test_quote_older_than_five_seconds_has_no_fresh_atm_quote_reason(caplog):
+    bot = _bot()
+    now = datetime(2026, 11, 25, 12, 43, 59, tzinfo=IST)
+    metrics = bot._option_quote_metrics(
         {
-            "fresh": True,
-            "bid": 26.85,
-            "ask": 26.95,
-            "ltp": 26.70,
-        }
-    ) == "quote_outside_spread"
-    assert KiteTradingBot._invalid_entry_quote_reason(
+            "timestamp": now - timedelta(seconds=7),
+            "bid": 36.50,
+            "ask": 36.75,
+            "last_price": 36.45,
+            "source": "live_tick",
+        },
+        now=now,
+    )
+
+    assert metrics["entry_valid"] is False
+    assert metrics["entry_validation_reason"] == "stale_quote"
+    assert KiteTradingBot._invalid_entry_quote_reason(metrics) == (
+        "no_fresh_atm_quote"
+    )
+    bot._log_entry_quote_validation(
+        "ICICIBANK_PE", metrics, metrics["entry_validation_reason"]
+    )
+    assert "spread_pct=" in caplog.text
+    assert "failing_check=stale_quote" in caplog.text
+
+
+def test_missing_atm_quote_is_blocked_with_required_reason_and_metrics(caplog):
+    bot = _bot()
+    bot.option_quote_cache.clear()
+    now = datetime(2026, 11, 25, 14, 13, 0, tzinfo=IST)
+
+    allowed, reason = bot._option_quality_gate(
+        "NIFTY_CE", "BUY", now=now
+    )
+
+    assert allowed is False
+    assert reason == "no_fresh_atm_quote"
+    assert "failing_check=no_fresh_atm_quote" in caplog.text
+    assert "bid=None ask=None ltp=None" in caplog.text
+
+
+def test_paper_entry_rejects_wide_spread_and_extreme_ltp_deviation():
+    bot = _bot()
+    now = datetime.now(IST)
+    wide = bot._option_quote_metrics(
         {
-            "fresh": False,
-            "bid": 26.85,
-            "ask": 26.95,
-            "ltp": 26.70,
-        }
-    ) == "stale_quote"
+            "timestamp": now,
+            "bid": 50.0,
+            "ask": 51.0,
+            "last_price": 50.5,
+        },
+        now=now,
+    )
+    extreme_ltp = bot._option_quote_metrics(
+        {
+            "timestamp": now,
+            "bid": 50.0,
+            "ask": 50.1,
+            "last_price": 50.8,
+        },
+        now=now,
+    )
+
+    assert wide["entry_validation_reason"] == "spread_too_wide"
+    assert extreme_ltp["entry_validation_reason"] == "ltp_mid_deviation"
 
 
 def test_disabling_v2_restores_existing_strict_exit_quote_validation():

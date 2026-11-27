@@ -2169,7 +2169,7 @@ def write_daily_review(
         "",
         "## Runtime Identity and Flags",
         f"- Commit SHA: {git_sha or 'not recorded'}",
-        f"- Normalized config hash: {config_hash or 'not recorded'}",
+        f"- Startup config hash: {config_hash or 'not recorded'}",
         "- Flags: "
         + (
             ", ".join(

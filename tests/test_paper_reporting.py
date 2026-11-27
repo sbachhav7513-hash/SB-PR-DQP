@@ -143,6 +143,33 @@ def test_daily_and_weekly_documents_are_written(tmp_path):
     assert "No parameter or live-order setting is changed automatically" in review_content
 
 
+def test_daily_review_prefers_startup_hash_over_dated_artifact_hash(tmp_path):
+    timestamp = "2026-11-25T10:00:00+05:30"
+    (tmp_path / "decision_log.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": timestamp,
+                "signal": "HOLD",
+                "config_hash": "dated-artifact-hash",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    review = write_daily_review(
+        str(tmp_path),
+        str(tmp_path / "paper"),
+        target_date=date(2026, 11, 25),
+        config_hash="startup-loaded-hash",
+    )
+    content = review.read_text(encoding="utf-8")
+
+    assert "Startup config hash: startup-loaded-hash" in content
+    assert "dated-artifact-hash" not in content
+    assert content.count("Startup config hash:") == 1
+
+
 def test_daily_review_reports_trade_results_rejections_and_shadow_flow(tmp_path):
     timestamp = "2026-09-30T10:00:00+05:30"
     paper_dir = tmp_path / "paper"
@@ -296,7 +323,7 @@ def test_daily_review_includes_runtime_identity_flags_and_veto_counts(tmp_path):
     content = review.read_text(encoding="utf-8")
 
     assert "Commit SHA: commit-sha" in content
-    assert "Normalized config hash: normalized-config-hash" in content
+    assert "Startup config hash: normalized-config-hash" in content
     assert "entry_5m_continuation_v1=False" in content
     assert "- passed: 1" in content
     assert "- vetoed: 1" in content

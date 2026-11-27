@@ -48,7 +48,7 @@ def _option_bot(now, *, mode="PAPER", fallback=True):
     return bot
 
 
-def test_stale_quote_fallback_uses_recent_completed_candle_and_conservative_fill():
+def test_paper_stale_quote_fallback_is_blocked_by_fresh_quote_rule():
     now = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
     bot = _option_bot(now)
     candle = Bar(
@@ -64,14 +64,8 @@ def test_stale_quote_fallback_uses_recent_completed_candle_and_conservative_fill
         "NIFTY_CE", "BUY", now=now, option_candle=candle
     )
 
-    context = bot._option_gate_context["NIFTY_CE"]
-    assert allowed is True
-    assert reason == "OK"
-    assert context["quote_source"] == "candle_fallback"
-    assert context["quote_age_seconds"] == 80
-    assert context["candle_age_seconds"] == 0
-    assert context["gate_reference_price"] == 101.05
-    assert context["fallback_fill_price"] == 105.05
+    assert allowed is False
+    assert reason == "no_fresh_atm_quote"
 
 
 def test_stale_quote_fallback_rejects_old_candle_and_is_paper_only():
@@ -84,7 +78,7 @@ def test_stale_quote_fallback_rejects_old_candle_and_is_paper_only():
     )
 
     assert allowed is False
-    assert reason.startswith("option quote stale")
+    assert reason == "no_fresh_atm_quote"
 
     live_bot = _option_bot(now, mode="LIVE")
     recent_candle = Bar(now - timedelta(minutes=1), 100, 103, 99, 101, 1000)
@@ -202,8 +196,8 @@ def _quality_bot(symbol, premium, *, mode="PAPER", **overrides):
     bot.option_quote_cache = {
         symbol: {
             "last_price": premium,
-            "bid": premium - 1,
-            "ask": premium,
+            "bid": premium - 0.1,
+            "ask": premium + 0.1,
             "volume": 1000,
             "oi": 1000,
             "timestamp": datetime.now(IST),
@@ -218,14 +212,20 @@ def test_premium_floor_v2_enforces_general_and_support_reversal_boundaries():
         False,
         "premium too low: 14.9 < 15.0",
     )
-    bot.option_quote_cache["NIFTY_CE"]["last_price"] = 15.0
+    bot.option_quote_cache["NIFTY_CE"].update(
+        {"last_price": 15.0, "bid": 14.9, "ask": 15.1}
+    )
     assert bot._option_quality_gate("NIFTY_CE", "BUY") == (True, "OK")
 
-    bot.option_quote_cache["NIFTY_CE"]["last_price"] = 11.9
+    bot.option_quote_cache["NIFTY_CE"].update(
+        {"last_price": 11.9, "bid": 11.82, "ask": 11.98}
+    )
     assert bot._option_quality_gate(
         "NIFTY_CE", "BUY", minimum_premium_override=5.0
     ) == (False, "premium too low: 11.9 < 12.0")
-    bot.option_quote_cache["NIFTY_CE"]["last_price"] = 12.0
+    bot.option_quote_cache["NIFTY_CE"].update(
+        {"last_price": 12.0, "bid": 11.92, "ask": 12.08}
+    )
     assert bot._option_quality_gate(
         "NIFTY_CE", "BUY", minimum_premium_override=5.0
     ) == (True, "OK")
@@ -234,7 +234,9 @@ def test_premium_floor_v2_enforces_general_and_support_reversal_boundaries():
 def test_banknifty_premium_cap_is_scoped_to_banknifty():
     banknifty = _quality_bot("BANKNIFTY_CE", 950)
     assert banknifty._option_quality_gate("BANKNIFTY_CE", "BUY") == (True, "OK")
-    banknifty.option_quote_cache["BANKNIFTY_CE"]["last_price"] = 1050
+    banknifty.option_quote_cache["BANKNIFTY_CE"].update(
+        {"last_price": 1050, "bid": 1049.9, "ask": 1050.1}
+    )
     assert "premium too high" in banknifty._option_quality_gate(
         "BANKNIFTY_CE", "BUY"
     )[1]
@@ -360,8 +362,32 @@ def test_capital_based_sizing_uses_invested_capital_for_nifty():
     assert bot._calculate_option_quantity("NIFTY_CE", 310, 0.10) == 0
     assert (
         bot._pending_entry_evaluations["NIFTY_CE"]["rejection_reason"]
-        == "ONE_LOT_EXCEEDS_CAPITAL_CAP"
+        == "lot_exceeds_cap"
     )
+
+
+def test_november_25_one_lot_cost_filters_use_ask_plus_slippage():
+    cases = (
+        ("RELIANCE_CE", 500, 49.05, True),
+        ("ICICIBANK_PE", 700, 36.75, True),
+        ("SBIN_PE", 750, 29.40, True),
+        ("INFY_PE", 400, 44.20, False),
+        ("NIFTY_CE", 65, 294.25, False),
+    )
+    for symbol, lot_size, ask, exceeds_cap in cases:
+        bot = _capital_sizing_bot(symbol, lot_size)
+        rejection = bot._one_lot_cap_rejection(
+            symbol, {"ask": ask}
+        )
+        if exceeds_cap:
+            assert rejection is not None
+            assert rejection["reason"] == "lot_exceeds_cap"
+            assert rejection["one_lot_cost"] == pytest.approx(
+                ask * 1.004 * lot_size
+            )
+            assert rejection["per_trade_cap"] == 20_000
+        else:
+            assert rejection is None
 
 
 def test_capital_based_risk_uses_the_configured_ten_percent_stop():
@@ -389,7 +415,9 @@ def test_capital_based_sizing_handles_sbin_banknifty_and_premium_cap():
     assert banknifty_evaluation["max_capital_per_trade_used_amount"] == 30_000
     banknifty.config["banknifty_caps_v2"] = False
     assert banknifty._calculate_option_quantity("BANKNIFTY_CE", 850, 0.10) == 30
-    banknifty.option_quote_cache["BANKNIFTY_CE"]["last_price"] = 1050
+    banknifty.option_quote_cache["BANKNIFTY_CE"].update(
+        {"last_price": 1050, "bid": 1049.9, "ask": 1050.1}
+    )
     assert banknifty._option_quality_gate("BANKNIFTY_CE", "BUY") == (
         False,
         "premium too high: 1050.0 > 1000.0",

@@ -124,6 +124,62 @@ def test_refresh_instrument_tokens_selects_atm_call_and_put_for_options():
     assert stream.capture_contracts_by_token[203]["leg"] == "PE"
 
 
+def test_option_subscriptions_cover_atm_plus_minus_two_strikes_and_reconnect():
+    kite = Mock()
+    today = date.today()
+    instruments = []
+    for index, strike in enumerate((24900, 24950, 25000, 25050, 25100)):
+        for leg_index, leg in enumerate(("CE", "PE")):
+            instruments.append(
+                {
+                    "name": "NIFTY",
+                    "tradingsymbol": f"NIFTY{today:%d}{strike}{leg}",
+                    "instrument_type": leg,
+                    "expiry": today + timedelta(days=7),
+                    "strike": strike,
+                    "instrument_token": 200 + index * 2 + leg_index,
+                    "lot_size": 65,
+                }
+            )
+    kite.instruments.return_value = instruments
+    kite.ltp.side_effect = [
+        {"100": {"last_price": 25010.0}},
+        {"204": {"last_price": 120.0}, "205": {"last_price": 110.0}},
+    ]
+
+    with patch("market_bot.kite_provider.KiteConnect", return_value=kite), patch(
+        "market_bot.kite_provider.KiteTicker"
+    ):
+        stream = KiteMarketStream(
+            KiteConfig(
+                api_key="key",
+                access_token="token",
+                trading_mode="intraday_options",
+                instrument_tokens={"NIFTY": 100},
+                options_underlyings=["NIFTY"],
+                option_strike_step={"NIFTY": 50},
+            )
+        )
+
+    stream.refresh_instrument_tokens()
+    assert {
+        metadata["strike"] for metadata in stream.capture_contracts_by_token.values()
+    } == {24900, 24950, 25000, 25050, 25100}
+    assert len(stream.capture_only_tokens) == 8
+
+    ws = Mock()
+    ws.MODE_FULL = 3
+    stream.on_connect(ws, {})
+    stream.on_connect(ws, {})
+    expected = set(stream.config.instrument_tokens.values()) | set(
+        stream.capture_only_tokens
+    )
+    assert set(ws.subscribe.call_args_list[0].args[0]) == expected
+    assert set(ws.subscribe.call_args_list[1].args[0]) == expected
+    assert ws.subscribe.call_count == 2
+    assert ws.set_mode.call_count == 2
+
+
 def test_options_needing_reselect_uses_hysteresis_in_strike_steps():
     stream = object.__new__(KiteMarketStream)
     stream.selected_atm_strikes = {
@@ -1135,6 +1191,8 @@ def test_support_reversal_premium_exception_uses_shared_strategy_config():
     bot.option_quote_cache = {
         "NIFTY_CE": {
             "last_price": 5.5,
+            "bid": 5.46,
+            "ask": 5.54,
             "volume": 250,
             "oi": 450,
             "iv": 0.2,

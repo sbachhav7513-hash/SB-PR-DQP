@@ -41,6 +41,41 @@ def _parts_dir(root, timestamp):
     return recorder, day_dir, parts_dir
 
 
+def test_lot_exceeds_cap_details_survive_decision_parquet(tmp_path):
+    timestamp = datetime(2026, 11, 25, 10, 26, tzinfo=ZoneInfo("Asia/Kolkata"))
+    rejection = {
+        "reason": "lot_exceeds_cap",
+        "one_lot_cost": 24422.3,
+        "per_trade_cap": 20000.0,
+        "entry_ask": 48.65,
+        "entry_slippage_pct": 0.4,
+    }
+    recorder, day_dir, _ = _parts_dir(tmp_path / "paper", timestamp.isoformat())
+    recorder._write_decision_part(
+        day_dir,
+        10,
+        [
+            {
+                "timestamp": timestamp.isoformat(),
+                "ticker": "RELIANCE_CE",
+                "signal": "HOLD",
+                "outcome": "lot_exceeds_cap",
+                "entry_evaluation": rejection,
+                "lot_exceeds_cap": rejection,
+                "one_lot_cost": rejection["one_lot_cost"],
+                "per_trade_cap": rejection["per_trade_cap"],
+            }
+        ],
+    )
+
+    row = read_decisions(day_dir).iloc[0]
+
+    assert json.loads(row["entry_evaluation"]) == rejection
+    assert json.loads(row["lot_exceeds_cap"]) == rejection
+    assert float(row["one_lot_cost"]) == pytest.approx(24422.3)
+    assert float(row["per_trade_cap"]) == pytest.approx(20000.0)
+
+
 def test_normal_shutdown_flushes_all_queued_rows(tmp_path):
     recorder = PaperTradingRecorder(str(tmp_path / "paper"))
     timestamp = datetime.now(timezone.utc).isoformat()

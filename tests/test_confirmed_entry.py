@@ -81,6 +81,7 @@ def _bot(tmp_path, pending, now):
         "option_min_candle_body_ratio": 0.2,
     }
     bot.entry_mode = "confirmed"
+    bot.mode = "PAPER"
     bot._pending_entries = {
         (entry["symbol"], entry["leg"]): entry for entry in pending
     }
@@ -359,6 +360,7 @@ def test_five_minute_pass_waits_for_a_fresh_valid_ask(tmp_path):
     fresh_close = close_time + timedelta(minutes=1)
     bot.option_quote_cache["NIFTY_CE"].update(
         timestamp=fresh_close - timedelta(seconds=1),
+        bid=20.3,
         ask=20.4,
         last_price=20.3,
     )
@@ -631,7 +633,7 @@ def test_stale_quote_after_confirmation_cancels_with_specific_reason(tmp_path):
     event = _events(tmp_path / "decisions.jsonl")[-1]
     assert event["confirmation_event"] == "filter_failed_after_confirmation"
     assert event["cancellation_reason"] == "filter_failed_after_confirmation"
-    assert event["cancellation_sub_reason"] == "stale_quote"
+    assert event["cancellation_sub_reason"] == "no_fresh_atm_quote"
 
 
 def test_accuracy_filter_cancellation_records_specific_filter_name(tmp_path):
@@ -955,7 +957,7 @@ def test_confirmation_exception_cancels_without_retry(tmp_path):
     assert event["cancellation_sub_reason"] == "revalidation_exception"
 
 
-def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price(monkeypatch):
+def test_order_uses_fresh_ask_with_slippage_and_keeps_ltp_sizing(monkeypatch):
     now = datetime.now(IST)
     bot = object.__new__(KiteTradingBot)
     bot.config = {
@@ -1030,18 +1032,20 @@ def test_order_uses_fresh_ask_and_calculates_risk_from_fill_price(monkeypatch):
         assert "&lt;price&gt;" in post.call_args.kwargs["data"]["text"]
         assert notifier.telemetry()["sent"] == 1
         position = manager.active_positions["NIFTY_CE"]
-        assert position["entry_price"] == 18.30
-        assert position["stop_loss"] == pytest.approx(18.30 * 0.9)
-        assert position["take_profit"] == pytest.approx(18.30 * 1.2)
+        expected_entry = 18.30 * 1.004
+        assert position["entry_price"] == pytest.approx(expected_entry)
+        assert position["stop_loss"] == pytest.approx(expected_entry * 0.9)
+        assert position["take_profit"] == pytest.approx(expected_entry * 1.2)
         bot._calculate_option_quantity.assert_called_once_with(
             "NIFTY_CE", 18.25, 0.10
         )
         trade = bot.trade_journal.log_trade.call_args.args[0]
         assert trade["entry_mode"] == "confirmed"
         assert trade["route"] == "scored"
-        assert trade["entry"] == 18.30
+        assert trade["entry"] == pytest.approx(expected_entry)
         assert trade["entry_quote_bid"] == 18.20
         assert trade["entry_quote_ask"] == 18.30
+        assert trade["entry_slippage_in_fill"] is True
     finally:
         notifier.close(timeout=1)
 

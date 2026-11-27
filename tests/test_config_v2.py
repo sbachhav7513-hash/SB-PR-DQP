@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from market_bot.intraday_manager import IntradayManager
 from market_bot.kite_main import (
     DEFAULT_OPTION_PREMIUM_STOP_PCT,
@@ -193,9 +195,10 @@ def test_paper_option_entry_uses_ask_without_changing_ltp_sizing():
     assert bot._handle_buy_signal("INFY_CE", 18.25, 80) == "trade_opened"
 
     position = manager.active_positions["INFY_CE"]
-    assert position["entry_price"] == 18.30
-    assert position["stop_loss"] == 18.30 * 0.9
-    assert position["take_profit"] == 18.30 * 1.2
+    expected_entry = 18.30 * 1.004
+    assert position["entry_price"] == pytest.approx(expected_entry)
+    assert position["stop_loss"] == pytest.approx(expected_entry * 0.9)
+    assert position["take_profit"] == pytest.approx(expected_entry * 1.2)
     bot._calculate_option_quantity.assert_called_once_with(
         "INFY_CE", 18.25, 0.10
     )

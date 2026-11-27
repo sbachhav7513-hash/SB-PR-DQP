@@ -298,6 +298,11 @@ OPTION_ENTRY_RISK_FIELDS = (
     "premium_cap",
     "lots_reduced_reason",
     "rejection_reason",
+    "lot_exceeds_cap",
+    "one_lot_cost",
+    "per_trade_cap",
+    "entry_ask",
+    "entry_slippage_pct",
     "capital_based_risk_v2",
 )
 
@@ -2123,6 +2128,8 @@ class KiteTradingBot:
             "lots_reduced_reason": (
                 "banknifty_exactly_one_lot" if banknifty else None
             ),
+            "one_lot_cost": per_lot_invested,
+            "per_trade_cap": max_capital,
         }
 
         def reject(reason: str) -> int:
@@ -2169,7 +2176,13 @@ class KiteTradingBot:
                     "proposed_risk_amount": per_lot_risk,
                 }
             )
-            return reject("ONE_LOT_EXCEEDS_CAPITAL_CAP")
+            logger.warning(
+                "[%s] lot_exceeds_cap one_lot_cost=%.2f per_trade_cap=%.2f",
+                symbol,
+                per_lot_invested,
+                max_capital,
+            )
+            return reject("lot_exceeds_cap")
 
         lots_allowed_by_capital = math.floor(max_capital / per_lot_invested)
         lots = min(lots_allowed_by_capital, maximum_lots)
@@ -2229,6 +2242,80 @@ class KiteTradingBot:
             remaining_daily,
         )
         return lots * lot_size
+
+    def _one_lot_cap_rejection(
+        self, symbol: str, quote_metrics: dict
+    ) -> Optional[dict]:
+        if not self._is_paper_mode() or not self._options_enabled():
+            return None
+        if quote_metrics.get("ask") is None:
+            return None
+        manager = getattr(self, "intraday_manager", None)
+        if manager is None:
+            return None
+        try:
+            underlying = self._underlying_symbol(symbol)
+            lot_size = int(
+                getattr(manager, "contract_specs", {})
+                .get(symbol, {})
+                .get("lot_size", 0)
+            )
+            account_size = float(self.config.get("account_size", 100000.0))
+            cap_pct = float(
+                self.config.get(
+                    "banknifty_max_capital_per_trade_pct"
+                    if underlying == "BANKNIFTY"
+                    else "max_capital_per_trade_pct",
+                    30.0 if underlying == "BANKNIFTY" else 20.0,
+                )
+            )
+            slippage_pct = float(
+                self.config.get("paper_entry_slippage_pct", 0.4)
+            )
+            ask = float(quote_metrics["ask"])
+        except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Invalid one-lot capital-cap inputs for {symbol}"
+            ) from exc
+        if (
+            lot_size <= 0
+            or not math.isfinite(account_size)
+            or account_size <= 0
+            or not math.isfinite(cap_pct)
+            or not 0 < cap_pct <= 100
+            or not math.isfinite(slippage_pct)
+            or slippage_pct < 0
+            or not math.isfinite(ask)
+            or ask <= 0
+        ):
+            raise ValueError(f"Invalid one-lot capital-cap inputs for {symbol}")
+        one_lot_cost = (
+            ask
+            * (1.0 + slippage_pct / 100.0)
+            * lot_size
+        )
+        per_trade_cap = account_size * cap_pct / 100.0
+        if one_lot_cost <= per_trade_cap + 1e-9:
+            return None
+        rejection = {
+            "reason": "lot_exceeds_cap",
+            "one_lot_cost": one_lot_cost,
+            "per_trade_cap": per_trade_cap,
+            "lot_size": lot_size,
+            "entry_ask": ask,
+            "entry_slippage_pct": slippage_pct,
+        }
+        logger.warning(
+            "[%s] lot_exceeds_cap one_lot_cost=%.2f per_trade_cap=%.2f "
+            "ask=%.2f lot_size=%d slippage_pct=%.3f",
+            symbol,
+            one_lot_cost,
+            per_trade_cap,
+            ask,
+            lot_size,
+            slippage_pct,
+        )
+        return rejection
 
     def _validate_banknifty_entry_risk(
         self, symbol: str, quantity: int, entry_price: float, stop_loss: float
@@ -2935,6 +3022,11 @@ class KiteTradingBot:
         self.config.setdefault("capture_all_evaluated_contracts", True)
         self.config.setdefault("paper_entry_slippage_pct", 0.4)
         self.config.setdefault("paper_exit_slippage_pct", 1.0)
+        self.config.setdefault("paper_option_quote_max_age_seconds", 5)
+        self.config.setdefault("paper_option_quote_max_spread_pct", 1.5)
+        self.config.setdefault(
+            "paper_option_quote_max_ltp_mid_deviation_pct", 1.0
+        )
         self.config.setdefault("option_premium_rising_momentum_v2", True)
         self.config.setdefault("entry_feature_logging_v2", True)
         self.config.setdefault("scorer_input_logging_v1", True)
@@ -4806,7 +4898,27 @@ class KiteTradingBot:
 
         quote_data = getattr(self, "option_quote_cache", {}).get(symbol, {})
         if not quote_data:
+            if self._is_paper_mode():
+                metrics = self._option_quote_metrics({}, now=now)
+                self._log_entry_quote_validation(
+                    symbol, metrics, "no_fresh_atm_quote"
+                )
+                return False, "no_fresh_atm_quote"
             return False, "option quote unavailable"
+
+        is_paper = self._is_paper_mode()
+        if is_paper:
+            entry_metrics = self._option_quote_metrics(quote_data, now=now)
+            if not entry_metrics["entry_valid"]:
+                self._log_entry_quote_validation(
+                    symbol,
+                    entry_metrics,
+                    entry_metrics["entry_validation_reason"],
+                )
+                return (
+                    False,
+                    self._invalid_entry_quote_reason(entry_metrics),
+                )
 
         quote_timestamp = quote_data.get("timestamp")
         if not isinstance(quote_timestamp, datetime):
@@ -4824,7 +4936,7 @@ class KiteTradingBot:
         quote_age = (now - quote_timestamp).total_seconds()
         candle_age = self._option_candle_age_seconds(option_candle, now)
         quote_context = {
-            "quote_source": "tick",
+            "quote_source": quote_data.get("source", "live_tick"),
             "quote_age_seconds": quote_age,
             "candle_age_seconds": candle_age,
             "option_candle_close": (
@@ -7778,6 +7890,7 @@ class KiteTradingBot:
                 "entry_feature_null_reasons", {}
             ),
             "gate_measurements": gate_measurements,
+            "lot_exceeds_cap": pending.get("lot_exceeds_cap"),
             **(
                 nifty_gate_context
                 if isinstance(nifty_gate_context, dict)
@@ -8313,8 +8426,21 @@ class KiteTradingBot:
 
         quote = getattr(self, "option_quote_cache", {}).get(symbol, {})
         metrics = self._option_quote_metrics(quote, now=now)
+        if self._is_paper_mode() and not metrics["entry_valid"]:
+            self._log_entry_quote_validation(
+                symbol,
+                metrics,
+                metrics["entry_validation_reason"],
+            )
+            return self._invalid_entry_quote_reason(metrics)
+        if self._is_paper_mode():
+            cap_rejection = self._one_lot_cap_rejection(symbol, metrics)
+            if cap_rejection is not None:
+                pending["lot_exceeds_cap"] = cap_rejection
+                return "lot_exceeds_cap"
         if (
-            metrics["fresh"]
+            not self._is_paper_mode()
+            and metrics["fresh"]
             and metrics["bid"] is not None
             and metrics["ask"] is not None
             and metrics["ask"] >= metrics["bid"]
@@ -8323,7 +8449,12 @@ class KiteTradingBot:
         ):
             return "quote_outside_spread"
         option_candle = self._latest_completed_option_candle(symbol)
-        if not metrics["valid"] or metrics["ask"] is None:
+        quote_valid = (
+            metrics["entry_valid"]
+            if self._is_paper_mode()
+            else metrics["valid"]
+        )
+        if not quote_valid or metrics["ask"] is None:
             allowed, reason = self._option_quality_gate(
                 symbol,
                 pending["signal"],
@@ -8749,7 +8880,12 @@ class KiteTradingBot:
             if failure is not None:
                 if (
                     pending.get("five_min_passed")
-                    and failure in {"stale_quote", "quote_outside_spread"}
+                    and failure
+                    in {
+                        "no_fresh_atm_quote",
+                        "stale_quote",
+                        "quote_outside_spread",
+                    }
                     and now
                     < pending["five_min_candle_end"] + timedelta(minutes=5)
                 ):
@@ -9339,11 +9475,43 @@ class KiteTradingBot:
                 continue
             self._reselect_options_for_underlying(underlying, local_timestamp)
 
+    def _reselect_options_at_signal(
+        self, underlying: str, timestamp: datetime
+    ) -> None:
+        underlying = str(underlying).upper()
+        stream = getattr(self, "kite_stream", None)
+        if (
+            getattr(self, "simulation_mode", False)
+            or stream is None
+            or not hasattr(stream, "reselect_options_for_underlying")
+        ):
+            return
+        if self._has_position_or_pending_entry_for_underlying(underlying):
+            return
+        local_timestamp = self._local_market_timestamp(timestamp)
+        last_reselects = getattr(self, "_last_signal_option_reselect", None)
+        if last_reselects is None:
+            last_reselects = {}
+            self._last_signal_option_reselect = last_reselects
+        current_minute = local_timestamp.replace(second=0, microsecond=0)
+        if last_reselects.get(underlying) == current_minute:
+            return
+        last_reselects[underlying] = current_minute
+        self._reselect_options_for_underlying(underlying, local_timestamp)
+
     def _reselect_options_for_underlying(
         self, underlying: str, timestamp: datetime
     ) -> None:
         underlying = str(underlying).upper()
+        local_timestamp = self._local_market_timestamp(timestamp)
         stream = self.kite_stream
+        atm_selections = getattr(stream, "selected_atm_strikes", {})
+        old_atm = (
+            atm_selections.get(underlying)
+            if isinstance(atm_selections, dict)
+            else None
+        )
+        spot = self.latest_prices.get(underlying)
         old_tokens = dict(self.config["instrument_tokens"])
         old_contract_ids = sorted(
             {
@@ -9375,6 +9543,15 @@ class KiteTradingBot:
             self.option_quote_cache.pop(symbol, None)
             self._last_quote_timestamps.pop(symbol, None)
             getattr(self, "_option_gate_context", {}).pop(symbol, None)
+        token_quotes = getattr(self, "_option_quote_by_token", {})
+        for symbol, token in updated_tokens.items():
+            if not symbol.upper().startswith(f"{underlying}_"):
+                continue
+            quote = token_quotes.get(token)
+            if quote is not None:
+                self.option_quote_cache[symbol] = quote
+                self.latest_prices[symbol] = quote["last_price"]
+                self._last_quote_timestamps[symbol] = quote["timestamp"]
         for token in old_subscription_tokens:
             if token not in set(updated_tokens.values()) | set(stream.capture_only_tokens):
                 self._option_tick_diagnostics.pop(token, None)
@@ -9409,13 +9586,29 @@ class KiteTradingBot:
         )
         if stream.is_connected:
             if tokens_to_subscribe:
+                logger.info(
+                    "[%s] WebSocket subscribe tokens=%s reason=option_reselection",
+                    underlying,
+                    tokens_to_subscribe,
+                )
                 stream.ticker.subscribe(tokens_to_subscribe)
                 stream.ticker.set_mode(
                     stream.ticker.MODE_FULL, tokens_to_subscribe
                 )
             if tokens_to_unsubscribe:
+                logger.info(
+                    "[%s] WebSocket unsubscribe tokens=%s reason=option_reselection",
+                    underlying,
+                    tokens_to_unsubscribe,
+                )
                 stream.ticker.unsubscribe(tokens_to_unsubscribe)
 
+        atm_selections = getattr(stream, "selected_atm_strikes", {})
+        new_atm = (
+            atm_selections.get(underlying)
+            if isinstance(atm_selections, dict)
+            else None
+        )
         new_contract_ids = sorted(
             {
                 str(metadata.get("contract_id"))
@@ -9423,8 +9616,13 @@ class KiteTradingBot:
             }
         )
         logger.info(
-            "[%s] Re-selected option contracts: old=%s new=%s",
+            "[%s] Option ATM reselect time=%s old_strike=%s new_strike=%s "
+            "spot=%s old_contracts=%s new_contracts=%s",
             underlying,
+            local_timestamp.isoformat(),
+            old_atm[0] if old_atm else None,
+            new_atm[0] if new_atm else None,
+            spot,
             old_contract_ids,
             new_contract_ids,
         )
@@ -9565,6 +9763,7 @@ class KiteTradingBot:
         """Called when a new bar is completed."""
         token = int(token_str)
         symbol = self.symbol_map.get(token, f"TOKEN_{token}")
+        decision_time = datetime.now(IST)
         getattr(self, "_scorer_context_by_symbol", {}).pop(symbol, None)
         getattr(self, "_support_reversal_eval_by_symbol", {}).pop(
             symbol, None
@@ -10140,6 +10339,43 @@ class KiteTradingBot:
         ):
             underlying = symbol.rsplit("_", 1)[0].upper()
             preferred = self._preferred_option_symbol(underlying, market_score.signal)
+            if preferred == symbol:
+                try:
+                    signal_time = self._journal_datetime(
+                        decision_time
+                    ) or self._journal_datetime(bar.timestamp)
+                    if signal_time is not None:
+                        self._reselect_options_at_signal(
+                            underlying, signal_time
+                        )
+                    selected_token = (
+                        self.config.get("instrument_tokens", {}) or {}
+                    ).get(symbol)
+                    refreshed_bars = (
+                        self.bar_builder.get_bars(selected_token, limit=50)
+                        if selected_token is not None
+                        else []
+                    )
+                    if refreshed_bars:
+                        bars = refreshed_bars
+                        bar = refreshed_bars[-1]
+                except Exception:
+                    logger.exception(
+                        "[%s] Signal-time ATM reselection failed",
+                        underlying,
+                    )
+                    market_score.signal = "HOLD"
+                    market_score.reasons.append("signal_reselection_failed")
+                    self._record_decision(
+                        symbol,
+                        bar,
+                        bars,
+                        market_score,
+                        "HOLD",
+                        "signal_reselection_failed",
+                        news_context,
+                    )
+                    return
             if preferred is None:
                 if ema_reentry_context is not None:
                     self._complete_ema_reentry_attempt(
@@ -10181,6 +10417,37 @@ class KiteTradingBot:
                     market_score,
                     market_score.signal,
                     "OPTION_LEG_SKIPPED",
+                    news_context,
+                )
+                return
+
+            cap_rejection = self._one_lot_cap_rejection(
+                symbol,
+                self._option_quote_metrics(
+                    getattr(self, "option_quote_cache", {}).get(symbol, {})
+                ),
+            )
+            if cap_rejection is not None:
+                evaluations = getattr(
+                    self, "_pending_entry_evaluations", None
+                )
+                if evaluations is None:
+                    evaluations = {}
+                    self._pending_entry_evaluations = evaluations
+                evaluations[symbol] = {
+                    **cap_rejection,
+                    "accepted": False,
+                    "rejection_reason": "lot_exceeds_cap",
+                }
+                market_score.signal = "HOLD"
+                market_score.reasons.append("lot_exceeds_cap")
+                self._record_decision(
+                    symbol,
+                    bar,
+                    bars,
+                    market_score,
+                    "HOLD",
+                    "lot_exceeds_cap",
                     news_context,
                 )
                 return
@@ -10718,6 +10985,13 @@ class KiteTradingBot:
             return None
         return quote if math.isfinite(quote) and quote > 0 else None
 
+    def _is_paper_mode(self) -> bool:
+        return getattr(
+            self,
+            "mode",
+            "PAPER" if getattr(self, "paper_trading_enabled", False) else "LIVE",
+        ) == "PAPER"
+
     def _option_quote_metrics(
         self, quote: dict, now: Optional[datetime] = None
     ) -> dict:
@@ -10750,6 +11024,46 @@ class KiteTradingBot:
             and max_age > 0
             and 0 <= age_seconds <= max_age
         )
+        is_paper = self._is_paper_mode()
+        try:
+            entry_max_age = float(
+                getattr(self, "config", {}).get(
+                    "paper_option_quote_max_age_seconds", 5
+                )
+                if is_paper
+                else max_age
+            )
+            max_spread_pct = float(
+                getattr(self, "config", {}).get(
+                    "paper_option_quote_max_spread_pct", 1.5
+                )
+            )
+            max_ltp_mid_deviation_pct = float(
+                getattr(self, "config", {}).get(
+                    "paper_option_quote_max_ltp_mid_deviation_pct", 1.0
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            entry_max_age = max_spread_pct = max_ltp_mid_deviation_pct = 0.0
+        entry_fresh = (
+            age_seconds is not None
+            and math.isfinite(entry_max_age)
+            and entry_max_age > 0
+            and 0 <= age_seconds <= entry_max_age
+        )
+        two_sided = bid is not None and ask is not None
+        mid = (bid + ask) / 2.0 if two_sided and ask >= bid else None
+        spread = ask - bid if two_sided and ask >= bid else None
+        spread_pct = (
+            spread / mid * 100.0
+            if spread is not None and mid is not None and mid > 0
+            else None
+        )
+        ltp_mid_deviation_pct = (
+            abs(ltp - mid) / mid * 100.0
+            if ltp is not None and mid is not None and mid > 0
+            else None
+        )
         in_spread = (
             bid is not None
             and ask is not None
@@ -10757,6 +11071,54 @@ class KiteTradingBot:
             and ltp is not None
             and bid <= ltp <= ask
         )
+        if not is_paper:
+            entry_validation_reason = (
+                "quote_outside_spread"
+                if fresh and two_sided and ask >= bid and ltp is not None and not in_spread
+                else "stale_quote"
+                if not fresh
+                else "invalid_quote"
+                if not in_spread
+                else None
+            )
+            entry_valid = entry_validation_reason is None
+        elif timestamp is None:
+            entry_validation_reason = "quote_timestamp_missing"
+            entry_valid = False
+        elif age_seconds is not None and age_seconds < 0:
+            entry_validation_reason = "future_quote"
+            entry_valid = False
+        elif not entry_fresh:
+            entry_validation_reason = "stale_quote"
+            entry_valid = False
+        elif bid is None:
+            entry_validation_reason = "zero_or_missing_bid"
+            entry_valid = False
+        elif ask is None:
+            entry_validation_reason = "zero_or_missing_ask"
+            entry_valid = False
+        elif ask < bid:
+            entry_validation_reason = "crossed_book"
+            entry_valid = False
+        elif spread_pct is None or not math.isfinite(max_spread_pct) or max_spread_pct <= 0:
+            entry_validation_reason = "invalid_spread_setting"
+            entry_valid = False
+        elif spread_pct > max_spread_pct:
+            entry_validation_reason = "spread_too_wide"
+            entry_valid = False
+        elif ltp is None or ltp_mid_deviation_pct is None:
+            entry_validation_reason = "missing_ltp"
+            entry_valid = False
+        elif (
+            not math.isfinite(max_ltp_mid_deviation_pct)
+            or max_ltp_mid_deviation_pct <= 0
+            or ltp_mid_deviation_pct > max_ltp_mid_deviation_pct
+        ):
+            entry_validation_reason = "ltp_mid_deviation"
+            entry_valid = False
+        else:
+            entry_validation_reason = None
+            entry_valid = True
         return {
             "bid": bid,
             "ask": ask,
@@ -10765,25 +11127,63 @@ class KiteTradingBot:
             "age_seconds": age_seconds,
             "max_age_seconds": max_age,
             "fresh": fresh,
+            "entry_fresh": entry_fresh,
+            "entry_max_age_seconds": entry_max_age,
+            "two_sided": two_sided,
+            "mid": mid,
+            "spread": spread,
+            "spread_pct": spread_pct,
+            "max_spread_pct": max_spread_pct,
+            "ltp_mid_deviation_pct": ltp_mid_deviation_pct,
+            "max_ltp_mid_deviation_pct": max_ltp_mid_deviation_pct,
+            "source": quote.get("source", "unknown"),
             "in_spread": in_spread,
             "valid": fresh and in_spread,
+            "entry_valid": entry_valid,
+            "entry_validation_reason": entry_validation_reason,
         }
 
     @staticmethod
     def _invalid_entry_quote_reason(metrics: dict) -> str:
-        bid = metrics.get("bid")
-        ask = metrics.get("ask")
-        ltp = metrics.get("ltp")
-        if (
-            metrics.get("fresh")
-            and bid is not None
-            and ask is not None
-            and ask >= bid
-            and ltp is not None
-            and not bid <= ltp <= ask
-        ):
-            return "quote_outside_spread"
-        return "stale_quote"
+        reason = metrics.get("entry_validation_reason")
+        if reason in {
+            "quote_timestamp_missing",
+            "future_quote",
+            "stale_quote",
+            "zero_or_missing_bid",
+            "zero_or_missing_ask",
+            "crossed_book",
+        }:
+            return "no_fresh_atm_quote"
+        return str(reason or "invalid_quote")
+
+    @staticmethod
+    def _log_entry_quote_validation(
+        symbol: str, metrics: dict, failing_check: Optional[str]
+    ) -> None:
+        logger.warning(
+            "[%s] ENTRY_QUOTE_VALIDATION source=%s timestamp=%s bid=%s ask=%s "
+            "ltp=%s age_seconds=%s max_age_seconds=%s spread_pct=%s "
+            "max_spread_pct=%s ltp_mid_deviation_pct=%s "
+            "max_ltp_mid_deviation_pct=%s failing_check=%s",
+            symbol,
+            metrics.get("source"),
+            (
+                metrics["timestamp"].isoformat()
+                if metrics.get("timestamp") is not None
+                else None
+            ),
+            metrics.get("bid"),
+            metrics.get("ask"),
+            metrics.get("ltp"),
+            metrics.get("age_seconds"),
+            metrics.get("entry_max_age_seconds"),
+            metrics.get("spread_pct"),
+            metrics.get("max_spread_pct"),
+            metrics.get("ltp_mid_deviation_pct"),
+            metrics.get("max_ltp_mid_deviation_pct"),
+            failing_check or "none",
+        )
 
     def _option_exit_quote_metrics(
         self, quote: dict, now: Optional[datetime] = None
@@ -11721,6 +12121,41 @@ class KiteTradingBot:
             with getattr(self, "_tick_duration_lock", threading.Lock()):
                 samples_collection.clear()
 
+    def _remember_capture_option_quote(self, tick: Tick) -> None:
+        stream = getattr(self, "kite_stream", None)
+        metadata = getattr(stream, "capture_contracts_by_token", {}).get(
+            tick.instrument_token
+        )
+        if not metadata:
+            return
+        quote = {
+            "last_price": float(tick.last_price),
+            "bid": float(getattr(tick, "bid", 0.0)),
+            "ask": float(getattr(tick, "ask", 0.0)),
+            "volume": int(tick.volume),
+            "timestamp": tick.timestamp,
+            "source": "live_tick",
+        }
+        if tick.oi is not None:
+            quote["oi"] = int(tick.oi)
+        if tick.iv is not None:
+            quote["iv"] = float(tick.iv)
+        quotes_by_token = getattr(self, "_option_quote_by_token", None)
+        if quotes_by_token is None:
+            quotes_by_token = {}
+            self._option_quote_by_token = quotes_by_token
+        quotes_by_token[tick.instrument_token] = quote
+        symbol = f"{str(metadata.get('underlying', '')).upper()}_{str(metadata.get('leg', '')).upper()}"
+        if (
+            (getattr(self, "config", {}).get("instrument_tokens", {}) or {}).get(
+                symbol
+            )
+            == tick.instrument_token
+        ):
+            self.option_quote_cache[symbol] = quote
+            self.latest_prices[symbol] = float(tick.last_price)
+            self._last_quote_timestamps[symbol] = tick.timestamp
+
     def _on_tick_serialized(self, tick: Tick) -> None:
         """Monitor risk levels on every quote before aggregating the tick."""
         self._process_telegram_commands()
@@ -11733,6 +12168,7 @@ class KiteTradingBot:
                     "Option capture tick enqueue failed for token %s",
                     tick.instrument_token,
                 )
+        self._remember_capture_option_quote(tick)
         symbol_map = getattr(self, "symbol_map", {})
         if tick.instrument_token not in symbol_map:
             return
@@ -11800,6 +12236,7 @@ class KiteTradingBot:
             "ask": float(getattr(tick, "ask", 0.0)),
             "volume": int(tick.volume),
             "timestamp": tick.timestamp,
+            "source": "live_tick",
         }
         try:
             self._reselect_option_contracts_if_needed(tick.timestamp)
@@ -13348,10 +13785,9 @@ class KiteTradingBot:
             if slippage_enabled
             else None
         )
+        contract_specs = getattr(self.intraday_manager, "contract_specs", {})
         slippage_multiplier = float(
-            self.intraday_manager.contract_specs.get(symbol, {}).get(
-                "multiplier", 1.0
-            )
+            contract_specs.get(symbol, {}).get("multiplier", 1.0)
         )
         entry_price_for_slippage = float(
             (trade or {}).get(
@@ -13359,13 +13795,27 @@ class KiteTradingBot:
             )
             or 0.0
         )
-        entry_slippage_rupees = (
-            abs(entry_price_for_slippage * entry_quantity * slippage_multiplier)
-            * entry_slippage_pct
-            / 100.0
-            if entry_slippage_pct is not None
-            else None
+        entry_slippage_in_fill = bool(
+            slippage_enabled
+            and (trade or {}).get("entry_slippage_in_fill", False)
         )
+        if entry_slippage_in_fill:
+            entry_ask = float((trade or {}).get("entry_quote_ask") or 0.0)
+            entry_slippage_rupees = max(
+                entry_price_for_slippage - entry_ask, 0.0
+            ) * entry_quantity * slippage_multiplier
+        else:
+            entry_slippage_rupees = (
+                abs(
+                    entry_price_for_slippage
+                    * entry_quantity
+                    * slippage_multiplier
+                )
+                * entry_slippage_pct
+                / 100.0
+                if entry_slippage_pct is not None
+                else None
+            )
         exit_slippage_rupees = (
             abs(weighted_exit_price * entry_quantity * slippage_multiplier)
             * exit_slippage_pct
@@ -13378,6 +13828,11 @@ class KiteTradingBot:
             if entry_slippage_rupees is not None
             and exit_slippage_rupees is not None
             else None
+        )
+        slippage_to_deduct = (
+            exit_slippage_rupees
+            if entry_slippage_in_fill
+            else estimated_slippage_rupees
         )
         cost_fields = {
             "gross_pnl_rupees": float(pnl) if pnl is not None else None,
@@ -13399,14 +13854,15 @@ class KiteTradingBot:
             "entry_slippage_rupees": entry_slippage_rupees,
             "exit_slippage_rupees": exit_slippage_rupees,
             "estimated_slippage_rupees": estimated_slippage_rupees,
+            "entry_slippage_in_fill": entry_slippage_in_fill,
             "net_pnl_after_slippage": (
                 round(
                     float(pnl)
                     - float(fees_rupees or 0.0)
-                    - float(estimated_slippage_rupees),
+                    - float(slippage_to_deduct),
                     2,
                 )
-                if pnl is not None and estimated_slippage_rupees is not None
+                if pnl is not None and slippage_to_deduct is not None
                 else None
             ),
         }
@@ -15496,7 +15952,7 @@ class KiteTradingBot:
                 )
                 premium = float(self.latest_prices.get(symbol, price))
                 if force_ask_fill and entry_fill_override is None and (
-                    not entry_quote_metrics["valid"]
+                    not entry_quote_metrics["entry_valid"]
                     or entry_quote_metrics["ask"] is None
                 ):
                     return self._invalid_entry_quote_reason(entry_quote_metrics)
@@ -15519,14 +15975,25 @@ class KiteTradingBot:
                     or self.config.get("option_quote_validated_stops_enabled", False)
                 ):
                     if (
-                        entry_quote_metrics["valid"]
+                        entry_quote_metrics["entry_valid"]
                         and entry_quote_metrics["ask"] is not None
                     ):
                         price = entry_quote_metrics["ask"]
                         entry_fill_source = "best_ask"
+                        if self._is_paper_mode():
+                            price *= 1.0 + float(
+                                self.config.get(
+                                    "paper_entry_slippage_pct", 0.4
+                                )
+                            ) / 100.0
                     else:
+                        self._log_entry_quote_validation(
+                            symbol,
+                            entry_quote_metrics,
+                            entry_quote_metrics["entry_validation_reason"],
+                        )
                         logger.warning(
-                            "[%s] Entry quote is not fresh and inside its spread; "
+                            "[%s] Entry quote failed validation; "
                             "using the existing LTP entry reference",
                             symbol,
                         )
@@ -15570,8 +16037,9 @@ class KiteTradingBot:
                         )
                     else:
                         take_profit = price * (1.0 + premium_target_pct)
+                sizing_premium = premium
                 quantity = self._calculate_option_quantity(
-                    symbol, premium, premium_stop_pct
+                    symbol, sizing_premium, premium_stop_pct
                 )
             else:
                 risk_plan = build_risk_plan(
@@ -16063,6 +16531,10 @@ class KiteTradingBot:
                 else None
             )
             alert["entry_fill_source"] = entry_fill_source
+            alert["entry_slippage_in_fill"] = bool(
+                self._is_paper_mode()
+                and entry_fill_source == "best_ask"
+            )
             if self._options_enabled() and "_" in symbol:
                 signal_premium = self._positive_quote_value(
                     alert.get("signal_premium", alert.get("signal_ltp"))
